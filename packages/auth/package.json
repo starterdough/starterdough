@@ -1,0 +1,30 @@
+{
+	"name": "@repo/auth",
+	"private": true,
+	"version": "0.0.0",
+	"type": "module",
+	"description": "Better Auth server instance (API), Svelte client factory (frontends) and the shared access-control roles.",
+	"exports": {
+		"./server": "./src/server.ts",
+		"./client": "./src/client.ts",
+		"./permissions": "./src/permissions.ts"
+	},
+	"scripts": {
+		"check": "tsc --noEmit",
+		"test": "bun test",
+		"schema": "SKIP_ENV_VALIDATION=1 bunx --bun auth@1.7.3 generate --config src/server.ts --output ../db/src/schema/auth.ts --adapter drizzle --dialect postgresql --yes",
+		"create-admin": "bun --env-file=../../.env run scripts/create-admin.ts"
+	},
+	"dependencies": {
+		"@better-auth/passkey": "catalog:",
+		"@repo/db": "workspace:*",
+		"@repo/email": "workspace:*",
+		"@repo/env": "workspace:*",
+		"better-auth": "catalog:"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

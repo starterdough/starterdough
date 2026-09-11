@@ -1,0 +1,12 @@
+{
+	"$schema": "https://inlang.com/schema/inlang-message-format",
+	"app_confirm_type_after": "ein, um fortzufahren.",
+	"app_confirm_type_before": "Gib",
+	"app_label_members": "Mitglieder",
+	"app_label_plan": "Plan",
+	"app_section_danger_zone": "Gefahrenzone",
+	"app_section_general": "Allgemein",
+	"app_storage_title": "Speicher",
+	"app_storage_used": "{used} belegt",
+	"app_storage_used_of": "{used} von {limit} belegt"
+}

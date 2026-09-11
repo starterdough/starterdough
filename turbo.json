@@ -1,0 +1,48 @@
+{
+	"$schema": "https://turborepo.dev/schema.json",
+	"futureFlags": {
+		"globalConfiguration": true
+	},
+	"global": {
+		"inputs": ["biome.json", "bunfig.toml", "packages/tsconfig/*.json"],
+		"env": ["NODE_ENV", "CI"],
+		"passThroughEnv": ["SKIP_ENV_VALIDATION", "TURBO_TELEMETRY_DISABLED"]
+	},
+	"tasks": {
+		"build": {
+			"dependsOn": ["^build"],
+			"inputs": ["$TURBO_DEFAULT$", ".env", ".env.production"],
+			"outputs": ["build/**", "dist/**", ".svelte-kit/**", ".astro/**"],
+			"env": ["ADAPTER", "PUBLIC_*", "API_URL", "SITE_URL", "ORIGIN"]
+		},
+		"build:static": {
+			"dependsOn": ["^build"],
+			"inputs": ["$TURBO_DEFAULT$", ".env", ".env.production"],
+			// Same outputs as `build`: the static adapter writes `build/` through `.svelte-kit/`.
+			"outputs": ["build/**", ".svelte-kit/**"],
+			"env": ["ADAPTER", "PUBLIC_*"]
+		},
+		"check": {
+			"dependsOn": ["^check"],
+			"outputs": []
+		},
+		"test": {
+			"dependsOn": ["^check"],
+			"outputs": [],
+			"env": ["PLAYWRIGHT_BROWSERS_PATH"]
+		},
+		"test:e2e": {
+			"dependsOn": ["build"],
+			"cache": false,
+			"env": ["PLAYWRIGHT_BROWSERS_PATH"]
+		},
+		"dev": {
+			"cache": false,
+			"persistent": true,
+			"env": ["PORT", "PUBLIC_*", "API_URL"]
+		},
+		"clean": {
+			"cache": false
+		}
+	}
+}

@@ -1,0 +1,10 @@
+// Cloudflare Workers static assets deployment. Used by `bun run deploy:cloudflare`.
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "starterdough-site",
+	"compatibility_date": "2026-08-01",
+	"assets": {
+		"directory": "./dist",
+		"not_found_handling": "404-page"
+	}
+}

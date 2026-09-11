@@ -1,0 +1,24 @@
+{
+	"name": "@repo/api-client",
+	"private": true,
+	"version": "0.0.0",
+	"type": "module",
+	"description": "Typed HTTP client for the API. Works in browsers, SvelteKit SSR, Tauri shells and Bun scripts.",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"scripts": {
+		"check": "tsc --noEmit",
+		"test": "bun test"
+	},
+	"dependencies": {
+		"@orpc/client": "catalog:",
+		"@orpc/contract": "catalog:",
+		"@repo/api-contract": "workspace:*"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

@@ -1,0 +1,90 @@
+---
+import { appUrl, docsUrl, pages, SITE_NAME } from '../lib/site';
+import Logo from './Logo.astro';
+
+const links = [
+	{ label: 'Features', href: pages.features.path },
+	{ label: 'Blog', href: pages.blog.path },
+	{ label: 'Changelog', href: pages.changelog.path },
+	{ label: 'Docs', href: docsUrl, external: true },
+];
+
+const current = Astro.url.pathname.replace(/\/+$/, '') || '/';
+const isCurrent = (href: string) =>
+	href === '/' ? current === '/' : current === href || current.startsWith(`${href}/`);
+
+const linkClass =
+	'rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground aria-[current=page]:text-foreground';
+---
+
+<header class="border-b border-border bg-background">
+	<div class="mx-auto flex h-16 w-full max-w-6xl items-center justify-between gap-6 px-6">
+		<a href="/" class="flex items-center gap-2 rounded-md font-semibold tracking-tight">
+			<Logo class="size-6" />
+			<span>{SITE_NAME}</span>
+		</a>
+
+		<nav aria-label="Main" class="hidden items-center gap-1 md:flex">
+			{links.map((link) => (
+					<a
+						href={link.href}
+						class={linkClass}
+						aria-current={isCurrent(link.href) ? 'page' : undefined}
+						rel={link.external ? 'noopener' : undefined}
+					>
+						{link.label}
+					</a>
+				))}
+		</nav>
+
+		<div class="hidden items-center gap-2 md:flex">
+			<a
+				href={`${appUrl}/login`}
+				class="rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
+			>
+				Sign in
+			</a>
+			<a
+				href={appUrl}
+				class="rounded-md bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
+			>
+				Open the app
+			</a>
+		</div>
+
+		<details class="relative md:hidden">
+			<summary
+				class="flex cursor-pointer list-none items-center rounded-md px-3 py-2 text-sm font-medium [&::-webkit-details-marker]:hidden"
+			>
+				Menu
+			</summary>
+			<nav
+				aria-label="Main"
+				class="absolute right-0 z-20 mt-2 flex w-56 flex-col gap-1 rounded-lg border border-border bg-popover p-2 text-popover-foreground shadow-lg"
+			>
+				{links.map((link) => (
+						<a
+							href={link.href}
+							class="rounded-md px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
+							aria-current={isCurrent(link.href) ? 'page' : undefined}
+						>
+							{link.label}
+						</a>
+					))}
+				<hr class="my-1 border-border">
+				<a
+					href={`${appUrl}/login`}
+					class="rounded-md px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
+				>
+					Sign in
+				</a>
+				<a
+					href={appUrl}
+					class="rounded-md bg-primary px-3 py-2 text-center text-sm font-medium text-primary-foreground"
+				>
+					Open the app
+				</a>
+			</nav>
+		</details>
+	</div>
+</header>

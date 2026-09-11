@@ -1,0 +1,23 @@
+{
+	"name": "@repo/email",
+	"private": true,
+	"version": "0.0.0",
+	"type": "module",
+	"description": "Transactional email: provider abstraction (Resend or console) and plain HTML templates.",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"scripts": {
+		"check": "tsc --noEmit",
+		"test": "bun test"
+	},
+	"dependencies": {
+		"@repo/env": "workspace:*",
+		"resend": "catalog:"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

@@ -1,0 +1,30 @@
+{
+	"name": "@repo/db",
+	"private": true,
+	"version": "0.0.0",
+	"type": "module",
+	"description": "Postgres schema, migrations and the Drizzle client (Bun-native `Bun.SQL` driver).",
+	"exports": {
+		".": "./src/index.ts",
+		"./schema": "./src/schema/index.ts"
+	},
+	"scripts": {
+		"check": "tsc --noEmit",
+		"test": "bun test",
+		"test:db": "bun --env-file=../../.env test",
+		"generate": "bun --env-file=../../.env run drizzle-kit generate",
+		"migrate": "bun --env-file=../../.env run src/migrate.ts",
+		"push": "bun --env-file=../../.env run drizzle-kit push",
+		"studio": "bun --env-file=../../.env run drizzle-kit studio"
+	},
+	"dependencies": {
+		"@repo/env": "workspace:*",
+		"drizzle-orm": "catalog:"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"@types/bun": "catalog:",
+		"drizzle-kit": "catalog:",
+		"typescript": "catalog:"
+	}
+}

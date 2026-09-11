@@ -1,0 +1,313 @@
+# Self-hosted production stack (VPS / home server). Run `docker compose` from the REPOSITORY ROOT:
+#   cp .env.example .env               # COMPOSE_FILE=infra/compose.yml is set in there → no -f needed
+#                                      # then fill POSTGRES_PASSWORD, SERVICE_TOKEN, BETTER_AUTH_SECRET:
+#                                      # they ship empty and `${VAR:?…}` below refuses to start without
+#                                      # them (infra/scripts/provision.sh generates all three)
+#   docker compose up -d --build       # build here; or `docker compose pull && docker compose up -d`
+#                                      # for the images CI pushes (IMAGE_REGISTRY / IMAGE_TAG)
+#   docker compose --profile backup up -d        # optional services; or COMPOSE_PROFILES=backup,… in .env
+#
+# Why the root: Compose reads `.env` from the *current directory* for ${VAR} interpolation. Started as
+# `docker compose -f infra/compose.yml` from the root it would still hand ../.env to the containers
+# (env_file) but interpolate DOMAIN / CADDY_MODE / POSTGRES_PASSWORD from nothing — Caddy would serve
+# "localhost" and Postgres would run with the default password. The explicit equivalent is
+# `docker compose --env-file .env -f infra/compose.yml …`. Paths below are relative to this file.
+#
+# Topology
+#   caddy   ── serves apps/site + apps/docs (static) and reverse-proxies:
+#                app.DOMAIN → web:3000     api.DOMAIN → api:3000
+#              (or path-based routing on a single origin — see caddy/single-origin.Caddyfile)
+#   web     ── SvelteKit (adapter-node), thin client of api
+#   migrate ── one-shot: applies packages/db/drizzle, then api and worker start
+#   api     ── Hono on Bun: auth and RPC/REST
+#   postgres
+#   backup  ── optional (`--profile backup`): nightly pg_dump to the `backups` volume and to S3/R2
+#              when configured, with retention and a heartbeat — infra/backup
+#   uptime-kuma ── optional (`--profile monitoring`): uptime checks + alerting on 127.0.0.1:3001
+#   lgtm    ── optional (`--profile observability`): Grafana + Tempo + Loki + Prometheus in one
+#              container; set OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318 to send traces there
+#
+# Tailscale: install on the host and run `tailscale serve --bg 80` (or `funnel`) to expose caddy.
+# Runbook: infra/README.md.
+
+# The default project name, and the prefix of every volume (`starterdough_pgdata`) and container. A
+# COMPOSE_PROJECT_NAME row in .env overrides it — see the warning there before you rename anything.
+name: starterdough
+
+# Every service: rotated JSON logs so a chatty container cannot fill the disk.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: '10m'
+    max-file: '5'
+
+# api, worker and migrate run the same image with different commands.
+# The `image:` defaults across this file are a neutral LOCAL namespace on purpose: with IMAGE_REGISTRY
+# unset (how .env.example ships) `up -d --build` tags `starterdough/api:local` and `docker compose pull`
+# fails loudly with "pull access denied" instead of quietly fetching a stranger's build.
+x-api-image: &api-image
+  build:
+    context: ..
+    dockerfile: apps/api/Dockerfile
+  image: ${IMAGE_REGISTRY:-starterdough}/api:${IMAGE_TAG:-local}
+
+# Applied to every long-running service (api, worker, web, ai, caddy):
+#   no-new-privileges  a setuid binary inside the image cannot raise privileges. These images have
+#                      none, so this only removes a step from an exploit chain.
+#   cap_drop: ALL      none of them needs a Linux capability; caddy adds back NET_BIND_SERVICE
+#                      because it binds 80/443 inside the container (see the service).
+# A pid cap goes with it, but it cannot live in this anchor: Compose folds `pids_limit` into
+# `deploy.resources.limits.pids` and then rejects the service for setting "distinct values" on the
+# two, so every service with a `deploy` block below spells it `pids: 512` in there instead (caddy,
+# which has none, uses `pids_limit`). A fork bomb or a runaway subprocess hits that instead of the
+# host's pid table; 512 is far above what Bun's thread pool, uvicorn and Caddy use.
+# Not on postgres or the one-shots (migrate, backup): initdb and pg_dump/pg_restore are the two
+# things here that legitimately want the defaults.
+x-hardening: &hardening
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+
+x-api-env: &api-env
+  NODE_ENV: production
+  # `:?` on the secrets: an unset or empty value stops `docker compose` with that message instead of
+  # starting the stack with a guessable password (`.env.example` ships them empty on purpose).
+  DATABASE_URL: postgres://starterdough:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/starterdough
+  BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
+  # Same derivation as web/caddy below: empty in .env = the subdomain layout under DOMAIN. Otherwise
+  # env_file would hand the API an empty value and it would fall back to localhost origins.
+  API_URL: ${API_URL:-https://api.${DOMAIN:-localhost}}
+  WEB_URL: ${WEB_URL:-https://app.${DOMAIN:-localhost}}
+  # Set per service, not from .env: one env_file feeds api, worker and migrate, so a filled
+  # OTEL_SERVICE_NAME row would collapse them into a single service in the traces. `worker` overrides
+  # this below; the row is gone from .env.example and only matters when you run a process by hand.
+  OTEL_SERVICE_NAME: starterdough-api
+
+services:
+  postgres:
+    # Postgres 17, from the same image the paid edition needs for its vector index.
+    # Same major as postgres:17, so a pgdata volume from that image carries over unchanged.
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_USER: starterdough
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: starterdough
+    # Defaults (max_connections=100) fit one api (DATABASE_POOL_MAX, 10) + one worker + migrate +
+    # backup with room to spare. Raise both together if you add replicas.
+    # Docker's 64 MB default /dev/shm is where Postgres puts parallel-query workers' shared memory;
+    # a large parallel scan needs the room and fails with "could not resize shared
+    # memory segment" on 64 MB. 1 GB is the size the official image documents.
+    shm_size: 1gb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      # Loopback only: psql / the admin bootstrap from a checkout on the host (runbook), never the network.
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U starterdough -d starterdough']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # Applies pending migrations, exits, and gates api/worker (service_completed_successfully). It runs
+  # on every `up`; when nothing is pending it is a no-op that takes a second.
+  migrate:
+    <<: *api-image
+    command: ['bun', 'run', 'packages/db/src/migrate.ts']
+    restart: 'no'
+    logging: *logging
+    env_file: ../.env
+    environment: *api-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: [*api-image, *hardening]
+    restart: unless-stopped
+    logging: *logging
+    # Graceful shutdown finishes in-flight requests for up to 10 s before the process exits.
+    stop_grace_period: 15s
+    env_file: ../.env
+    environment:
+      <<: *api-env
+      PORT: '3000'
+      # Behind Caddy: the first X-Forwarded-For hop is the client (rate limits, access log). Caddy
+      # replaces whatever the client sent, so the header cannot be spoofed here.
+      TRUST_PROXY: 'true'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # The liveness probe (/healthz) is the image's HEALTHCHECK; Caddy watches /readyz (database).
+    deploy:
+      resources:
+        limits:
+          # Caps, not reservations: a leak restarts one container instead of taking the box down.
+          memory: 1g
+          pids: 512
+
+
+  web:
+    <<: *hardening
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+      # The page Content-Security-Policy is baked at build time from these — see the comment in
+      # apps/web/Dockerfile. Every one repeats the expression its runtime twin below uses, so the
+      # policy cannot name a different origin than the one the app actually calls.
+      args:
+        PUBLIC_API_URL: ${API_URL:-https://api.${DOMAIN:-localhost}}
+        PUBLIC_STORAGE_ORIGIN: ${PUBLIC_STORAGE_ORIGIN:-}
+        PUBLIC_SENTRY_DSN: ${PUBLIC_SENTRY_DSN:-}
+        PUBLIC_POSTHOG_KEY: ${PUBLIC_POSTHOG_KEY:-}
+        PUBLIC_POSTHOG_HOST: ${PUBLIC_POSTHOG_HOST:-}
+    image: ${IMAGE_REGISTRY:-starterdough}/web:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      NODE_ENV: production
+      PORT: '3000'
+      HOST: 0.0.0.0
+      # Public URL of the app (SvelteKit needs it for form actions / redirects)
+      ORIGIN: ${WEB_URL:-https://app.${DOMAIN:-localhost}}
+      # Browser-facing API origin
+      PUBLIC_API_URL: ${API_URL:-https://api.${DOMAIN:-localhost}}
+      # Internal API origin for SSR (skips the public hop)
+      API_URL: http://api:3000
+      # Optional error tracking / analytics (same variables as apps/web/.env). The sample rates keep
+      # the hooks' 0.1 default: an empty string would parse as 0 (`Number('')`).
+      PUBLIC_SENTRY_DSN: ${PUBLIC_SENTRY_DSN:-}
+      PUBLIC_SENTRY_ENVIRONMENT: ${PUBLIC_SENTRY_ENVIRONMENT:-}
+      PUBLIC_SENTRY_TRACES_SAMPLE_RATE: ${PUBLIC_SENTRY_TRACES_SAMPLE_RATE:-0.1}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.1}
+      PUBLIC_POSTHOG_KEY: ${PUBLIC_POSTHOG_KEY:-}
+      PUBLIC_POSTHOG_HOST: ${PUBLIC_POSTHOG_HOST:-}
+      # Browser-visible origin of the presigned upload URLs, so the app's own CSP can allow it.
+      # Empty = the local disk driver, whose URLs are on the API origin already.
+      PUBLIC_STORAGE_ORIGIN: ${PUBLIC_STORAGE_ORIGIN:-}
+    depends_on:
+      api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          pids: 512
+
+
+  caddy:
+    <<: *hardening
+    # The Caddy image runs as root and binds 80/443 *inside* the container, which needs this one
+    # capability once `cap_drop: ALL` has taken the rest away (even root is checked by capability).
+    cap_add: [NET_BIND_SERVICE]
+    pids_limit: 512
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile.static
+      args:
+        # Baked into the static sites at build time (subdomain layout; override for single-origin).
+        SITE_URL: ${SITE_URL:-https://${DOMAIN:-localhost}}
+        DOCS_URL: ${DOCS_URL:-https://docs.${DOMAIN:-localhost}}
+        PUBLIC_APP_URL: ${WEB_URL:-https://app.${DOMAIN:-localhost}}
+        PUBLIC_API_URL: ${API_URL:-https://api.${DOMAIN:-localhost}}
+    image: ${IMAGE_REGISTRY:-starterdough}/caddy:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    logging: *logging
+    ports:
+      # CADDY_BIND=127.0.0.1 behind Tailscale `serve`/`funnel` (it proxies to loopback; Docker's own
+      # iptables rules bypass ufw, so anything bound to 0.0.0.0 IS public). 0.0.0.0 for a public box.
+      # Behind Tailscale only 80 is used; change the host side if something else owns it.
+      - '${CADDY_BIND:-0.0.0.0}:${CADDY_HTTP_PORT:-80}:80'
+      - '${CADDY_BIND:-0.0.0.0}:${CADDY_HTTPS_PORT:-443}:443'
+      - '${CADDY_BIND:-0.0.0.0}:${CADDY_HTTPS_PORT:-443}:443/udp'
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+      # The Caddyfiles interpolate this into the static sites' Content-Security-Policy: it is the
+      # origin the contact form posts to and the docs fetch the OpenAPI document from. Same
+      # derivation as api/web above, so the three cannot disagree.
+      API_URL: ${API_URL:-https://api.${DOMAIN:-localhost}}
+      # Let's Encrypt contact address (expiry warnings, account recovery). Optional; empty = none.
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./caddy/${CADDY_MODE:-subdomains}.Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    healthcheck:
+      # Caddy's admin API listens on localhost inside the container; a 200 means the config loaded.
+      test: ['CMD', 'wget', '-q', '--spider', 'http://127.0.0.1:2019/config/']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    # Ordering only, deliberately no `condition: service_healthy`: Caddy must come up even when web or
+    # api cannot, so a bad .env answers 502 (and `docker compose logs api` explains it) instead of
+    # nothing listening at all. The Caddyfiles health-check both upstreams and hold requests for
+    # `lb_try_duration` while they start.
+    depends_on: [web, api]
+
+  # Nightly pg_dump of the database — see infra/backup.
+  #   docker compose run --rm backup bun src/cli.ts backup                 # right now
+  #   docker compose run --rm backup bun src/cli.ts restore latest --drill # restore drill
+  backup:
+    build:
+      context: ..
+      dockerfile: infra/backup/Dockerfile
+    image: ${IMAGE_REGISTRY:-starterdough}/backup:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    logging: *logging
+    # On SIGTERM the CLI waits for a running backup; give `docker compose down` during the nightly
+    # run time to let pg_dump finish instead of killing it at the 10 s default.
+    stop_grace_period: 10m
+    profiles: [backup]
+    env_file: ../.env
+    environment:
+      DATABASE_URL: postgres://starterdough:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/starterdough
+      BACKUP_DIR: /backups
+    volumes:
+      - backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Uptime checks + alerting (mail, Slack, Telegram, …) from inside the network: monitor
+  # http://api:3000/readyz, http://web:3000/healthz, http://ai:8000/health and your public URLs.
+  # Bound to loopback — reach it over Tailscale (`tailscale serve --bg --https=3001 3001`) or SSH.
+  uptime-kuma:
+    image: louislam/uptime-kuma:2
+    restart: unless-stopped
+    logging: *logging
+    profiles: [monitoring]
+    ports:
+      - '127.0.0.1:${UPTIME_KUMA_PORT:-3001}:3001'
+    volumes:
+      - uptime_kuma:/app/data
+
+  # Traces from api/worker/ai land here when OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318.
+  # Grafana on 127.0.0.1:3030 (admin/admin); Tempo, Loki and Prometheus are pre-wired inside.
+  lgtm:
+    # Pinned: `latest` here would change the whole observability stack under you on a `compose pull`.
+    image: grafana/otel-lgtm:0.32.1
+    restart: unless-stopped
+    logging: *logging
+    profiles: [observability]
+    ports:
+      - '127.0.0.1:${GRAFANA_PORT:-3030}:3000'
+    volumes:
+      - lgtm_data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+volumes:
+  pgdata:
+  backups:
+  caddy_data:
+  caddy_config:
+  uptime_kuma:
+  lgtm_data:

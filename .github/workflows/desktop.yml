@@ -1,0 +1,258 @@
+# Desktop installers for the Tauri 2 shell in apps/native.
+#
+# Runs on every `v*` tag (or by hand) and builds, in parallel:
+#   Windows  NSIS setup .exe + WiX .msi                (windows-latest)
+#   macOS    .dmg + .app (tar.gz) for arm64 and x64    (macos-latest, one `--target` build each)
+#   Linux    .AppImage + .deb + .rpm                   (ubuntu-24.04)
+# Each leg uploads its installers as a workflow artifact; a final `release` job that `needs` the
+# whole matrix collects them into ONE draft release named after the tag. `fail-fast: false` keeps
+# every leg running so one failure is diagnosed in the same run, and because the release job only
+# runs when all of them succeeded, a partial installer set can never reach a release. Check the
+# assets, write the notes, then publish it yourself. Manual runs (workflow_dispatch) draft under the
+# tag `desktop-<run number>`; a draft's tag only comes into existence if the draft is published.
+#
+# Versioning: the root `package.json` `version` is the single source of truth. The `version` job
+# asserts the pushed tag is exactly `v<that version>` and fails the run on a mismatch;
+# `apps/native/scripts/tauri-config.ts` injects the same value into the config Tauri bundles with,
+# so `Starterdough_<version>_x64-setup.exe` follows the tag. Each leg then re-checks that every file it
+# produced carries that version.
+#
+# Repository variables (Settings > Secrets and variables > Actions > Variables):
+#   PUBLIC_API_URL         REQUIRED. API origin baked into the SPA and its CSP. Unset or an
+#                          `example.com` placeholder fails the run rather than shipping installers
+#                          nobody can use.
+#   PUBLIC_WEB_URL         REQUIRED. Deployed web origin; the shell sends external return
+#                          trips there through the system browser, since its own origin
+#                          (`tauri.localhost`) is unroutable.
+#   PUBLIC_STORAGE_ORIGIN  Optional. Origin of the presigned upload URLs (the S3/R2 bucket endpoint).
+#                          Leave empty for the local disk driver, whose URLs are on the API origin.
+#                          Without it the shipped CSP blocks every document upload.
+#   PUBLIC_SENTRY_DSN      Optional. Enables Sentry in the shipped app and allows its host in the CSP.
+#   PUBLIC_POSTHOG_KEY     Optional. Enables PostHog; PUBLIC_POSTHOG_HOST overrides https://us.i.posthog.com
+# Repository secrets, all optional (installers are unsigned until they exist):
+#   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD  base64 .p12 Developer ID certificate + password
+#   APPLE_SIGNING_IDENTITY                         optional, pins the identity in that certificate
+#   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID        Apple ID + app-specific password for notarization
+#   TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)           updater key pair, see below
+#   Docs: https://v2.tauri.app/distribute/sign/macos/ and https://v2.tauri.app/plugin/updater/
+#
+# Updater: NOT wired yet. tauri.conf.json has no `plugins.updater` and no
+# `bundle.createUpdaterArtifacts`, so no `.sig` files are produced. When adding the plugin: run
+# `bun run --cwd apps/native tauri signer generate -w ~/.tauri/starterdough.key` once, put the public key
+# in tauri.conf.json and the private key (+ password) in the two secrets above, then also upload the
+# `.sig` files and a `latest.json` in the release job below.
+
+name: Desktop
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Resolve the release version from the tag and package.json
+        id: resolve
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          version=$(jq -er .version package.json)
+          if [ "$REF_TYPE" = tag ]; then
+            if [ "$REF_NAME" != "v$version" ]; then
+              echo "::error::tag $REF_NAME does not match the root package.json version $version." \
+                "Bump the version (it is the single source of truth) or push v$version."
+              exit 1
+            fi
+            tag="$REF_NAME"
+          else
+            tag="desktop-$RUN_NUMBER"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Building $version as $tag" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build (${{ matrix.target || matrix.platform }})
+    needs: version
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            args: '--target aarch64-apple-darwin'
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            args: '--target x86_64-apple-darwin'
+          - platform: ubuntu-24.04
+            args: ''
+          - platform: windows-latest
+            args: ''
+    env:
+      TURBO_TELEMETRY_DISABLED: '1'
+      # The static web build never boots the API, so server env validation is skipped (as in ci.yml).
+      SKIP_ENV_VALIDATION: '1'
+      VERSION: ${{ needs.version.outputs.version }}
+      # Read by the web static build (Tauri's beforeBuildCommand) and by the CSP generator below.
+      # No placeholder defaults on purpose: an installer bound to api.example.com looks like a
+      # successful release until a buyer runs it.
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      PUBLIC_WEB_URL: ${{ vars.PUBLIC_WEB_URL }}
+      PUBLIC_STORAGE_ORIGIN: ${{ vars.PUBLIC_STORAGE_ORIGIN }}
+      PUBLIC_SENTRY_DSN: ${{ vars.PUBLIC_SENTRY_DSN }}
+      PUBLIC_POSTHOG_KEY: ${{ vars.PUBLIC_POSTHOG_KEY }}
+      PUBLIC_POSTHOG_HOST: ${{ vars.PUBLIC_POSTHOG_HOST }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      # First step that costs anything: the generator needs no dependencies, throws when
+      # PUBLIC_API_URL / PUBLIC_WEB_URL are missing or still a placeholder, and writes the version
+      # from the root package.json into the config Tauri bundles with (and into Cargo.toml).
+      - name: Generate the Tauri config fragment (version + CSP)
+        run: bun apps/native/scripts/tauri-config.ts --release
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Only the macOS entries cross-compile; Linux and Windows build for the host triple.
+          targets: ${{ matrix.target }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/native/src-tauri
+          # Both macOS entries share the job id and runner label; keep their caches apart.
+          key: ${{ matrix.target }}
+      - name: Install Linux build dependencies (Tauri prerequisites)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+      - run: bun install --frozen-lockfile
+      - name: Forward the macOS signing secrets that are set
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # An unset secret arrives as an empty string, and Tauri treats an empty APPLE_CERTIFICATE as a
+          # certificate to import (and an empty APPLE_SIGNING_IDENTITY as an identity to sign with), which
+          # fails the build. Only variables with a value reach the build step; unsigned builds still succeed.
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -n "${!name}" ]; then
+              printf '%s<<__EOF__\n%s\n__EOF__\n' "$name" "${!name}" >> "$GITHUB_ENV"
+            fi
+          done
+      # No `tagName`: the action only builds. Nothing is published until every leg has succeeded.
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          # Updater artifact signing. Not read until the updater is configured (see the header), so
+          # empty values are harmless here.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/native
+          # Explicit, so the action never guesses a package manager from a lockfile it cannot find
+          # in projectPath (the lockfile is at the repo root).
+          tauriScript: bun run tauri
+          # `--config` is resolved relative to projectPath; matrix.args adds the macOS `--target`.
+          args: --config tauri.build.conf.json ${{ matrix.args }}
+      - name: Collect the installers and check they carry the release version
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          # Only the macOS legs cross-compile, so `matrix.target` — and the extra path segment Cargo
+          # adds for it — is empty on the others.
+          TARGET="${TARGET:-}"
+          base="apps/native/src-tauri/target/${TARGET:+$TARGET/}release/bundle"
+          mkdir -p dist
+          # One glob per bundle kind Tauri writes for the platforms in this matrix; `nullglob` drops
+          # the ones that do not apply on this runner. The patterns must be literal: a glob arriving
+          # through a variable is not expanded by the msys bash the Windows runner uses.
+          for file in "$base"/nsis/*.exe "$base"/msi/*.msi "$base"/dmg/*.dmg "$base"/deb/*.deb "$base"/rpm/*.rpm "$base"/appimage/*.AppImage; do
+            cp "$file" dist/
+          done
+          # macOS also produces a .app *directory*; tar it so the executable bits and symlinks
+          # survive the artifact round trip.
+          for app in "$base"/macos/*.app; do
+            name=$(basename "$app" .app)
+            tar -czf "dist/${name}_${VERSION}_${TARGET}.app.tar.gz" -C "$base/macos" "$(basename "$app")"
+          done
+          if [ -z "$(ls -A dist)" ]; then
+            echo "::error::no installers under $base — the bundle layout changed"
+            exit 1
+          fi
+          for file in dist/*; do
+            case "$(basename "$file")" in
+              *"$VERSION"*) ;;
+              # rpm writes Starterdough-0.3.0-1.x86_64.rpm, the rest use _0.3.0_; both contain the version.
+              *) echo "::error::$file does not carry version $VERSION"; exit 1 ;;
+            esac
+          done
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.target || matrix.platform }}
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Draft release
+    # The gate: `needs` without `if: always()` means one failed matrix leg skips this job entirely,
+    # so a partial installer set never reaches a release even though `fail-fast: false` let the other
+    # legs finish.
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: installers-*
+          merge-multiple: true
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          ls -l dist
+          notes="Desktop installers for $VERSION. Unsigned unless the signing secrets are configured (see .github/workflows/desktop.yml)."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # A re-run of the same tag replaces the assets rather than deleting a release that may
+            # already have notes written on it.
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --draft --target "$GITHUB_SHA" \
+              --title "Starterdough $TAG" --notes "$notes"
+          fi
+          gh release view "$TAG" --json isDraft,assets --jq '"draft=\(.isDraft) assets=\(.assets | length)"' \
+            >> "$GITHUB_STEP_SUMMARY"

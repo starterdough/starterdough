@@ -1,0 +1,265 @@
+---
+import PageHeader from '../components/PageHeader.astro';
+import Base from '../layouts/Base.astro';
+import { apiUrl, contactEmail, docsUrl, pages, repoUrl } from '../lib/site';
+
+const { title, description } = pages.contact;
+// `contact.send` in the API contract: POST JSON { email, name?, message (10–2000 chars) }.
+const endpoint = `${apiUrl}/api/v1/contact`;
+
+const inputClass =
+	'w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground aria-[invalid=true]:border-destructive';
+---
+
+<Base {title} {description}>
+	<PageHeader
+		eyebrow="Contact"
+		title="Get in touch"
+		lead="Ask a question, report a problem, or leave your address to hear when something new ships."
+	/>
+
+	<section class="mx-auto w-full max-w-6xl px-6 pb-20">
+		<div class="grid gap-12 md:grid-cols-[3fr_2fr]">
+			<!--
+				The API answers JSON, and this is a static site with nowhere to render a reply — a native
+				POST would drop the visitor on a page of raw JSON. So the form has no `action`: the script
+				below sends JSON and renders the result in place, and without it the submit button stays
+				disabled and the <noscript> block offers another way to reach us.
+			-->
+			<form id="contact-form" class="flex max-w-xl flex-col gap-5" data-endpoint={endpoint}>
+				<noscript>
+					<p class="rounded-md border border-border bg-card p-4 text-sm">
+						This form needs JavaScript — it talks to our API directly and shows the answer here.
+						{contactEmail && (
+							<>
+								{' '}Without it, email{' '}
+								<a href={`mailto:${contactEmail}`} class="underline underline-offset-4">
+									{contactEmail}
+								</a>.
+							</>
+						)}
+						{!contactEmail && repoUrl && (
+							<>
+								{' '}Without it, open an issue on{' '}
+								<a href={repoUrl} class="underline underline-offset-4" rel="noopener">GitHub</a>.
+							</>
+						)}
+					</p>
+				</noscript>
+				<div class="flex flex-col gap-1.5">
+					<label for="contact-name" class="text-sm font-medium">
+						Name <span class="font-normal text-muted-foreground">(optional)</span>
+					</label>
+					<input
+						id="contact-name"
+						name="name"
+						type="text"
+						autocomplete="name"
+						maxlength="120"
+						class={inputClass}
+					>
+					<p class="text-sm text-destructive" data-error-for="name" hidden></p>
+				</div>
+
+				<div class="flex flex-col gap-1.5">
+					<label for="contact-email" class="text-sm font-medium">Email</label>
+					<input
+						id="contact-email"
+						name="email"
+						type="email"
+						autocomplete="email"
+						required
+						class={inputClass}
+					>
+					<p class="text-sm text-destructive" data-error-for="email" hidden></p>
+				</div>
+
+				<div class="flex flex-col gap-1.5">
+					<label for="contact-message" class="text-sm font-medium">Message</label>
+					<textarea
+						id="contact-message"
+						name="message"
+						rows="6"
+						required
+						minlength="10"
+						maxlength="2000"
+						aria-describedby="contact-message-hint"
+						class={inputClass}
+					></textarea>
+					<p id="contact-message-hint" class="text-xs text-muted-foreground">
+						10 to 2000 characters.
+					</p>
+					<p class="text-sm text-destructive" data-error-for="message" hidden></p>
+				</div>
+
+				<!-- Honeypot: people never see it, bots fill it, the API drops those silently. -->
+				<div class="hidden" aria-hidden="true">
+					<label for="contact-website">Website</label>
+					<input id="contact-website" name="website" type="text" tabindex="-1" autocomplete="off">
+				</div>
+
+				<!--
+					Cloudflare Turnstile (optional, not wired yet): render the widget here
+					(<div class="cf-turnstile" data-sitekey="…"></div> + the Turnstile script) and the
+					submit handler below will include its `cf-turnstile-response` as `turnstileToken`
+					once the API accepts one. See README → Contact form.
+				-->
+
+				<div class="flex flex-wrap items-center gap-4">
+					<!-- Enabled by the enhancement script; without JavaScript there is nothing to submit to. -->
+					<button
+						type="submit"
+						disabled
+						class="rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
+					>
+						Send message
+					</button>
+					<p id="contact-status" role="status" aria-live="polite" class="text-sm"></p>
+				</div>
+			</form>
+
+			<aside class="flex flex-col gap-6 text-sm" aria-label="Other ways to reach us">
+				{repoUrl && (
+					<div>
+						<h2 class="font-semibold">Found a bug?</h2>
+						<p class="mt-1 text-muted-foreground">
+							Issues and pull requests are welcome on
+							<a href={repoUrl} class="rounded-md underline underline-offset-4" rel="noopener">
+								GitHub</a
+							>.
+						</p>
+					</div>
+				)}
+				<div>
+					<h2 class="font-semibold">Looking for how-to?</h2>
+					<p class="mt-1 text-muted-foreground">
+						The <a href={docsUrl} class="rounded-md underline underline-offset-4">documentation</a>
+						covers setup, configuration, every feature area and the API.
+					</p>
+				</div>
+				<div>
+					<h2 class="font-semibold">What happens with your message</h2>
+					<p class="mt-1 text-muted-foreground">
+						It is emailed to the operator of this deployment with your address as reply-to. Nothing
+						is stored in a database; submissions are rate-limited per connection.
+					</p>
+				</div>
+			</aside>
+		</div>
+	</section>
+</Base>
+
+<script>
+	// Progressive enhancement for the contact form: JSON POST, inline success/error, field errors
+	// mapped from the API's validation issues. The form has no `action` — the submit button ships
+	// disabled and is enabled here, so a visitor without JavaScript is told rather than sent to a
+	// page of raw API JSON.
+	interface ApiIssue {
+		path?: (string | number)[];
+		message?: string;
+	}
+	interface ApiError {
+		code?: string;
+		message?: string;
+		data?: { issues?: ApiIssue[] };
+	}
+
+	const form = document.querySelector<HTMLFormElement>('#contact-form');
+	const status = document.querySelector<HTMLElement>('#contact-status');
+
+	const endpoint = form?.dataset.endpoint;
+
+	if (form && status && endpoint) {
+		const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]');
+		if (submit) submit.disabled = false;
+
+		const setStatus = (kind: 'pending' | 'success' | 'error', text: string) => {
+			status.textContent = text;
+			status.className = `text-sm ${kind === 'error' ? 'text-destructive' : kind === 'success' ? 'text-foreground' : 'text-muted-foreground'}`;
+		};
+
+		const clearErrors = () => {
+			for (const el of form.querySelectorAll<HTMLElement>('[data-error-for]')) {
+				el.textContent = '';
+				el.hidden = true;
+			}
+			for (const el of form.querySelectorAll('[aria-invalid]')) el.removeAttribute('aria-invalid');
+		};
+
+		const showIssues = (issues: ApiIssue[]) => {
+			let first: HTMLElement | null = null;
+			for (const issue of issues) {
+				const name = String(issue.path?.[0] ?? '');
+				const field = form.elements.namedItem(name);
+				const el = form.querySelector<HTMLElement>(`[data-error-for="${name}"]`);
+				if (!(field instanceof HTMLElement) || !el) continue;
+				el.textContent = issue.message ?? 'Please check this field.';
+				el.hidden = false;
+				field.setAttribute('aria-invalid', 'true');
+				first ??= field;
+			}
+			first?.focus();
+			return first !== null;
+		};
+
+		form.addEventListener('submit', async (event) => {
+			event.preventDefault();
+			clearErrors();
+
+			const data = new FormData(form);
+			const text = (key: string) => String(data.get(key) ?? '').trim();
+			const payload: Record<string, string> = { email: text('email'), message: text('message') };
+			if (text('name')) payload.name = text('name');
+			if (text('website')) payload.website = text('website'); // honeypot
+			// Turnstile: payload.turnstileToken = text('cf-turnstile-response');
+
+			if (submit) submit.disabled = true;
+			setStatus('pending', 'Sending…');
+
+			try {
+				const response = await fetch(endpoint, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+					body: JSON.stringify(payload),
+				});
+
+				if (response.ok) {
+					form.reset();
+					setStatus(
+						'success',
+						'Thanks — your message is on its way. Replies go to the address you gave.',
+					);
+					return;
+				}
+				if (response.status === 429) {
+					setStatus(
+						'error',
+						'Too many messages from this connection. Please wait a few minutes and try again.',
+					);
+					return;
+				}
+				if (response.status === 412) {
+					setStatus(
+						'error',
+						'The contact form is not configured on this deployment yet. Please reach us on GitHub instead.',
+					);
+					return;
+				}
+
+				const body = (await response.json().catch(() => null)) as ApiError | null;
+				if (response.status === 400 && body?.data?.issues && showIssues(body.data.issues)) {
+					setStatus('error', 'Please fix the highlighted fields.');
+					return;
+				}
+				setStatus(
+					'error',
+					body?.message ?? `Something went wrong (HTTP ${response.status}). Please try again.`,
+				);
+			} catch {
+				setStatus('error', 'Could not reach the server. Check your connection and try again.');
+			} finally {
+				if (submit) submit.disabled = false;
+			}
+		});
+	}
+</script>

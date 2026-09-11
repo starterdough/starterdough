@@ -1,0 +1,132 @@
+---
+import PageHeader from '../components/PageHeader.astro';
+import Base from '../layouts/Base.astro';
+import { features } from '../lib/features';
+import { appUrl, docsUrl, pages } from '../lib/site';
+
+const { title, description } = pages.features;
+
+const stack = [
+	{ layer: 'Runtime, package manager, test runner', choice: 'Bun' },
+	{ layer: 'Task orchestration', choice: 'Turborepo' },
+	{ layer: 'Lint and format', choice: 'Biome' },
+	{ layer: 'Application UI', choice: 'SvelteKit 2 + Svelte 5' },
+	{ layer: 'Public sites', choice: 'Astro 7 (+ Starlight)' },
+	{ layer: 'Styling', choice: 'Tailwind 4 with shared tokens' },
+	{ layer: 'UI kit', choice: 'shadcn-svelte on bits-ui' },
+	{ layer: 'Forms and client cache', choice: 'sveltekit-superforms (Zod 4) · TanStack Query' },
+	{ layer: 'API', choice: 'Hono + oRPC on Bun' },
+	{ layer: 'Database', choice: 'Postgres 17 + Drizzle' },
+	{ layer: 'Auth and admin', choice: 'Better Auth' },
+	{ layer: 'Desktop and mobile shells', choice: 'Tauri 2' },
+	{ layer: 'Edge and static hosting', choice: 'Cloudflare Workers static assets' },
+	{ layer: 'Server hosting', choice: 'Docker Compose + Caddy, Tailscale' },
+];
+---
+
+<Base {title} {description}>
+	<PageHeader
+		eyebrow="Features"
+		title="Everything before your first feature"
+		lead="Each item below is implemented once in the API and available on every surface. Where the source lives is noted so you can read the real thing."
+	/>
+
+	<nav aria-label="On this page" class="mx-auto w-full max-w-6xl px-6 pb-8">
+		<ul class="flex flex-wrap gap-2">
+			{features.map((feature) => (
+					<li>
+						<a
+							href={`#${feature.id}`}
+							class="inline-block rounded-full border border-border px-3 py-1 text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+						>
+							{feature.title}
+						</a>
+					</li>
+				))}
+		</ul>
+	</nav>
+
+	<div class="mx-auto w-full max-w-6xl px-6 pb-16">
+		{features.map((feature) => (
+				<section
+					id={feature.id}
+					class="grid gap-6 border-t border-border py-12 md:grid-cols-[1fr_2fr] md:gap-12"
+					aria-labelledby={`${feature.id}-heading`}
+				>
+					<div>
+						<h2 id={`${feature.id}-heading`} class="text-2xl font-semibold tracking-tight">
+							{feature.title}
+						</h2>
+						<p class="mt-3 text-muted-foreground">{feature.summary}</p>
+						{feature.code && (
+							<p class="mt-4 font-mono text-xs text-muted-foreground">{feature.code}</p>
+						)}
+					</div>
+					<ul class="flex flex-col gap-4">
+						{feature.details.map((detail) => (
+							<li class="flex gap-3">
+								<span class="mt-2.5 size-1.5 shrink-0 rounded-full bg-foreground" aria-hidden="true" />
+								<p class="text-sm leading-relaxed">{detail}</p>
+							</li>
+						))}
+					</ul>
+				</section>
+			))}
+	</div>
+
+	<section class="border-y border-border bg-card" aria-labelledby="stack-heading">
+		<div class="mx-auto w-full max-w-6xl px-6 py-16">
+			<h2 id="stack-heading" class="text-2xl font-semibold tracking-tight">The stack</h2>
+			<p class="mt-3 max-w-2xl text-muted-foreground">
+				Chosen for one JavaScript toolchain, static public surfaces, and an API that runs on any
+				long-lived host. The reasoning behind each pick is recorded in the repository’s decision
+				log.
+			</p>
+			<div class="mt-8 overflow-x-auto">
+				<table class="w-full text-sm">
+					<thead>
+						<tr class="border-b border-border text-left">
+							<th scope="col" class="py-2 pr-4 font-medium">Layer</th>
+							<th scope="col" class="py-2 font-medium">Choice</th>
+						</tr>
+					</thead>
+					<tbody>
+						{stack.map((row) => (
+								<tr class="border-b border-border">
+									<td class="py-2 pr-4 text-muted-foreground">{row.layer}</td>
+									<td class="py-2">{row.choice}</td>
+								</tr>
+							))}
+					</tbody>
+				</table>
+			</div>
+		</div>
+	</section>
+
+	<section class="mx-auto w-full max-w-6xl px-6 py-16">
+		<div
+			class="flex flex-wrap items-center justify-between gap-6 rounded-lg border border-border p-8"
+		>
+			<div>
+				<h2 class="text-xl font-semibold tracking-tight">See it running</h2>
+				<p class="mt-2 text-muted-foreground">
+					Sign up in the app, or read the guides for the details behind each feature.
+				</p>
+			</div>
+			<div class="flex flex-wrap gap-3">
+				<a
+					href={`${appUrl}/signup`}
+					class="rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90"
+				>
+					Create an account
+				</a>
+				<a
+					href={`${docsUrl}/guides/authentication/`}
+					class="rounded-md border border-border px-5 py-2.5 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
+				>
+					Read the guides
+				</a>
+			</div>
+		</div>
+	</section>
+</Base>

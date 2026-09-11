@@ -1,0 +1,29 @@
+{
+	"name": "@repo/site",
+	"private": true,
+	"version": "0.1.0",
+	"type": "module",
+	"description": "Public marketing site (Astro): landing, pricing, blog, SEO. Static output.",
+	"scripts": {
+		"dev": "astro dev --port 4321",
+		"build": "astro build",
+		"preview": "astro preview",
+		"check": "astro check",
+		"astro": "astro",
+		"deploy:cloudflare": "astro build && wrangler deploy",
+		"clean": "rm -rf dist .astro"
+	},
+	"dependencies": {
+		"@astrojs/rss": "^4.0.19",
+		"@astrojs/sitemap": "^3.7.4",
+		"@repo/ui": "workspace:*",
+		"astro": "catalog:",
+		"astro-og-canvas": "^0.13.1"
+	},
+	"devDependencies": {
+		"@astrojs/check": "^0.9.10",
+		"@tailwindcss/vite": "catalog:",
+		"tailwindcss": "catalog:",
+		"typescript": "catalog:"
+	}
+}

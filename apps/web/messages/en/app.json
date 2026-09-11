@@ -1,0 +1,12 @@
+{
+	"$schema": "https://inlang.com/schema/inlang-message-format",
+	"app_confirm_type_after": "to continue.",
+	"app_confirm_type_before": "Type",
+	"app_label_members": "Members",
+	"app_label_plan": "Plan",
+	"app_section_danger_zone": "Danger zone",
+	"app_section_general": "General",
+	"app_storage_title": "Storage",
+	"app_storage_used": "{used} used",
+	"app_storage_used_of": "{used} of {limit} used"
+}

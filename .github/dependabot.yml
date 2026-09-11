@@ -1,0 +1,31 @@
+# Automated dependency PRs.
+#
+# `github-actions` only, on purpose. Every action in .github/workflows/* is pinned to a full commit
+# SHA (a moving tag such as `@v5` is whatever that repository points it at when the job starts, and
+# `deploy.yml` holds SOPS_AGE_KEY). Pinning means nothing updates on its own, so something has to
+# open the bump PRs: Dependabot rewrites the SHA *and* the `# v5.1.0` comment next to it.
+#
+# No `npm` ecosystem entry: this workspace resolves dependencies through Bun's `catalog:` in the root
+# package.json, which Dependabot's npm updater does not understand — it reads the literal
+# `"catalog:"` string as a version. It would either open nothing or open PRs that break the lockfile.
+# Upgrades are done by hand (`bun outdated`, then the catalog entry) and the versions in step are
+# recorded in HANDOFF.md's "Upgrade watch". Revisit when Dependabot learns Bun catalogs.
+#
+# No `cargo` entry either: apps/native/src-tauri's dependency tree is Tauri's, and the Tauri CLI
+# rewrites Cargo.toml on every run — a bot PR there fights the generator. `bun run tauri` and the
+# CI `rust` job cover it.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # One PR that moves every action, rather than five: the pins are reviewed together and each one
+    # costs a full CI run.
+    groups:
+      actions:
+        patterns: ['*']
+    commit-message:
+      prefix: 'ci'
+    labels: ['dependencies']
+    open-pull-requests-limit: 3

@@ -1,0 +1,273 @@
+# Container images + (optional) deploy to your server.
+#
+# On every push to `main` and every `v*` tag this builds the five images behind infra/compose.yml and
+# pushes them to GitHub Container Registry as ghcr.io/<owner>/<repo>/<name>:<tag>, tagged with the
+# commit (`sha-abc1234`), the branch or version (`main`, `1.2.0`) and `latest` on main. Nothing to
+# configure: GITHUB_TOKEN may push to this repository's packages. They are private until you make
+# them public (repository → Packages → package settings) or `docker login ghcr.io` on the server.
+#
+# Then, when the repository *variable* DEPLOY_HOST is set, it deploys over SSH by running
+# infra/scripts/deploy.sh on the server (checkout of this commit, `docker compose pull`, `up -d`,
+# readiness check). Variables (Settings → Secrets and variables → Actions → Variables):
+#   DEPLOY_HOST           the server (hostname, IP, or its tailnet name)
+#   DEPLOY_USER           SSH user, default `deploy` (infra/scripts/provision.sh creates it)
+#   DEPLOY_PATH           the clone on the server, default /opt/starterdough
+#   DEPLOY_VIA_TAILSCALE  'true' when the server is reachable only over your tailnet
+#   IMAGE_PLATFORMS       default linux/amd64; add linux/arm64 for an ARM VPS (slower builds via QEMU)
+#   SITE_URL DOCS_URL WEB_URL API_URL   REQUIRED: baked into the static sites (caddy image) at build
+#                         time, and API_URL also into the app's Content-Security-Policy (web image).
+#                         The `caddy` image fails the build while any of them is unset rather
+#                         than shipping example.com URLs to your visitors.
+# Secrets:
+#   DEPLOY_SSH_KEY        private key whose public half is in the deploy user's authorized_keys
+#   SOPS_AGE_KEY          optional: decrypts infra/env/production.enc.env into the server's .env first
+#   GHCR_PULL_TOKEN       optional: a PAT with `read:packages` used to log the server into GHCR. Without
+#                         it the job's own GITHUB_TOKEN is used — that works for this deploy but expires
+#                         with the job, so a `docker compose pull` by hand later needs its own login
+#                         (a PAT, or public packages).
+#   TS_OAUTH_CLIENT_ID / TS_OAUTH_SECRET   optional: a Tailscale OAuth client (tag:ci) for DEPLOY_VIA_TAILSCALE
+#
+# The deploy also passes IMAGE_REGISTRY (this repository's own GHCR namespace, lowercased) to
+# deploy.sh, which pins it in the server's .env — a fork never has to edit that row by hand.
+#
+# SSH host keys are accepted on first use (`StrictHostKeyChecking accept-new`): a deliberate
+# trade-off. Pinning the key would mean a repository variable to update on every rebuild of the box;
+# accept-new still refuses a *changed* key, which is the attack that matters after the first deploy.
+#
+# Every third-party action is pinned to a full commit SHA (version in the trailing comment). This job
+# holds SOPS_AGE_KEY, which decrypts every production secret, so a moving tag like `@v3` — whatever
+# that repository points it at when the job starts — is not an acceptable dependency here.
+# .github/dependabot.yml opens the bump PRs and rewrites both the SHA and the comment.
+#
+# Rollback: run the workflow by hand (Actions → Deploy → Run workflow) with `tag` set to a previous
+# `sha-…` (or a released version like `1.2.0`) — the build is skipped and that tag is deployed, with
+# the matching commit checked out on the server. Preview environments per PR are not part of this
+# workflow; Coolify/Dokploy (or a second compose project per branch) do that well.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing image tag to deploy (e.g. sha-abc1234). Empty = build this commit first.'
+        required: false
+        default: ''
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+# Per job below: only `images` may write packages.
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository }}
+
+jobs:
+  images:
+    name: Image (${{ matrix.name }})
+    if: github.event_name != 'workflow_dispatch' || inputs.tag == ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: api
+            context: .
+            dockerfile: apps/api/Dockerfile
+          - name: web
+            context: .
+            dockerfile: apps/web/Dockerfile
+            # The app's Content-Security-Policy is baked from these — see apps/web/Dockerfile.
+            # Without API_URL the policy keeps its localhost default and the browser blocks every
+            # call the app makes to the API. The optional four only widen the policy when that
+            # integration is switched on.
+            build_args: |
+              PUBLIC_API_URL=${{ vars.API_URL }}
+              PUBLIC_STORAGE_ORIGIN=${{ vars.PUBLIC_STORAGE_ORIGIN }}
+              PUBLIC_SENTRY_DSN=${{ vars.PUBLIC_SENTRY_DSN }}
+              PUBLIC_POSTHOG_KEY=${{ vars.PUBLIC_POSTHOG_KEY }}
+              PUBLIC_POSTHOG_HOST=${{ vars.PUBLIC_POSTHOG_HOST }}
+          - name: caddy
+            context: .
+            dockerfile: infra/docker/Dockerfile.static
+            # The static sites bake their canonical URLs at build time. No fallbacks — see the
+            # guard step below.
+            build_args: |
+              SITE_URL=${{ vars.SITE_URL }}
+              DOCS_URL=${{ vars.DOCS_URL }}
+              PUBLIC_APP_URL=${{ vars.WEB_URL }}
+              PUBLIC_API_URL=${{ vars.API_URL }}
+          - name: backup
+            context: .
+            dockerfile: infra/backup/Dockerfile
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: The static sites need their canonical URLs
+        if: matrix.name == 'caddy'
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+          DOCS_URL: ${{ vars.DOCS_URL }}
+          WEB_URL: ${{ vars.WEB_URL }}
+          API_URL: ${{ vars.API_URL }}
+        run: |
+          missing=
+          for name in SITE_URL DOCS_URL WEB_URL API_URL; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error title=Missing repository variables::Set$missing under Settings → Secrets and variables → Actions → Variables. They are baked into the marketing site and the docs when this image is built (canonical URLs, sitemap, RSS, the origins the pages link to and call), so they cannot be changed afterwards — and defaulting them to example.com would publish someone else's domain."
+            exit 1
+          fi
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+        if: vars.IMAGE_PLATFORMS != '' && vars.IMAGE_PLATFORMS != 'linux/amd64'
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ matrix.name }}
+          tags: |
+            type=sha,prefix=sha-
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable={{is_default_branch}}
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ vars.IMAGE_PLATFORMS || 'linux/amd64' }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+          build-args: ${{ matrix.build_args }}
+
+  deploy:
+    name: Deploy to ${{ vars.DEPLOY_HOST }}
+    needs: [images]
+    # Runs after a successful build, or straight away when an existing tag was requested.
+    if: |
+      always() && vars.DEPLOY_HOST != '' &&
+      (needs.images.result == 'success' || needs.images.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      # So the fallback GITHUB_TOKEN may log the server into GHCR and pull the images.
+      packages: read
+    # Everything a `run:` needs comes through env, never `${{ }}` inside the script: the values reach
+    # `ssh target "…"` and `git checkout`, so they must be shell-quoted, not templated.
+    env:
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER || 'deploy' }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/starterdough' }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # Tags and their commits: a requested `1.2.0` image tag is resolved to the commit its git
+          # tag points at (below), which a shallow clone cannot do.
+          fetch-depth: 0
+      - id: tag
+        name: Resolve the image tag (and matching commit) to deploy
+        env:
+          REQUESTED: ${{ inputs.tag }}
+        run: |
+          if [ -n "$REQUESTED" ]; then
+            # Image tags are [A-Za-z0-9._-] and never start with `-` (it would become an option).
+            case "$REQUESTED" in ''|*[!A-Za-z0-9._-]*|-*) echo "invalid tag: $REQUESTED" >&2; exit 1 ;; esac
+            echo "value=$REQUESTED" >> "$GITHUB_OUTPUT"
+            # The server checks out the commit the images were built from, so the compose file, the
+            # migrations and the images always match — never today's `main` under yesterday's images.
+            case "$REQUESTED" in
+              sha-*)
+                ref="${REQUESTED#sha-}"
+                case "$ref" in ''|*[!0-9a-f]*) echo "invalid sha tag: $REQUESTED" >&2; exit 1 ;; esac
+                echo "ref=$ref" >> "$GITHUB_OUTPUT" ;;
+              *)
+                # A released version (`1.2.0`, pushed as git tag `v1.2.0`): resolve it to its commit.
+                git fetch --quiet --tags --force origin
+                ref="$(git rev-list -n1 "refs/tags/v$REQUESTED" 2>/dev/null || true)"
+                [ -n "$ref" ] || ref="$(git rev-list -n1 "refs/tags/$REQUESTED" 2>/dev/null || true)"
+                if [ -z "$ref" ]; then
+                  echo "::error title=Cannot resolve the requested tag::'$REQUESTED' is neither a sha-<commit> image tag nor a git tag in this repository, so there is no commit to deploy alongside it. Deploying it would run the current main against those images. Use the sha-<commit> tag of the build you want (Packages → the api image), or a version tag such as 1.2.0."
+                  exit 1
+                fi
+                echo "ref=$ref" >> "$GITHUB_OUTPUT" ;;
+            esac
+          else
+            echo "value=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            echo "ref=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3.3.0
+        if: vars.DEPLOY_VIA_TAILSCALE == 'true'
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+      - name: SSH key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          # StrictHostKeyChecking=accept-new: trust the host key on first use, refuse it if it ever
+          # changes. Deliberate — pinning it would mean a repository variable to update every time the
+          # box is rebuilt, and the runner reaches the host over the tailnet or a known IP.
+          printf 'Host target\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/deploy\n  StrictHostKeyChecking accept-new\n' \
+            "$DEPLOY_HOST" "$DEPLOY_USER" > ~/.ssh/config
+      - name: Ship the environment file (only when SOPS_AGE_KEY is set)
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+          # Pinned, and verified against the release's own checksum file before it runs: this binary
+          # gets to see every production secret.
+          SOPS_VERSION: v3.13.3
+        run: |
+          if [ -z "$SOPS_AGE_KEY" ] || [ ! -f infra/env/production.enc.env ]; then
+            echo "no SOPS_AGE_KEY or no infra/env/production.enc.env — the server keeps its .env"; exit 0
+          fi
+          base="https://github.com/getsops/sops/releases/download/$SOPS_VERSION"
+          binary="sops-$SOPS_VERSION.linux.amd64"
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o "$binary" "$base/$binary"
+          curl -fsSL -o checksums.txt "$base/sops-$SOPS_VERSION.checksums.txt"
+          # The file lists every platform; check only the line for the binary we downloaded.
+          grep " $binary\$" checksums.txt | sha256sum -c -
+          sudo install -m 755 "$binary" /usr/local/bin/sops
+          cd "$GITHUB_WORKSPACE"
+          sops --decrypt --input-type dotenv --output-type dotenv infra/env/production.enc.env > /tmp/.env
+          # Written over stdin and locked to the owner in the same hop (secrets: never world-readable).
+          # shellcheck disable=SC2029  # $DEPLOY_PATH expands here on purpose, single-quoted for the remote shell
+          ssh target "mkdir -p '$DEPLOY_PATH' && cat > '$DEPLOY_PATH/.env' && chmod 600 '$DEPLOY_PATH/.env'" < /tmp/.env
+          rm -f /tmp/.env
+      - name: Log the server into GHCR
+        env:
+          GHCR_USER: ${{ github.actor }}
+          # A PAT with read:packages if you set one, else this job's token — which expires when the job
+          # ends, so a later `docker compose pull` by hand needs its own login (see infra/README.md).
+          GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN || github.token }}
+        run: |
+          # shellcheck disable=SC2029  # $GHCR_USER expands here on purpose, single-quoted for the remote shell
+          printf '%s\n' "$GHCR_TOKEN" | ssh target "docker login ghcr.io -u '$GHCR_USER' --password-stdin"
+      - name: Deploy
+        env:
+          IMAGE_TAG: ${{ steps.tag.outputs.value }}
+          GIT_REF: ${{ steps.tag.outputs.ref }}
+        run: |
+          # GHCR namespaces are lowercase; github.repository keeps the owner's casing.
+          IMAGE_REGISTRY="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          # shellcheck disable=SC2029  # expands here on purpose: validated tag/ref, single-quoted for the remote shell
+          ssh target "cd '$DEPLOY_PATH' && IMAGE_REGISTRY='$IMAGE_REGISTRY' IMAGE_TAG='$IMAGE_TAG' GIT_REF='$GIT_REF' bash infra/scripts/deploy.sh"

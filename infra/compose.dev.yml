@@ -1,0 +1,26 @@
+# Local development dependencies only. Apps run on the host with `bun run dev`.
+#   bun run db:up      (docker compose -f infra/compose.dev.yml up -d)
+name: starterdough-dev
+
+services:
+  postgres:
+    # Postgres 17, from the same image the paid edition needs. Same major as the plain
+    # postgres:17 image, so an existing pgdata volume is reused as is.
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: starterdough
+      POSTGRES_PASSWORD: starterdough
+      POSTGRES_DB: starterdough
+    ports:
+      # Host 5432 is often already taken (local Postgres, other stacks). Override with POSTGRES_PORT.
+      - '127.0.0.1:${POSTGRES_PORT:-5433}:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U starterdough -d starterdough']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

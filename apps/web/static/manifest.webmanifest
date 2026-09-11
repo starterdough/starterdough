@@ -1,0 +1,20 @@
+{
+	"name": "Starterdough",
+	"short_name": "Starterdough",
+	"description": "Bun-native, serve-anywhere SaaS starter",
+	"start_url": "/app",
+	"scope": "/",
+	"display": "standalone",
+	"background_color": "#ffffff",
+	"theme_color": "#111111",
+	"icons": [
+		{ "src": "/icons/icon-256.png", "sizes": "256x256", "type": "image/png" },
+		{ "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+		{
+			"src": "/icons/icon-512-maskable.png",
+			"sizes": "512x512",
+			"type": "image/png",
+			"purpose": "maskable"
+		}
+	]
+}

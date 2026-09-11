@@ -1,0 +1,18 @@
+# Git hooks, installed by `bun install` (root `prepare` script). Skip once with `LEFTHOOK=0 git …`.
+# Local overrides go in `lefthook-local.yml` (gitignored).
+
+pre-commit:
+  commands:
+    biome:
+      # Format + lint only what is staged; Biome's own include list decides which files it handles.
+      run: bunx biome check --write --no-errors-on-unmatched --files-ignore-unknown=true {staged_files}
+      stage_fixed: true
+
+pre-push:
+  commands:
+    verify:
+      # The same three gates CI runs, in the same order, so a push that passes the hook passes CI:
+      # Biome over the repo, then typecheck every workspace, then the unit tests. Turborepo caches
+      # `check` and `test`, so a second push with nothing changed is close to instant.
+      # `LEFTHOOK=0 git push` skips it; `bun run verify` runs it by hand.
+      run: bun run verify

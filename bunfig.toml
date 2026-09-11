@@ -1,0 +1,12 @@
+# Bun configuration — https://bun.com/docs/runtime/bunfig
+
+[install]
+# Shared dependencies are hoisted to the root node_modules (Bun's default for
+# workspaces). Switch to "isolated" (pnpm-style) if phantom dependencies bite.
+linker = "hoisted"
+exact = false
+
+[test]
+# `bun test` runs the pure-TypeScript packages and the API.
+# Svelte component tests use Vitest browser mode inside apps/web (see its vite.config.ts).
+coverage = false

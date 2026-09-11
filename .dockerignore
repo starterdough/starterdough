@@ -1,0 +1,49 @@
+# What `docker build` (context `.`) must NOT ship to the daemon. Every image installs its own
+# dependencies and runs its own build, so anything generated locally is dead weight — and on a
+# developer machine `apps/native/src-tauri/target` alone is several gigabytes.
+# Nothing tracked in git matches these patterns; check that before adding one.
+
+.git
+node_modules
+**/node_modules
+
+# Secrets never belong in an image layer (compose passes the values as environment variables).
+# The `**/` patterns are the ones that matter: `apps/api/` and `packages/` are copied into the api
+# image's *runtime* stage and `apps/web/` into the web image's build stage, so a developer's
+# `apps/api/.env` or `apps/web/.env.production` would otherwise be published with the image. The
+# bare `.env` lines cover the repository root, which the `**/` forms do not match.
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+
+# Rust build artifacts of the Tauri shells (the images do not build them)
+apps/native/src-tauri/target
+apps/native/src-tauri/gen
+
+# Build output — every Dockerfile rebuilds what it needs inside the image
+**/dist
+**/build
+**/.svelte-kit
+**/.astro
+**/.turbo
+**/.wrangler
+
+# Uploaded documents and backups from a local run
+apps/api/data
+data
+backups
+
+# Python
+**/.venv
+**/__pycache__
+
+# Test artifacts
+**/test-results
+**/playwright-report
+
+# Maintainer working notes, not part of the kit
+HANDOFF.md
+ROADMAP.md

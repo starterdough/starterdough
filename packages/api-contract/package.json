@@ -1,0 +1,21 @@
+{
+	"name": "@repo/api-contract",
+	"private": true,
+	"version": "0.0.0",
+	"type": "module",
+	"description": "The API contract (oRPC + Zod). Single source of truth for every client and for the OpenAPI document.",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"scripts": {
+		"check": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@orpc/contract": "catalog:",
+		"zod": "catalog:"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"typescript": "catalog:"
+	}
+}

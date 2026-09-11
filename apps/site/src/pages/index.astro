@@ -1,0 +1,284 @@
+---
+import Base from '../layouts/Base.astro';
+import { features } from '../lib/features';
+import { appUrl, docsUrl, pages, repoUrl, SITE_TAGLINE } from '../lib/site';
+import { githubMark, stack } from '../lib/stack';
+
+const { title, description } = pages.home;
+
+const consequences = [
+	{
+		title: 'Add a feature once.',
+		body: 'Declare it in the contract, implement it in the API, call it from any client with full types. REST and OpenAPI come for free.',
+	},
+	{
+		title: 'Ship the frontend anywhere.',
+		body: 'The app builds for Node, Cloudflare Workers or as a static SPA with one environment variable.',
+	},
+	{
+		title: 'Auth is transport-aware, not platform-aware.',
+		body: 'Browsers use an httpOnly cookie; the native shells use a bearer token. The UI code is identical.',
+	},
+	{
+		title: 'The database has exactly one client.',
+		body: 'Only the API touches Postgres. Frontends cannot reach it even by accident.',
+	},
+];
+
+const steps = [
+	{
+		title: 'A component calls the typed client',
+		body: 'A Svelte component calls api.account.me() from the shared API client.',
+	},
+	{
+		title: 'The request goes over HTTP',
+		body: 'The client POSTs to /rpc/account/me. In the browser the session cookie rides along; in a native shell a bearer token is attached. During server rendering the origin is rewritten to the internal API and the browser’s cookies are forwarded.',
+	},
+	{
+		title: 'The API resolves the session and runs the procedure',
+		body: 'Hono routes to the oRPC handler, requireAuth resolves the session through Better Auth, and the procedure runs against Drizzle.',
+	},
+	{
+		title: 'The same procedure is plain REST',
+		body: 'GET /api/v1/me returns the same data and is documented at /api/v1/openapi.json — that is what curl and third parties use.',
+	},
+];
+---
+
+<Base {title} {description}>
+	<!-- Hero -->
+	<section class="mx-auto w-full max-w-6xl px-6 pt-20 pb-16 md:pt-28 md:pb-24">
+		<p class="mb-4 text-sm font-medium text-muted-foreground">Bun-native SaaS starter</p>
+		<h1 class="max-w-3xl text-5xl font-semibold tracking-tight md:text-6xl">{SITE_TAGLINE}</h1>
+		<p class="mt-6 max-w-2xl text-lg text-muted-foreground">
+			Starterdough is the Svelte and Bun answer to next-forge, Makerkit and ShipFast:
+			authentication, accounts and an admin surface — built once and served as a website, an
+			installable PWA, a desktop app, a mobile app, or self-hosted on your own box.
+		</p>
+		<div class="mt-8 flex flex-wrap gap-3">
+			<a
+				href={appUrl}
+				class="rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90"
+			>
+				Open the app
+			</a>
+			<a
+				href={docsUrl}
+				class="rounded-md border border-border px-5 py-2.5 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
+			>
+				Read the docs
+			</a>
+			{repoUrl && (
+				<a
+					href={repoUrl}
+					class="flex items-center gap-2 rounded-md border border-border px-5 py-2.5 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+					rel="noopener"
+				>
+					<svg
+						class="size-4 shrink-0"
+						viewBox="0 0 24 24"
+						fill="currentColor"
+						aria-hidden="true"
+						focusable="false"
+					>
+						<path d={githubMark} />
+					</svg>
+					View on GitHub
+				</a>
+			)}
+		</div>
+		<ul class="mt-12 flex flex-wrap gap-2" aria-label="Stack">
+			{stack.map((item) => (
+				<li
+					class="flex items-center gap-2 rounded-full border border-border bg-card py-1.5 pr-3.5 pl-2.5 text-sm font-medium"
+				>
+					{/* The mark is decoration; the adjacent text is what a screen reader reads. */}
+					<svg
+						class="size-4 shrink-0"
+						style={`color:${item.color}`}
+						viewBox="0 0 24 24"
+						fill="currentColor"
+						aria-hidden="true"
+						focusable="false"
+					>
+						<path d={item.path} />
+					</svg>
+					{item.name}
+				</li>
+			))}
+		</ul>
+	</section>
+
+	<!-- One HTTP API, every surface -->
+	<section class="border-y border-border bg-card" aria-labelledby="api-heading">
+		<div class="mx-auto w-full max-w-6xl px-6 py-16 md:py-24">
+			<div class="max-w-2xl">
+				<h2 id="api-heading" class="text-3xl font-semibold tracking-tight md:text-4xl">
+					One HTTP API, every surface
+				</h2>
+				<p class="mt-4 text-lg text-muted-foreground">
+					Every surface is a thin client of one HTTP API. The SvelteKit app, the Tauri desktop and
+					mobile shells, the dynamic bits of the Astro sites and CLIs all consume the same API — the
+					same auth, the same procedures, the same OpenAPI document. No Tauri IPC, no per-platform
+					data layer, no duplicated business logic.
+				</p>
+			</div>
+
+			<figure class="mt-12">
+				<div class="grid gap-4 md:grid-cols-[1fr_auto_1fr_auto_1fr] md:items-center">
+					<ul class="flex flex-col gap-3" aria-label="Clients">
+						<li class="rounded-lg border border-border bg-background p-4">
+							<p class="font-medium">Public sites</p>
+							<p class="mt-1 text-sm text-muted-foreground">
+								Astro, static — marketing, blog, docs
+							</p>
+						</li>
+						<li class="rounded-lg border border-border bg-background p-4">
+							<p class="font-medium">Application</p>
+							<p class="mt-1 text-sm text-muted-foreground">
+								SvelteKit, one codebase — SSR on Node or Cloudflare, static SPA, PWA install
+							</p>
+						</li>
+						<li class="rounded-lg border border-border bg-background p-4">
+							<p class="font-medium">Native shells</p>
+							<p class="mt-1 text-sm text-muted-foreground">
+								Tauri 2, no IPC — desktop (Windows, macOS, Linux) and mobile (Android, iOS)
+							</p>
+						</li>
+					</ul>
+					<div class="hidden text-2xl text-muted-foreground md:block" aria-hidden="true">→</div>
+					<div class="rounded-lg border-2 border-foreground bg-background p-5">
+						<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+							The one API
+						</p>
+						<p class="mt-1 font-semibold">Hono on Bun</p>
+						<ul class="mt-2 space-y-1 text-sm text-muted-foreground">
+							<li>Better Auth — sessions, admin</li>
+							<li>oRPC — typed RPC + REST with OpenAPI 3.1</li>
+						</ul>
+					</div>
+					<div class="hidden text-2xl text-muted-foreground md:block" aria-hidden="true">→</div>
+					<ul class="flex flex-col gap-3" aria-label="Data and compute">
+						<li class="rounded-lg border border-border bg-background p-4">
+							<p class="font-medium">Postgres</p>
+							<p class="mt-1 text-sm text-muted-foreground">
+								Drizzle on Bun’s native driver — the API is its only client
+							</p>
+						</li>
+					</ul>
+				</div>
+				<figcaption class="mt-4 text-sm text-muted-foreground">
+					Clients on the left talk HTTPS to the API; only the API talks to Postgres.
+				</figcaption>
+			</figure>
+
+			<dl class="mt-12 grid gap-6 sm:grid-cols-2">
+				{consequences.map((item) => (
+						<div>
+							<dt class="font-medium">{item.title}</dt>
+							<dd class="mt-1 text-sm text-muted-foreground">{item.body}</dd>
+						</div>
+					))}
+			</dl>
+		</div>
+	</section>
+
+	<!-- Feature grid -->
+	<section class="mx-auto w-full max-w-6xl px-6 py-16 md:py-24" aria-labelledby="features-heading">
+		<div class="flex flex-wrap items-end justify-between gap-4">
+			<div class="max-w-2xl">
+				<h2 id="features-heading" class="text-3xl font-semibold tracking-tight md:text-4xl">
+					What ships
+				</h2>
+				<p class="mt-4 text-lg text-muted-foreground">
+					The parts every SaaS needs before its first feature, implemented once and available on
+					every surface.
+				</p>
+			</div>
+			<a
+				href={pages.features.path}
+				class="rounded-md text-sm font-medium text-muted-foreground hover:text-foreground"
+			>
+				All features →
+			</a>
+		</div>
+		<ul class="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+			{features.map((feature) => (
+					<li class="rounded-lg border border-border bg-card p-5">
+						<h3 class="font-semibold">
+							<a
+								href={`${pages.features.path}#${feature.id}`}
+								class="rounded-md hover:underline"
+							>
+								{feature.title}
+							</a>
+						</h3>
+						<p class="mt-2 text-sm text-muted-foreground">{feature.summary}</p>
+					</li>
+				))}
+		</ul>
+	</section>
+
+	<!-- How it works -->
+	<section class="border-y border-border bg-card" aria-labelledby="how-heading">
+		<div class="mx-auto w-full max-w-6xl px-6 py-16 md:py-24">
+			<div class="max-w-2xl">
+				<h2 id="how-heading" class="text-3xl font-semibold tracking-tight md:text-4xl">
+					How a request flows
+				</h2>
+				<p class="mt-4 text-lg text-muted-foreground">
+					The same four steps on the web, in the desktop and mobile shells, and for third-party
+					callers.
+				</p>
+			</div>
+			<ol class="mt-10 grid gap-6 md:grid-cols-2">
+				{steps.map((step, index) => (
+						<li class="flex gap-4">
+							<span
+								class="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-sm font-semibold text-primary-foreground"
+								aria-hidden="true"
+							>
+								{index + 1}
+							</span>
+							<div>
+								<h3 class="font-medium">{step.title}</h3>
+								<p class="mt-1 text-sm text-muted-foreground">{step.body}</p>
+							</div>
+						</li>
+					))}
+			</ol>
+		</div>
+	</section>
+
+	<!-- CTA -->
+	<section class="mx-auto w-full max-w-6xl px-6 py-16 md:py-24" aria-labelledby="start-heading">
+		<div class="grid gap-10 md:grid-cols-2 md:items-center">
+			<div>
+				<h2 id="start-heading" class="text-3xl font-semibold tracking-tight md:text-4xl">
+					Start with the repository
+				</h2>
+				<p class="mt-4 text-lg text-muted-foreground">
+					Bun, Docker for Postgres, and a handful of commands. Rust is only needed for the native
+					shells.
+				</p>
+				<div class="mt-8 flex flex-wrap gap-3">
+					<a
+						href={`${docsUrl}/start/quickstart/`}
+						class="rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90"
+					>
+						Read the quickstart
+					</a>
+				</div>
+			</div>
+			<pre
+				class="rounded-lg border border-border bg-card p-5 font-mono text-sm leading-7 whitespace-pre-wrap break-words"
+			><code>bun install
+cp .env.example .env
+cp apps/web/.env.example apps/web/.env
+# put a generated value in .env as BETTER_AUTH_SECRET:
+bun -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+bun run db:up && bun run db:migrate
+bun run dev:app     # api on :3000 + web on :5173</code></pre>
+		</div>
+	</section>
+</Base>
