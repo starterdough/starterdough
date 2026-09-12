@@ -1,0 +1,15 @@
+# Fires demo-reset.service every night at 04:00 UTC. Daily because whoever signs up gets a day to
+# look around, while their address and whatever they typed live on the box for at most a day; 04:00
+# UTC is the quiet hour for Europe and the Americas, and after production's 02:30 backup.
+# Another cadence: `systemctl edit demo-reset.timer`, then in the override an empty `OnCalendar=`
+# (clears this one) followed by the new one, in systemd.time(7) syntax. `systemd-analyze calendar
+# 'Sun 04:00'` prints when an expression fires next, `systemctl list-timers` when this one does,
+# `journalctl -u demo-reset` what the last run did.
+[Unit]
+Description=Nightly reset of the public demo
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 UTC
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,35 @@
+---
+import { type CollectionEntry, getCollection, render } from 'astro:content';
+import Base from '../../layouts/Base.astro';
+import { formatDate } from '../../lib/site';
+
+export async function getStaticPaths() {
+	const docs = await getCollection('legal');
+	return docs.map((doc) => ({ params: { slug: doc.id }, props: { doc } }));
+}
+
+interface Props {
+	doc: CollectionEntry<'legal'>;
+}
+
+const { doc } = Astro.props;
+const { Content } = await render(doc);
+const { title, description, updated } = doc.data;
+---
+
+<Base {title} {description}>
+	<article class="mx-auto w-full max-w-6xl px-6 pt-16 pb-20 md:pt-20">
+		<header class="max-w-2xl">
+			<p class="text-sm text-muted-foreground">
+				Legal
+				<span aria-hidden="true"> · </span>
+				Updated <time datetime={updated.toISOString()}>{formatDate(updated)}</time>
+			</p>
+			<h1 class="mt-3 text-4xl font-semibold tracking-tight md:text-5xl">{title}</h1>
+			<p class="mt-4 text-lg text-muted-foreground">{description}</p>
+		</header>
+		<div class="prose mt-10">
+			<Content />
+		</div>
+	</article>
+</Base>

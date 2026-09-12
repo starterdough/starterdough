@@ -1,0 +1,5 @@
+# Crawl the public pages. The signed-in app and the admin console are behind a session, so
+# indexing them only produces sign-in redirects in search results.
+User-agent: *
+Disallow: /app
+Disallow: /admin

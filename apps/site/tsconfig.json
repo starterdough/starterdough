@@ -1,0 +1,14 @@
+{
+	// Astro's preset for the JSX/`.astro` handling, then the workspace's strict base on top —
+	// `noUncheckedIndexedAccess` and friends reach this app's `src/**/*.ts` from here.
+	"extends": ["astro/tsconfigs/strict", "../../packages/tsconfig/base.json"],
+	"compilerOptions": {
+		// Astro runs TypeScript directly and expects top-level await; the shared base targets ES2023
+		// for the packages that are bundled.
+		"target": "ESNext",
+		"module": "ESNext",
+		"lib": ["ESNext", "DOM", "DOM.Iterable"]
+	},
+	"include": [".astro/types.d.ts", "**/*"],
+	"exclude": ["dist"]
+}

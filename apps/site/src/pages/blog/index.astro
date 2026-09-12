@@ -1,0 +1,53 @@
+---
+import { getCollection } from 'astro:content';
+import PageHeader from '../../components/PageHeader.astro';
+import Base from '../../layouts/Base.astro';
+import { formatDate, pages } from '../../lib/site';
+
+const { title, description } = pages.blog;
+
+const posts = (await getCollection('blog')).sort(
+	(a, b) => b.data.pubDate.getTime() - a.data.pubDate.getTime(),
+);
+---
+
+<Base {title} {description}>
+	<PageHeader
+		eyebrow="Blog"
+		title="Notes from building Starterdough"
+		lead="Why the architecture looks the way it does."
+	>
+		<p class="mt-4 text-sm">
+			<a href="/rss.xml" class="rounded-md underline underline-offset-4">Subscribe with RSS</a>
+		</p>
+	</PageHeader>
+
+	<div class="mx-auto w-full max-w-6xl px-6 pb-20">
+		<ul class="flex flex-col">
+			{posts.map((post) => (
+					<li class="grid gap-3 border-t border-border py-8 md:grid-cols-[12rem_1fr] md:gap-10">
+						<time datetime={post.data.pubDate.toISOString()} class="text-sm text-muted-foreground">
+							{formatDate(post.data.pubDate)}
+						</time>
+						<article>
+							<h2 class="text-2xl font-semibold tracking-tight">
+								<a href={`/blog/${post.id}/`} class="rounded-md hover:underline">
+									{post.data.title}
+								</a>
+							</h2>
+							<p class="mt-2 max-w-2xl text-muted-foreground">{post.data.description}</p>
+							{post.data.tags.length > 0 && (
+								<ul class="mt-3 flex flex-wrap gap-2" aria-label="Tags">
+									{post.data.tags.map((tag) => (
+										<li class="rounded-full border border-border px-2.5 py-0.5 text-xs text-muted-foreground">
+											{tag}
+										</li>
+									))}
+								</ul>
+							)}
+						</article>
+					</li>
+				))}
+		</ul>
+	</div>
+</Base>

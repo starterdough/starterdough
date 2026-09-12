@@ -1,0 +1,51 @@
+{
+	"name": "@repo/ui",
+	"private": true,
+	"version": "0.0.0",
+	"type": "module",
+	"description": "Shared Svelte 5 components and Tailwind v4 design tokens used by every surface.",
+	"svelte": "./src/index.ts",
+	"sideEffects": [
+		"**/*.css"
+	],
+	"exports": {
+		".": {
+			"types": "./src/index.ts",
+			"svelte": "./src/index.ts",
+			"default": "./src/index.ts"
+		},
+		"./motion": "./src/motion.ts",
+		"./motion.js": "./src/motion.ts",
+		"./theme.css": "./src/theme.css",
+		"./utils": "./src/utils.ts",
+		"./utils.js": "./src/utils.ts",
+		"./components/*.js": "./src/components/*.ts",
+		"./components/*": "./src/components/*",
+		"./hooks/*.js": "./src/hooks/*.ts",
+		"./hooks/*": "./src/hooks/*"
+	},
+	"scripts": {
+		"check": "svelte-check --tsconfig ./tsconfig.json",
+		"test": "bun run scripts/contrast.ts"
+	},
+	"peerDependencies": {
+		"svelte": "^5.0.0"
+	},
+	"dependencies": {
+		"@lucide/svelte": "catalog:",
+		"bits-ui": "catalog:",
+		"clsx": "catalog:",
+		"mode-watcher": "catalog:",
+		"svelte-sonner": "catalog:",
+		"tailwind-merge": "catalog:",
+		"tailwind-variants": "catalog:",
+		"tw-animate-css": "catalog:"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"svelte": "catalog:",
+		"svelte-check": "catalog:",
+		"tailwindcss": "catalog:",
+		"typescript": "catalog:"
+	}
+}

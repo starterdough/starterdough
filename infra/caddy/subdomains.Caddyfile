@@ -1,0 +1,194 @@
+# Public deployment: one subdomain per surface, automatic HTTPS via Let's Encrypt.
+# Requires DNS: DOMAIN, docs.DOMAIN, app.DOMAIN, api.DOMAIN → this host.
+# Snippets are shared with single-origin.Caddyfile; keep the two in step.
+{
+	# Let's Encrypt expiry warnings and account recovery go here. Optional: without it ACME still
+	# works, you just get no mail before a certificate that stopped renewing runs out. Quoted because
+	# an unset ACME_EMAIL expands to nothing and a bare placeholder would be a parse error, not an
+	# empty argument; `email ""` is what Caddy does by default (compose passes ACME_EMAIL from .env).
+	email "{$ACME_EMAIL}"
+	servers {
+		# See single-origin.Caddyfile for the reasoning: read_header bounds a slowloris header trickle,
+		# read_body covers a 25 MiB document upload on a slow link (the *size* is bounded by
+		# `request_body` on the api site below), and there is deliberately no `write` timeout: it
+		# would cut the jobs.stream SSE response mid-flight.
+		timeouts {
+			read_header 15s
+			read_body 5m
+			idle 5m
+		}
+	}
+}
+
+# Browser-facing security headers. The API sets its own (Hono secureHeaders); these cover the
+# static sites and the app, and normalise HSTS across every host under the domain.
+(security) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+}
+
+# Content-Security-Policy for the marketing site (apps/site). The app (web) is deliberately NOT
+# covered: SvelteKit emits its own policy from `kit.csp` (apps/web/vite.config.ts, derived from the
+# same PUBLIC_* values the client is built with) and a second header here would intersect with it.
+# The API answers JSON only and sets its own headers.
+#
+# Ceiling, deliberate: 'unsafe-inline' for scripts and styles, because the built pages carry one
+# inline module script (the contact form) and a static header cannot carry its hash. Upgrade path:
+# Astro's `experimental.csp` emits per-page hashes; then drop 'unsafe-inline' here.
+# {$API_URL} appears twice on purpose: the contact form posts to /api/v1/contact with fetch
+# (connect-src), and form-action keeps the same origin allowed so a cross-origin <form action>
+# fallback still submits. It is the one origin these pages talk to.
+(site_csp) {
+	header {
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' {$API_URL}; form-action 'self' {$API_URL}; base-uri 'self'; object-src 'none'; frame-ancestors 'none'"
+		Cross-Origin-Opener-Policy same-origin
+	}
+}
+
+# Content-Security-Policy for the static docs (Starlight). Must stay identical to the snippet of the
+# same name in single-origin.Caddyfile. Looser than (site_csp) for two shipped features:
+# 'wasm-unsafe-eval' is pagefind (the search index is WebAssembly) and cdn.jsdelivr.net is the Scalar
+# bundle that renders /reference/api-reference; {$API_URL} is the OpenAPI document it fetches.
+# Same 'unsafe-inline' ceiling: Starlight ships ~57 inline <script> blocks and inline <style> per page.
+(docs_csp) {
+	header {
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; font-src 'self' data: https://cdn.jsdelivr.net; connect-src 'self' {$API_URL} https://cdn.jsdelivr.net; worker-src 'self' blob:; form-action 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'"
+		Cross-Origin-Opener-Policy same-origin
+	}
+}
+
+# One JSON object per request on stdout → `docker compose logs caddy`, Loki, or any log shipper.
+(logs) {
+	log {
+		output stdout
+		# One JSON object per request, with the credentials stripped out of the query string first.
+		format filter {
+			wrap json
+			fields {
+				# Signed upload URLs carry `sig` (/uploads/*) and Better Auth's email links carry
+				# `token` / `code` / `state` (/api/auth/*): live credentials that would otherwise sit
+				# in `docker compose logs` and in whatever ships stdout onwards. Filtered site-wide
+				# because one `log` block covers a site and these names appear nowhere else. `email`
+				# is the visitor's address; X-Request-Id already ties the entry to the API's own log.
+				# Not `hash email`: Caddy's query `hash` action hashes the action's (unset) value, so
+				# every address would log the same constant.
+				request>uri query {
+					delete sig
+					delete token
+					delete code
+					delete state
+					delete email
+				}
+			}
+		}
+	}
+}
+
+# Headers the upstreams rely on. X-Forwarded-For carries exactly ONE address: the API's rate
+# limiter (and Better Auth's) trusts it only in that shape, so a client cannot prepend fake hops.
+# X-Request-Id ties Caddy's access log to the API's structured log for the same request.
+(upstream) {
+	header_up X-Forwarded-For {client_ip}
+	header_up X-Request-Id {http.request.uuid}
+}
+
+# Active health checks + retry window: while a container restarts (deploy, crash) Caddy holds
+# requests for up to 15 s instead of answering 502, so a single-replica deploy is close to seamless.
+(resilient) {
+	health_interval 5s
+	health_timeout 3s
+	lb_try_duration 15s
+	lb_try_interval 250ms
+}
+
+(static_site) {
+	import security
+	import logs
+	encode zstd gzip
+	# Static pages never take a body; the cap only has to be smaller than "unbounded".
+	request_body {
+		max_size 1MB
+	}
+	# Hashed build assets never change; everything else is revalidated.
+	@assets path /_astro/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+	try_files {path} {path}/ {path}.html /404.html
+	file_server
+}
+
+{$DOMAIN} {
+	root * /srv/site
+	import static_site
+	import site_csp
+}
+
+docs.{$DOMAIN} {
+	root * /srv/docs
+	import static_site
+	import docs_csp
+}
+
+app.{$DOMAIN} {
+	import security
+	import logs
+	encode zstd gzip
+	# The app proxies nothing but its own form actions; documents go straight to the API.
+	request_body {
+		max_size 1MB
+	}
+	reverse_proxy web:3000 {
+		import upstream
+		import resilient
+		health_uri /healthz
+	}
+}
+
+api.{$DOMAIN} {
+	import security
+	import logs
+
+	# Bounded at the edge so an oversized or endless body never reaches the api container (1 GB memory
+	# limit) or the host disk `pgdata` shares. /uploads/* is the local storage driver's bucket and
+	# carries the document itself: Caddy reads `32MB` as 32 000 000 bytes, which clears the
+	# 26 214 400-byte MAX_UPLOAD_BYTES default with room to spare. Every other route is JSON.
+	# Raise MAX_UPLOAD_BYTES and this has to move with it.
+	@uploads path /uploads/*
+	@bounded not path /uploads/*
+	request_body @uploads {
+		max_size 32MB
+	}
+	request_body @bounded {
+		max_size 1MB
+	}
+
+	# Compression per content type, not site-wide: the default matcher includes `text/*`, which would
+	# buffer the text/event-stream response of jobs.stream. application/json covers the RPC/REST
+	# payloads and leaves SSE (and binary downloads from /uploads/*) untouched.
+	encode {
+		zstd
+		gzip
+		match {
+			header Content-Type application/json*
+		}
+	}
+
+	reverse_proxy api:3000 {
+		import upstream
+		import resilient
+		# Ready = database reachable (not just the process up), so a broken deploy is held, not served.
+		health_uri /readyz
+		# Server-sent events (jobs.stream): pass chunks through as they arrive.
+		flush_interval -1
+	}
+}
+
+# Your own site blocks: every *.caddy file in conf.d (compose mounts caddy/conf.d there) is read
+# here, after the snippets above, so it can import them. The directory ships empty, which Caddy
+# reports as a warning ("No files matching import glob pattern") and nothing else.
+import /etc/caddy/conf.d/*.caddy

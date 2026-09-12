@@ -1,0 +1,9 @@
+{
+	"name": "@repo/tsconfig",
+	"private": true,
+	"version": "0.0.0",
+	"description": "Shared TypeScript configs. Packages extend `base.json` (runtime-neutral) or `bun.json` (Bun runtime).",
+	"files": [
+		"*.json"
+	]
+}

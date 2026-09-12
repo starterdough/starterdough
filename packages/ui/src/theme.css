@@ -1,0 +1,194 @@
+/*
+ * Design tokens shared by every surface (SvelteKit app, Astro sites, Tauri shells).
+ * Consumers: `@import 'tailwindcss'; @import '@repo/ui/theme.css';`
+ *
+ * The token set is shadcn-svelte's (neutral base), so components added with
+ * `bunx shadcn-svelte@latest add <name> -c packages/ui` style themselves. Every color is a
+ * `light-dark()` pair: with `color-scheme: light dark` the page follows the OS without any
+ * JavaScript, and putting `.light` or `.dark` on <html> forces a mode (the app does this with
+ * mode-watcher; the Astro sites just follow the OS).
+ */
+@import "tw-animate-css";
+
+/* `dark:` utilities apply when dark is forced, or when the OS is dark and light is not forced. */
+@custom-variant dark {
+	&:where(.dark, .dark *) {
+		@slot;
+	}
+	@media (prefers-color-scheme: dark) {
+		&:where(:not(.light, .light *)) {
+			@slot;
+		}
+	}
+}
+
+:root {
+	color-scheme: light dark;
+
+	--radius: 0.625rem;
+
+	--background: light-dark(oklch(1 0 0), oklch(0.145 0 0));
+	--foreground: light-dark(oklch(0.145 0 0), oklch(0.985 0 0));
+	--card: light-dark(oklch(1 0 0), oklch(0.205 0 0));
+	--card-foreground: light-dark(oklch(0.145 0 0), oklch(0.985 0 0));
+	--popover: light-dark(oklch(1 0 0), oklch(0.269 0 0));
+	--popover-foreground: light-dark(oklch(0.145 0 0), oklch(0.985 0 0));
+	--primary: light-dark(oklch(0.205 0 0), oklch(0.922 0 0));
+	--primary-foreground: light-dark(oklch(0.985 0 0), oklch(0.205 0 0));
+	--secondary: light-dark(oklch(0.97 0 0), oklch(0.269 0 0));
+	--secondary-foreground: light-dark(oklch(0.205 0 0), oklch(0.985 0 0));
+	--muted: light-dark(oklch(0.97 0 0), oklch(0.269 0 0));
+	/* 0.545 light, not shadcn's 0.556: initials on `bg-muted` are 4.34:1 at 0.556 (see scripts/contrast.ts). */
+	--muted-foreground: light-dark(oklch(0.545 0 0), oklch(0.708 0 0));
+	--accent: light-dark(oklch(0.97 0 0), oklch(0.371 0 0));
+	--accent-foreground: light-dark(oklch(0.205 0 0), oklch(0.985 0 0));
+	/* 0.52 light, not shadcn's 0.577: the tinted danger button is `text-destructive` on
+	 * `bg-destructive/10`, which is 3.99:1 at 0.577 and 4.68:1 here. */
+	--destructive: light-dark(oklch(0.52 0.245 27.325), oklch(0.704 0.191 22.216));
+	/* Dark text on the lighter dark-mode red: white would be 2.8:1 on filled danger buttons. */
+	--destructive-foreground: light-dark(oklch(0.985 0 0), oklch(0.145 0 0));
+	/* Success/warning as tokens so no component reaches into the raw Tailwind palette. The pair is
+	 * emerald/amber 500 for the tint and dot, 700 (light) / 400 (dark) for text on that tint. */
+	--success: oklch(0.696 0.17 162.48);
+	--success-foreground: light-dark(oklch(0.508 0.118 165.612), oklch(0.765 0.177 163.223));
+	--warning: oklch(0.769 0.188 70.08);
+	--warning-foreground: light-dark(oklch(0.555 0.163 48.998), oklch(0.828 0.189 84.429));
+	--border: light-dark(oklch(0.922 0 0), oklch(1 0 0 / 10%));
+	/* `--input` is a *control boundary*, so SC 1.4.11 wants 3:1 against `--background`; shadcn's
+	 * 0.922 / 15% pair is 1.26:1 and 1.47:1. `--border` stays subtle: it only draws decoration. */
+	--input: light-dark(oklch(0.65 0 0), oklch(1 0 0 / 35%));
+	/* Focus ring, SC 1.4.11. shadcn ships these two halves swapped, which puts light mode at
+	 * 2.59:1; components ring at full alpha (never `ring-ring/50`, which lands at 1.96:1). */
+	--ring: light-dark(oklch(0.556 0 0), oklch(0.708 0 0));
+	/* Dialog and sheet scrim. Black over a near-black page can never contrast, so dark mode is
+	 * strong enough to dim the content behind it ~10x instead. */
+	--overlay: light-dark(oklch(0 0 0 / 10%), oklch(0 0 0 / 65%));
+	--chart-1: light-dark(oklch(0.646 0.222 41.116), oklch(0.488 0.243 264.376));
+	--chart-2: light-dark(oklch(0.6 0.118 184.704), oklch(0.696 0.17 162.48));
+	--chart-3: light-dark(oklch(0.398 0.07 227.392), oklch(0.769 0.188 70.08));
+	--chart-4: light-dark(oklch(0.828 0.189 84.429), oklch(0.627 0.265 303.9));
+	--chart-5: light-dark(oklch(0.769 0.188 70.08), oklch(0.645 0.246 16.439));
+	--sidebar: light-dark(oklch(0.985 0 0), oklch(0.205 0 0));
+	--sidebar-foreground: light-dark(oklch(0.145 0 0), oklch(0.985 0 0));
+	--sidebar-primary: light-dark(oklch(0.205 0 0), oklch(0.488 0.243 264.376));
+	--sidebar-primary-foreground: light-dark(oklch(0.985 0 0), oklch(0.985 0 0));
+	--sidebar-accent: light-dark(oklch(0.97 0 0), oklch(0.269 0 0));
+	--sidebar-accent-foreground: light-dark(oklch(0.205 0 0), oklch(0.985 0 0));
+	--sidebar-border: light-dark(oklch(0.922 0 0), oklch(1 0 0 / 10%));
+	--sidebar-ring: light-dark(oklch(0.556 0 0), oklch(0.708 0 0));
+}
+
+/* Forced modes (mode-watcher puts one of these on <html>; nested sections may too). */
+.light {
+	color-scheme: light;
+}
+.dark {
+	color-scheme: dark;
+}
+
+@theme inline {
+	--font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+	--font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+	--radius-sm: calc(var(--radius) - 4px);
+	--radius-md: calc(var(--radius) - 2px);
+	--radius-lg: var(--radius);
+	--radius-xl: calc(var(--radius) + 4px);
+
+	--color-background: var(--background);
+	--color-foreground: var(--foreground);
+	--color-card: var(--card);
+	--color-card-foreground: var(--card-foreground);
+	--color-popover: var(--popover);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-primary: var(--primary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-secondary: var(--secondary);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-muted: var(--muted);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-accent: var(--accent);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-destructive: var(--destructive);
+	--color-destructive-foreground: var(--destructive-foreground);
+	--color-success: var(--success);
+	--color-success-foreground: var(--success-foreground);
+	--color-warning: var(--warning);
+	--color-warning-foreground: var(--warning-foreground);
+	--color-overlay: var(--overlay);
+	--color-border: var(--border);
+	--color-input: var(--input);
+	--color-ring: var(--ring);
+	--color-chart-1: var(--chart-1);
+	--color-chart-2: var(--chart-2);
+	--color-chart-3: var(--chart-3);
+	--color-chart-4: var(--chart-4);
+	--color-chart-5: var(--chart-5);
+	--color-sidebar: var(--sidebar);
+	--color-sidebar-foreground: var(--sidebar-foreground);
+	--color-sidebar-primary: var(--sidebar-primary);
+	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+	--color-sidebar-accent: var(--sidebar-accent);
+	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+	--color-sidebar-border: var(--sidebar-border);
+	--color-sidebar-ring: var(--sidebar-ring);
+}
+
+@layer base {
+	* {
+		@apply border-border outline-ring;
+
+		/*
+		 * Tailwind registers `--tw-ring-offset-color` with `inherits: false` and an initial value of
+		 * `#fff`, so `ring-offset-*` without an explicit offset colour paints a white halo in dark
+		 * mode, and setting the variable on `:root` alone would not reach anything. Setting it here
+		 * gives every element the page background as its offset; `ring-offset-<color>` still wins.
+		 */
+		--tw-ring-offset-color: var(--background);
+	}
+
+	body {
+		@apply bg-background text-foreground font-sans;
+	}
+
+	/*
+	 * One switch for every animation in the app. Neither tw-animate-css nor Svelte's transitions
+	 * consult this preference on their own, so without this block the dialogs, sheets, tooltips and
+	 * dropdowns all animate at users who have asked their OS for less motion.
+	 *
+	 * It reaches Svelte's `fade`/`fly`/`slide` too: those compile to real `@keyframes` that Svelte
+	 * assigns through the inline `animation` shorthand, and an `!important` stylesheet declaration
+	 * outranks a normal inline one. So transitions collapse to an instant cut rather than needing a
+	 * reduced-motion variant at every call site.
+	 */
+	/* biome-ignore-start lint/complexity/noImportantStyles: a stated OS preference
+	   has to outrank both Tailwind's utilities and the inline `animation` Svelte writes. */
+	@media (prefers-reduced-motion: reduce) {
+		*,
+		*::before,
+		*::after {
+			animation-duration: 0.01ms !important;
+			animation-delay: 0s !important;
+			transition-duration: 0.01ms !important;
+			transition-delay: 0s !important;
+		}
+
+		/*
+		 * Busy indicators are the exception: a spinner frozen on one frame reads as "hung", not as
+		 * "working". `reduce` asks for less motion, not for none, so these keep looping, slowly.
+		 * The class selector outranks the `*` above, so these survive it.
+		 */
+		.animate-spin {
+			animation-duration: 1.8s !important;
+		}
+
+		.animate-pulse {
+			animation-duration: 3s !important;
+		}
+
+		html {
+			scroll-behavior: auto !important;
+		}
+	}
+	/* biome-ignore-end lint/complexity/noImportantStyles: end of the reduced-motion block. */
+}

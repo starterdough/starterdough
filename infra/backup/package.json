@@ -1,0 +1,20 @@
+{
+	"name": "@repo/backup",
+	"private": true,
+	"version": "0.0.0",
+	"type": "module",
+	"description": "Scheduled pg_dump + uploads backups for the self-hosted stack: local disk, optional S3/R2 copy, retention pruning, heartbeat pings and a restore drill. Bun built-ins only.",
+	"scripts": {
+		"check": "tsc --noEmit",
+		"test": "bun test",
+		"backup": "bun src/cli.ts backup",
+		"restore": "bun src/cli.ts restore",
+		"list": "bun src/cli.ts list",
+		"schedule": "bun src/cli.ts schedule"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

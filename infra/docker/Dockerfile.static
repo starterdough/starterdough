@@ -1,0 +1,26 @@
+# Builds the two Astro sites and serves them from Caddy, which also acts as the reverse proxy.
+# Build from the repository root:
+#   docker build -f infra/docker/Dockerfile.static -t starterdough-caddy .
+FROM oven/bun:1.4 AS build
+WORKDIR /repo
+COPY package.json bun.lock bunfig.toml ./
+COPY apps/site/package.json apps/site/
+COPY apps/docs/package.json apps/docs/
+COPY packages/ packages/
+RUN bun install --frozen-lockfile
+COPY apps/site/ apps/site/
+COPY apps/docs/ apps/docs/
+# Canonical URLs (sitemap, RSS, OG tags). No defaults: both Astro builds refuse an unset or
+# example.com value rather than baking someone else's origin into every absolute URL.
+ARG SITE_URL=
+ARG DOCS_URL=
+# The browser-facing origins the pages link to / call.
+ARG PUBLIC_APP_URL=https://app.example.com
+ARG PUBLIC_API_URL=https://api.example.com
+RUN cd apps/site && SITE_URL=$SITE_URL PUBLIC_APP_URL=$PUBLIC_APP_URL PUBLIC_DOCS_URL=$DOCS_URL PUBLIC_API_URL=$PUBLIC_API_URL bun run build
+RUN cd apps/docs && SITE_URL=$DOCS_URL PUBLIC_API_URL=$PUBLIC_API_URL bun run build
+
+FROM caddy:2-alpine
+COPY --from=build /repo/apps/site/dist /srv/site
+COPY --from=build /repo/apps/docs/dist /srv/docs
+# The Caddyfile is mounted by compose (infra/caddy/*.Caddyfile)

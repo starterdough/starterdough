@@ -1,0 +1,29 @@
+[package]
+name = "starterdough"
+version = "0.3.0"
+description = "Starterdough desktop and mobile shell: a Tauri 2 window around the static web build, with no IPC data layer."
+authors = ["Subash Chandra"]
+# Commercial, source-available; see LICENSE.md at the repository root. The crate is never published.
+license = "SEE LICENSE IN LICENSE.md"
+repository = "https://github.com/starterdough/starterdough"
+edition = "2021"
+rust-version = "1.77.2"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "starterdough_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.11.3", features = [] }
+tauri-plugin-log = "2"
+# Rust-side only (`open_url`): external navigations go to the system browser. Not registered as a
+# plugin, so the frontend gets no `plugin:opener` commands; the shell stays IPC-free.
+tauri-plugin-opener = "2"

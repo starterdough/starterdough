@@ -1,0 +1,100 @@
+name: Bug report
+description: Something in the kit does not work as documented.
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security issues do not belong here. See [SECURITY.md](../blob/main/SECURITY.md).
+
+        A reproduction is worth more than a description. The smallest set of steps that shows the
+        problem on a fresh checkout is ideal.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The `version` in the root `package.json`, or the commit you are on.
+      placeholder: 0.3.0 (or 375834e)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Where it goes wrong. Pick the closest.
+      options:
+        - apps/web (the SvelteKit application)
+        - apps/api (the Hono + oRPC API)
+        - apps/site or apps/docs (the Astro sites)
+        - apps/native (the Tauri desktop/mobile shell)
+        - packages/* (a shared package: auth, db, email, ui, env, contract)
+        - infra (Compose, Caddy, Dockerfiles, provisioning, deploy)
+        - infra/backup (the backup and restore tool)
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Include the exact error message or the failing output, not a summary of it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: If the documentation says otherwise, link the line that does.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Commands and clicks, in order, starting from a state someone else can reach.
+      placeholder: |
+        1. bun install
+        2. bun run db:up && bun run db:migrate
+        3. bun run dev:app
+        4. Sign up, then …
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: >-
+        OS and version, `bun --version`, and anything non-default: which `ADAPTER`, which
+        optional providers are configured, local disk or S3/R2 storage, Docker or a host
+        Postgres.
+      placeholder: |
+        Windows 11 / macOS 15 / Ubuntu 24.04
+        bun 1.4.2
+        ADAPTER=node, storage on local disk
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: API output, browser console, `docker compose logs`. Redact secrets.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I am on the latest release, or I have checked the changelog for a fix.
+          required: true
+        - label: '`bun run verify` reproduces the problem, or I have said why it does not apply.'
+        - label: This is not a security vulnerability.
+          required: true

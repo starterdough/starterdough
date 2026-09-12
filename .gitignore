@@ -1,0 +1,56 @@
+# Dependencies
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+
+# Build outputs
+build/
+# The Tauri shell's static SPA (`build:static:desktop`), kept apart from `build/` so a desktop
+# build cannot overwrite a web build in progress
+apps/web/build-static/
+dist/
+.svelte-kit/
+.astro/
+.turbo/
+.output/
+.wrangler/
+apps/native/src-tauri/target/
+apps/native/src-tauri/gen/schemas/
+*.tsbuildinfo
+apps/api/openapi.json
+
+# Generated i18n (Paraglide compiles apps/web/messages/** on dev/build/check)
+apps/web/src/lib/paraglide/
+apps/web/project.inlang/cache/
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+# Ultra Edit (Claude Code plugin) local state
+.ultra-edit/
+
+# Test artifacts
+test-results/
+playwright-report/
+coverage/
+
+# Local storage driver (uploaded documents when S3_BUCKET is unset)
+apps/api/data/
+data/uploads/
+
+# Logs
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+
+# Git hooks (lefthook): per-machine overrides
+lefthook-local.yml
+
+# Working notes (not product docs)
+HANDOFF.md
+ROADMAP.md

@@ -1,0 +1,2 @@
+# Default BACKUP_DIR when the CLI runs from this directory outside Docker.
+backups/

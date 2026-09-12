@@ -1,0 +1,242 @@
+# Every third-party action is pinned to a full commit SHA with its version in a trailing comment: a
+# moving tag like `@v5` is whatever that repository points it at when the job starts.
+# .github/dependabot.yml opens the bump PRs (it rewrites both the SHA and the comment).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Nothing here publishes anything; the image job below builds without pushing.
+permissions:
+  contents: read
+
+env:
+  TURBO_TELEMETRY_DISABLED: '1'
+  # Config/typecheck/test steps never boot the app, so env validation is skipped.
+  SKIP_ENV_VALIDATION: '1'
+  # Throwaway canonical origin for the Astro builds: they refuse an unset or example.com value, and
+  # `.invalid` is reserved so it can never be mistaken for a deployment.
+  SITE_URL: https://ci.invalid
+
+jobs:
+  typescript:
+    name: Lint, typecheck, test, build (Bun)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+      # Production dependencies only, high and above: dev-only advisories (build tooling) do not ship.
+      - run: bun audit --prod --audit-level=high
+      # Licence gate: a dependency under a copyleft or non-commercial licence cannot ship in a kit
+      # a buyer resells, and --strict also fails on a licence the scanner cannot identify.
+      - run: bun run licenses --strict
+      - run: bun run lint
+      - run: bun run check
+      - name: Install Playwright Chromium (Svelte component tests run in a real browser)
+        run: bunx playwright install --with-deps chromium
+      - run: bun run test
+      - run: bun run build
+
+
+  # The Tauri shell's Rust crate, so a broken crate fails on the pull request instead of on the
+  # `v*` tag build in .github/workflows/desktop.yml. Linux only: the crate is portable and the
+  # three-OS matrix belongs to the release workflow. No `cargo audit`: it wants its own
+  # advisory-database clone, which is neither a pinned download nor cheap.
+  rust:
+    name: Compile & lint the Tauri crate (cargo)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, resolved 2026-09-10
+        with:
+          # Pinned to a commit, so the action's own `github.action_ref` is that SHA and not a channel
+          # name, so the toolchain has to be named here or it cannot infer one.
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/native/src-tauri
+      # Tauri's own prerequisites for Linux, the same list desktop.yml installs.
+      - name: Install Linux build dependencies (Tauri prerequisites)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+      # No `apps/web/build-static` step: `tauri.conf.json` names it as `frontendDist`, but `generate_context!`
+      # only embeds that directory when it *bundles*. Measured with tauri 2.11.3 / tauri-build 2.6.3:
+      # `cargo check`, `cargo check --release` and `cargo clippy` all succeed with the directory
+      # absent. Building the web app here would duplicate the `typescript` job for nothing.
+      - run: cargo fmt --check
+        working-directory: apps/native/src-tauri
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: apps/native/src-tauri
+      - run: cargo check
+        working-directory: apps/native/src-tauri
+
+  # The Playwright suites. Their webServer builds and previews apps/web on :4173; there is
+  # deliberately no API in this job: the suites (home, a11y, i18n, csp) cover the public pages, which
+  # render without one, and the guarded routes would answer 503 here, so no suite visits them.
+  e2e:
+    name: End-to-end (Playwright, apps/web)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+      - name: Install Playwright Chromium
+        run: bunx playwright install --with-deps chromium
+      - run: bun run --cwd apps/web test:e2e
+
+  infra:
+    name: Compose + Caddy config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      # `.env.example` sets COMPOSE_FILE, so `docker compose` from the root resolves infra/compose.yml
+      # exactly the way the runbook runs it; `config` catches YAML, interpolation and path mistakes.
+      - name: Compose config, with throwaway values for the required secrets
+        run: |
+          cp .env.example .env
+          # compose.yml interpolates these as `${VAR:?…}` and .env.example ships them empty on purpose,
+          # so generate throwaway ones (a later line in .env wins) to exercise the interpolation.
+          {
+            echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)"
+            echo "SERVICE_TOKEN=$(openssl rand -hex 24)"
+            echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)"
+          } >> .env
+          docker compose config --quiet
+          # Every optional service too: a profile is the easiest place for a YAML mistake to hide.
+          COMPOSE_PROFILES=worker,backup,monitoring,observability docker compose config --quiet
+          docker compose -f infra/compose.dev.yml config --quiet
+      - name: Validate both Caddyfiles
+        run: |
+          for mode in subdomains single-origin; do
+            # Two env states. API_URL and ACME_EMAIL are optional and `.env.example` ships them empty:
+            # an unset placeholder expands to nothing, which for some directives is a *parse* error
+            # rather than an empty argument. DOMAIN is `localhost` in the second case, not empty:
+            # that is what compose passes (`${DOMAIN:-localhost}`) for the empty row it ships, and a
+            # genuinely empty DOMAIN would make `{$DOMAIN} { … }` a keyless site block.
+            for env in "-e DOMAIN=example.com -e API_URL=https://api.example.com -e ACME_EMAIL=ops@example.com" "-e DOMAIN=localhost -e API_URL= -e ACME_EMAIL="; do
+              # shellcheck disable=SC2086  # $env is a deliberate list of flags
+              docker run --rm -v "$PWD/infra/caddy/$mode.Caddyfile:/etc/caddy/Caddyfile:ro" $env \
+                caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+            done
+            # `caddy fmt` is a gate, not a suggestion: an unformatted Caddyfile also logs a warning
+            # on every start.
+            docker run --rm -v "$PWD/infra/caddy:/work:ro" -w /work caddy:2-alpine \
+              caddy fmt --diff "$mode.Caddyfile"
+          done
+
+  # The five images behind infra/compose.yml, built but never pushed: a Dockerfile that stops building
+  # must fail on the pull request, not on the push to `main` that deploys. Keep the matrix in step with
+  # .github/workflows/deploy.yml.
+  docker:
+    name: Build image (${{ matrix.name }})
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: api
+            context: .
+            dockerfile: apps/api/Dockerfile
+          - name: web
+            context: .
+            dockerfile: apps/web/Dockerfile
+          - name: caddy
+            context: .
+            dockerfile: infra/docker/Dockerfile.static
+            # Placeholders: nothing is pushed here, and the real values are repository variables that
+            # deploy.yml requires (they are baked in at build time). The two canonical URLs must not
+            # be example.com (the Astro builds refuse it), so they use the reserved `.invalid` TLD.
+            build_args: |
+              SITE_URL=https://ci.invalid
+              DOCS_URL=https://docs.ci.invalid
+              PUBLIC_APP_URL=https://app.example.com
+              PUBLIC_API_URL=https://api.example.com
+          - name: backup
+            context: .
+            dockerfile: infra/backup/Dockerfile
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: false
+          # Shared with deploy.yml's scopes, so a pull-request build warms the cache the push reuses.
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+          build-args: ${{ matrix.build_args }}
+
+  backup:
+    name: Backup tool against a real Postgres
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: starterdough
+          POSTGRES_PASSWORD: starterdough
+          POSTGRES_DB: starterdough
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U starterdough -d starterdough"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+      # The tool shells out to pg_dump/pg_restore and refuses a dump from a mismatched major, so the
+      # client must be 17 like the server. The runner image ships 16, and Debian's `pg_wrapper` on
+      # `/usr/bin/pg_dump` keeps picking it after 17 is installed, so put 17's own bin dir first.
+      - name: postgresql-client-17
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+          /usr/lib/postgresql/17/bin/pg_dump --version | grep -q ' 17\.' || { echo "::error::pg_dump 17 not found"; exit 1; }
+      # The queue, ledger and lock SQL tests (`packages/db/src/queue.test.ts`) skip themselves without
+      # a DATABASE_URL; here they get the service database, migrated first. `bun test` alone never
+      # touches Postgres, so this is the only place the lock-holder and idempotency SQL runs in CI.
+      - run: |
+          bun run --cwd packages/db src/migrate.ts
+          cd packages/db && bun test
+        env:
+          DATABASE_URL: postgres://starterdough:starterdough@127.0.0.1:5432/starterdough
+      # A dump with no table data fails the tool's own verification, and the service database starts
+      # empty: give it one table with a row, which is also what the drill compares against.
+      - run: |
+          psql "$BACKUP_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 \
+            -c "create table backup_probe (id int primary key, note text)" \
+            -c "insert into backup_probe values (1, 'ci seed')"
+        env:
+          BACKUP_TEST_DATABASE_URL: postgres://starterdough:starterdough@127.0.0.1:5432/starterdough
+      # Without BACKUP_TEST_DATABASE_URL the integration suite skips itself (that is how it runs on a
+      # laptop); with it, a real backup, a real restore drill and the refusal path are exercised.
+      - run: bun run --cwd infra/backup test
+        env:
+          BACKUP_TEST_DATABASE_URL: postgres://starterdough:starterdough@127.0.0.1:5432/starterdough

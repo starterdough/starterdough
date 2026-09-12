@@ -1,0 +1,154 @@
+# A public demo of this product next to a production stack on the same box: a second compose
+# project with its own database, reached through the production Caddy (caddy/conf.d plus the
+# starterdough-proxy network). Run it from the ROOT of a second clone with its own .env:
+#
+#   git clone <repo> /opt/starterdough-demo && cd /opt/starterdough-demo
+#   cp infra/demo/.env.example .env      # COMPOSE_FILE=infra/demo/compose.yml is set in there
+#   docker compose pull && docker compose up -d --wait
+#
+# Runbook, the Caddy site block and the reset timer: infra/README.md ("A public demo").
+#
+# What runs: postgres, migrate, demo-api and demo-web, the same images as production. No caddy
+# (production's serves the site block) and no backup (the data is wiped on a schedule by reset.sh).
+# Memory and CPU are capped well below production's, so a hammered demo runs out of its own share
+# long before it competes with production.
+name: starterdough-demo
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: '10m'
+    max-file: '5'
+
+# Same convention as compose.yml: the local namespace unless IMAGE_REGISTRY names the registry CI
+# pushes to. The demo is meant to pull the images production runs; `up -d --build` builds here.
+x-api-image: &api-image
+  build:
+    context: ../..
+    dockerfile: apps/api/Dockerfile
+  image: ${IMAGE_REGISTRY:-starterdough}/api:${IMAGE_TAG:-local}
+
+x-hardening: &hardening
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+
+x-api-env: &api-env
+  NODE_ENV: production
+  DATABASE_URL: postgres://starterdough:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/starterdough
+  BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
+  # One origin: the app at /, the API under /api, /rpc and the probes (the site block routes them),
+  # so both are https://DOMAIN unless .env says otherwise.
+  API_URL: ${API_URL:-https://${DOMAIN:?set DOMAIN in .env}}
+  WEB_URL: ${WEB_URL:-https://${DOMAIN:?set DOMAIN in .env}}
+  # Pinned here rather than read from .env: this stack is a demo by construction, and reset.sh
+  # checks the running demo-api for exactly this value before it wipes anything.
+  PUBLIC_DEMO_MODE: 'true'
+  OTEL_SERVICE_NAME: starterdough-demo-api
+
+services:
+  postgres:
+    # The image production uses (Postgres 17).
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_USER: starterdough
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: starterdough
+    # A quarter of production's: a demo never runs the parallel scans that need more.
+    shm_size: 256m
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # No host port: nothing on the box needs this database, and reset.sh works through `exec`.
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U starterdough -d starterdough']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: '1'
+
+  # Applies the migrations and exits; demo-api waits for it. reset.sh relies on `up` running it
+  # again against the freshly created database.
+  migrate:
+    <<: *api-image
+    command: ['bun', 'run', 'packages/db/src/migrate.ts']
+    restart: 'no'
+    logging: *logging
+    env_file: ../../.env
+    environment: *api-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  demo-api:
+    <<: [*api-image, *hardening]
+    restart: unless-stopped
+    logging: *logging
+    stop_grace_period: 15s
+    env_file: ../../.env
+    environment:
+      <<: *api-env
+      PORT: '3000'
+      # Behind the production Caddy, which sends exactly one X-Forwarded-For address.
+      TRUST_PROXY: 'true'
+    # `proxy` is where the production Caddy finds it; `default` is where postgres is.
+    networks: [default, proxy]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: '2'
+          pids: 512
+
+  demo-web:
+    <<: *hardening
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+      args:
+        # Baked into the page's Content-Security-Policy. 'self' already covers a same-origin API,
+        # which is why production's image works here unchanged when you pull instead of build.
+        PUBLIC_API_URL: ${API_URL:-https://${DOMAIN:?set DOMAIN in .env}}
+    image: ${IMAGE_REGISTRY:-starterdough}/web:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      NODE_ENV: production
+      PORT: '3000'
+      HOST: 0.0.0.0
+      ORIGIN: ${WEB_URL:-https://${DOMAIN:?set DOMAIN in .env}}
+      PUBLIC_API_URL: ${API_URL:-https://${DOMAIN:?set DOMAIN in .env}}
+      # Internal API origin for SSR
+      API_URL: http://demo-api:3000
+      # The banner and noindex. Read at run time; pinned for the same reason as in x-api-env.
+      PUBLIC_DEMO_MODE: 'true'
+    networks: [default, proxy]
+    depends_on:
+      demo-api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: '1'
+          pids: 512
+
+networks:
+  # The production Caddy joins it through compose.proxy-network.yml. Created once by hand
+  # (`docker network create starterdough-proxy`); `external` means neither project removes it.
+  proxy:
+    external: true
+    name: ${PROXY_NETWORK:-starterdough-proxy}
+
+volumes:
+  pgdata:

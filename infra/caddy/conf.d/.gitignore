@@ -1,0 +1,2 @@
+# Drop-ins are deployment configuration (README.md); `git add -f` one you want versioned.
+*.caddy

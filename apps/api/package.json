@@ -1,0 +1,41 @@
+{
+	"name": "@repo/api",
+	"private": true,
+	"version": "0.1.0",
+	"type": "module",
+	"description": "The HTTP API — Hono on Bun. Hosts Better Auth, the oRPC router (RPC + REST/OpenAPI) and webhooks.",
+	"scripts": {
+		"dev": "bun --env-file=../../.env run --hot src/index.ts",
+		"start": "bun run src/index.ts",
+		"build": "bun build --compile --minify --sourcemap --target=bun src/index.ts --outfile dist/api",
+		"check": "tsc --noEmit",
+		"test": "bun test",
+		"openapi": "SKIP_ENV_VALIDATION=1 bun run scripts/openapi.ts",
+		"clean": "rm -rf dist"
+	},
+	"dependencies": {
+		"@hono/otel": "catalog:",
+		"@opentelemetry/api": "catalog:",
+		"@opentelemetry/context-async-hooks": "catalog:",
+		"@opentelemetry/core": "catalog:",
+		"@opentelemetry/exporter-trace-otlp-http": "catalog:",
+		"@opentelemetry/resources": "catalog:",
+		"@opentelemetry/sdk-trace-base": "catalog:",
+		"@opentelemetry/semantic-conventions": "catalog:",
+		"@orpc/openapi": "catalog:",
+		"@orpc/server": "catalog:",
+		"@orpc/zod": "catalog:",
+		"@repo/api-contract": "workspace:*",
+		"@repo/auth": "workspace:*",
+		"@repo/db": "workspace:*",
+		"@repo/email": "workspace:*",
+		"@repo/env": "workspace:*",
+		"hono": "catalog:",
+		"zod": "catalog:"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

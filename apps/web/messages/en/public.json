@@ -1,0 +1,10 @@
+{
+	"$schema": "https://inlang.com/schema/inlang-message-format",
+	"public_consent_accept": "Allow",
+	"public_consent_decline": "Decline",
+	"public_consent_label": "Analytics consent",
+	"public_consent_text": "We use privacy-friendly analytics to understand how the app is used. Nothing is collected until you agree.",
+	"public_landing_description": "Bun-native, serve-anywhere SaaS starter. This is the application shell — the marketing site and docs live in their own Astro apps.",
+	"public_offline_description": "This page needs a connection. Your work is safe on the server; reconnect and try again.",
+	"public_offline_title": "You're offline"
+}

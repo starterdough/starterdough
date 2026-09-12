@@ -1,0 +1,58 @@
+name: Feature request
+description: Something the kit should ship that it does not.
+labels: ['enhancement']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The bar for the kit is "every buyer needs this". Anything one product needs is better built in
+        your own fork. If it needs a seam in ours to be buildable there, ask for the seam.
+
+        Check `docs/DECISIONS.md` first: several obvious additions are recorded there with the reason
+        they were not taken.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you unable to do today, and what did you try instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: >-
+        Be concrete about the surface: a procedure, an environment variable, a page, a package. If it
+        touches the contract, sketch the input and output.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: shape
+    attributes:
+      label: Shape
+      options:
+        - A new feature in the kit
+        - A seam or extension point so I can build it in my fork
+        - A dependency or stack change
+        - Documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Including doing it in your own fork. What makes that impractical?
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: This is something most buyers of the kit would want, not only my product.
+          required: true
+        - label: I have checked `docs/DECISIONS.md` and the changelog.
+          required: true

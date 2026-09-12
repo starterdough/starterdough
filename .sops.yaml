@@ -1,0 +1,13 @@
+# SOPS (https://github.com/getsops/sops) + age: the production .env, encrypted, committed next to the
+# code. No secrets manager account needed, and CI can decrypt it (deploy.yml, SOPS_AGE_KEY secret).
+#
+#   age-keygen -o ~/.config/sops/age/keys.txt         # prints "Public key: age1…"; paste it below
+#   sops --encrypt --input-type dotenv --output-type dotenv .env > infra/env/production.enc.env
+#   sops --decrypt --input-type dotenv --output-type dotenv infra/env/production.enc.env > .env
+#   sops infra/env/production.enc.env                 # edit in place (decrypts to $EDITOR, re-encrypts)
+#
+# Only the values are encrypted; the variable names stay readable, so diffs still show *what* changed.
+# Several recipients (you, a colleague, CI) are a comma-separated list. See infra/env/README.md.
+creation_rules:
+  - path_regex: infra/env/.*\.enc\.env$
+    age: age1replace-me-with-the-public-key-printed-by-age-keygen

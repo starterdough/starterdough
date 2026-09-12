@@ -1,0 +1,9 @@
+@import "tailwindcss";
+/* Shared design tokens (colors, radii, fonts) */
+@import "@repo/ui/theme.css";
+
+@plugin "@tailwindcss/forms";
+@plugin "@tailwindcss/typography";
+
+/* The UI package is symlinked from node_modules, so tell Tailwind to scan its source. */
+@source "../../../../packages/ui/src";

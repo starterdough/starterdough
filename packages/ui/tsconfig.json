@@ -1,0 +1,13 @@
+{
+	"extends": "@repo/tsconfig/base.json",
+	"compilerOptions": {
+		"module": "ESNext",
+		// Package-local aliases for the shadcn-svelte components (`@repo/ui/utils.js`, …).
+		// Consumers resolve the same specifiers through package.json `exports`.
+		"paths": {
+			"@repo/ui": ["./src/index.ts"],
+			"@repo/ui/*": ["./src/*"]
+		}
+	},
+	"include": ["src/**/*.ts", "src/**/*.svelte"]
+}

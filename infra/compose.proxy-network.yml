@@ -1,0 +1,25 @@
+# Optional overlay: connects caddy to a Docker network shared with other compose projects on the
+# same box, so a drop-in site block (caddy/conf.d) can reverse-proxy their containers by name.
+# Create the network once, then add this file to COMPOSE_FILE in .env:
+#
+#   docker network create starterdough-proxy
+#   COMPOSE_FILE=infra/compose.yml:infra/compose.proxy-network.yml
+#
+# The network is `external`: neither project creates or removes it, so `docker compose down` on one
+# side never breaks the other. PROXY_NETWORK in .env renames it (default starterdough-proxy).
+#
+# Give the other project's services names that cannot collide with `web`, `api` or `postgres`.
+# Docker resolves a name across every network a container is on, and which network wins when two
+# of them carry a `web` is not something you control. The public demo (demo/compose.yml) is called
+# `demo-web` and `demo-api` for that reason.
+services:
+  caddy:
+    networks:
+      # Listing networks replaces the implicit default; keep it, or caddy loses web and api.
+      default:
+      proxy:
+
+networks:
+  proxy:
+    external: true
+    name: ${PROXY_NETWORK:-starterdough-proxy}

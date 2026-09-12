@@ -1,0 +1,51 @@
+---
+import '../styles/global.css';
+import Footer from '../components/Footer.astro';
+import Header from '../components/Header.astro';
+import SEO from '../components/SEO.astro';
+import { ogImagePath, ogKeyFor } from '../lib/site';
+
+interface Props {
+	title: string;
+	description: string;
+	/** Path of the OG image; defaults to the image generated for this route (`/og/<route>.png`). */
+	ogImage?: string;
+	type?: 'website' | 'article';
+	article?: {
+		publishedTime: Date;
+		author: string;
+		tags: string[];
+	};
+}
+
+const { title, description, type, article } = Astro.props;
+const ogImage = Astro.props.ogImage ?? ogImagePath(ogKeyFor(Astro.url.pathname));
+const image = new URL(ogImage, Astro.site ?? Astro.url).href;
+---
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+		<link rel="icon" href="/favicon.ico" sizes="32x32">
+		<meta name="generator" content={Astro.generator}>
+		<meta name="color-scheme" content="light dark">
+		<SEO {title} {description} {image} {type} {article} />
+		<slot name="head" />
+	</head>
+	<body class="flex min-h-svh flex-col antialiased">
+		<a
+			href="#main"
+			class="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-sm focus:text-primary-foreground"
+		>
+			Skip to content
+		</a>
+		<Header />
+		<main id="main" tabindex="-1" class="flex-1 outline-none">
+			<slot />
+		</main>
+		<Footer />
+	</body>
+</html>

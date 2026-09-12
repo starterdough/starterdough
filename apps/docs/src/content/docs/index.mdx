@@ -1,0 +1,78 @@
+---
+title: Starterdough
+description: A Bun-native, serve-anywhere SaaS starter. One HTTP API, every surface a thin client of it.
+template: splash
+hero:
+  tagline: Build once. Serve anywhere. Web, PWA, desktop, mobile, self-hosted.
+  actions:
+    - text: Quickstart
+      link: start/quickstart/
+      icon: right-arrow
+    - text: API reference
+      link: reference/api-reference/
+      icon: open-book
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+{/* Links on this page are relative (no leading slash). Starlight does not prefix hero actions or
+    LinkCard hrefs with the site base, and this page is the root, so relative URLs resolve under
+    both `/` and `/docs/` (single-origin Caddy mode). Markdown links elsewhere get the base from
+    the plugin in astro.config.mjs. */}
+
+## What Starterdough is
+
+Starterdough is a Bun-native SaaS starter built on Svelte. It ships authentication, an admin
+surface and internationalisation. Build once, then serve it as a website, an installable PWA, a
+desktop app, a mobile app, or a self-hosted stack.
+
+It has one architectural rule: **a single source of truth over HTTP.** The SvelteKit app, the Tauri
+shells, the Astro sites and scripts are all thin clients of one API (Hono + oRPC on Bun). They share
+the same auth, the same procedures and the same OpenAPI document. Only the API talks to Postgres.
+
+<CardGrid stagger>
+	<Card title="Accounts and security" icon="seti:lock">
+		Email and password with verification, GitHub and Google, two-factor and passkeys, session
+		management, rate limits.
+	</Card>
+	<Card title="Anywhere" icon="laptop">
+		One SvelteKit codebase for Node, Cloudflare Workers or a static SPA. Tauri 2 shells with no
+		IPC. Docker Compose with Caddy and Tailscale for your own server.
+	</Card>
+</CardGrid>
+
+## Where to go
+
+<CardGrid>
+	<LinkCard
+		title="Quickstart"
+		description="Bun, Docker and a handful of commands to a running API and app."
+		href="start/quickstart/"
+	/>
+	<LinkCard
+		title="Configuration"
+		description="Every environment variable, what it switches on, and what happens when it is empty."
+		href="start/configuration/"
+	/>
+	<LinkCard
+		title="Guides"
+		description="Authentication, the admin surface, the frontend platform, serve anywhere, operations."
+		href="guides/authentication/"
+	/>
+	<LinkCard
+		title="API: RPC and REST"
+		description="How the typed client and the REST endpoints relate: every procedure, its errors and its paging, and where the OpenAPI document lives."
+		href="reference/api/"
+	/>
+	<LinkCard
+		title="Architecture"
+		description="The diagram, the repository map and the hard rules."
+		href="reference/architecture/"
+	/>
+	<LinkCard
+		title="Commands"
+		description="The root scripts: dev, check, test, build, database, auth schema, admin bootstrap, demo data, rename and the licence audit."
+		href="reference/commands/"
+	/>
+</CardGrid>

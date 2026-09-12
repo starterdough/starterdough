@@ -1,0 +1,7 @@
+{
+	"$schema": "../gen/schemas/desktop-schema.json",
+	"identifier": "default",
+	"description": "The shell uses no IPC (D9, D26): the frontend imports no @tauri-apps/api, withGlobalTauri is false, and every native behaviour lives on the Rust side, which capabilities do not gate. So the only command granted is the one Tauri's own init script invokes — the devtools hotkey it injects into debug builds. core:default additionally allowed core:image:allow-from-path (read any image file off disk), core:path, core:window and core:event, none of which anything calls.",
+	"windows": ["main"],
+	"permissions": ["core:webview:allow-internal-toggle-devtools"]
+}

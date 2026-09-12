@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/starterdough/starterdough/blob/main/SECURITY.md
+    about: Do not open an issue. Report it privately. SECURITY.md has the address and what is in scope.
+  - name: Documentation
+    url: https://github.com/starterdough/starterdough/blob/main/QUICKSTART.md
+    about: The buyer's playbook, the architecture tour in README.md, and the docs site under apps/docs.
+  - name: Upgrading a fork
+    url: https://github.com/starterdough/starterdough/blob/main/UPGRADING.md
+    about: How to merge a new release into your renamed fork, including the rename re-run.

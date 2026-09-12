@@ -1,0 +1,29 @@
+{
+	"name": "@repo/native",
+	"private": true,
+	"version": "0.3.0",
+	"type": "module",
+	"description": "Tauri 2 shell for desktop (Windows/macOS/Linux) and mobile (Android/iOS). Wraps the static build of @repo/web; no IPC.",
+	"scripts": {
+		"tauri": "tauri",
+		"dev:desktop": "tauri dev",
+		"preview:desktop": "bun scripts/preview.ts",
+		"config": "bun scripts/tauri-config.ts",
+		"build:desktop": "bun scripts/tauri-config.ts --release && tauri build --config tauri.build.conf.json",
+		"android:init": "tauri android init",
+		"android:dev": "tauri android dev",
+		"android:build": "bun scripts/tauri-config.ts --release && tauri android build --config tauri.build.conf.json",
+		"ios:init": "tauri ios init",
+		"ios:dev": "tauri ios dev",
+		"ios:build": "bun scripts/tauri-config.ts --release && tauri ios build --config tauri.build.conf.json",
+		"icons": "tauri icon ../web/static/icons/icon-512.png",
+		"check": "tsc --noEmit",
+		"clean": "rm -rf src-tauri/target tauri.build.conf.json"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"@tauri-apps/cli": "^2.11.4",
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

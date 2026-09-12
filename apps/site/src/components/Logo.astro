@@ -1,0 +1,16 @@
+---
+interface Props {
+	class?: string;
+}
+
+const { class: className = 'size-6' } = Astro.props;
+---
+
+<!-- Decorative mark; the adjacent text carries the name. -->
+<svg class={className} viewBox="0 0 32 32" fill="none" aria-hidden="true" focusable="false">
+	<rect x="2" y="2" width="28" height="28" rx="8" class="fill-primary"></rect>
+	<path
+		d="M11 9h6.5a7 7 0 0 1 0 14H11V9Zm3.5 3.4v7.2h3a3.6 3.6 0 0 0 0-7.2h-3Z"
+		class="fill-primary-foreground"
+	></path>
+</svg>

@@ -1,0 +1,147 @@
+---
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+
+// Scalar renders the API's OpenAPI document client-side. The API origin comes from env at build
+// time (apps/docs/.env.example); the browser fetches the document, so the API's CORS allow-list
+// (TRUSTED_ORIGINS) must include this site's origin.
+const apiUrl: string = import.meta.env.PUBLIC_API_URL ?? 'http://localhost:3000';
+const specUrl = `${apiUrl.replace(/\/+$/, '')}/api/v1/openapi.json`;
+// Internal links carry the site's base (`/docs` in the single-origin Caddy mode, otherwise empty).
+const base = import.meta.env.BASE_URL.replace(/\/+$/, '');
+
+/**
+ * Scalar is third-party code executing on this origin, so it is pinned to an exact version and
+ * verified with a Subresource Integrity hash of that exact file. `crossorigin` is required for the
+ * browser to check the hash at all.
+ *
+ * To bump: change the version, then recompute the hash from the file that version serves:
+ *   curl -sL <the SCALAR_SRC below> | openssl dgst -sha384 -binary | openssl base64 -A
+ * on Windows: Get-FileHash -Algorithm SHA384 over the downloaded file, hex → base64.
+ */
+const SCALAR_VERSION = '1.68.0';
+const SCALAR_SRC = `https://cdn.jsdelivr.net/npm/@scalar/api-reference@${SCALAR_VERSION}/dist/browser/standalone.js`;
+const SCALAR_INTEGRITY = 'sha384-PhSzhE9ihf7z/cKeRSKAeP+oJMMzotyFv0EjvNYgL798a2ODBQVuJLTP4Klle6IB';
+---
+
+<StarlightPage
+	frontmatter={{
+		title: 'API reference',
+		description: 'Interactive reference for the REST API, rendered from /api/v1/openapi.json.',
+		template: 'splash',
+		tableOfContents: false,
+		pagefind: false,
+	}}
+>
+	<!-- `{' '}` before wrapped inline links: Astro's HTML compressor drops line-break whitespace. -->
+	<p>
+		Every procedure of the API as plain REST under <code>/api/v1</code>, rendered by Scalar from the
+		OpenAPI 3.1 document at <a href={specUrl}><code>{specUrl}</code></a>. The typed RPC client and
+		how the two transports relate are explained in{' '}
+		<a href={`${base}/reference/api/`}>API: RPC and REST</a>.
+	</p>
+	<noscript>
+		<p>
+			The interactive reference needs JavaScript. Without it, the same surface is a static page at{' '}
+			<a href={`${base}/reference/api/`}>API: RPC and REST</a>, and the raw document is at{' '}
+			<a href={specUrl}>{specUrl}</a>.
+		</p>
+	</noscript>
+	<div class="api-reference not-content">
+		<div id="api-reference-fallback" class="api-reference-fallback" hidden>
+			<p><strong>The interactive reference did not load.</strong></p>
+			<p>
+				It is a script from <code>cdn.jsdelivr.net</code> that then fetches the OpenAPI document
+				from the API in your browser. A blocked CDN, an API that is not running, or an origin
+				missing from the API's <code>TRUSTED_ORIGINS</code> all stop it. The same surface without
+				it:
+			</p>
+			<ul>
+				<li>
+					Every procedure, as a page: <a href={`${base}/reference/api/`}>API: RPC and REST</a>
+				</li>
+				<li>
+					The raw OpenAPI 3.1 document: <a href={specUrl}><code>{specUrl}</code></a>
+				</li>
+			</ul>
+		</div>
+		<script is:inline>
+			// The reference is third-party and remote: it can fail to load (offline, blocked, an SRI
+			// mismatch) and it can load but never mount (the spec URL is unreachable or CORS-refused;
+			// Scalar awaits the document before mounting and does not report a rejection). Either way the
+			// page must say so instead of leaving a blank 60vh box.
+			(() => {
+				const container = document.querySelector('.api-reference');
+				const fallback = document.getElementById('api-reference-fallback');
+				if (!container || !fallback) return;
+
+				// Scalar inserts its own element into this container and mounts into it; anything else
+				// here is our fallback and the two script tags.
+				const mounted = () =>
+					Array.from(container.children).some(
+						(el) => el !== fallback && el.tagName !== 'SCRIPT' && el.childElementCount > 0,
+					);
+
+				const QUIET_MS = 8_000; // how long a blank box is still just "loading"
+				const STOP_MS = 60_000; // stop watching; a bundle this size is not still arriving
+				const started = Date.now();
+				let shown = false;
+				const show = () => {
+					shown = true;
+					fallback.hidden = false;
+				};
+
+				const poll = () => {
+					if (mounted()) {
+						fallback.hidden = true; // arrived late after all
+						return;
+					}
+					const elapsed = Date.now() - started;
+					if (!shown && elapsed >= QUIET_MS) show();
+					if (elapsed < STOP_MS) setTimeout(poll, 500);
+				};
+				setTimeout(poll, 500);
+
+				// `error` on a <script> does not bubble, so listen in the capture phase; matching on the
+				// id works before the element is parsed.
+				window.addEventListener(
+					'error',
+					(event) => {
+						const target = event.target;
+						if (target instanceof HTMLScriptElement && target.id === 'api-reference-loader') show();
+					},
+					true,
+				);
+			})();
+		</script>
+		<script is:inline id="api-reference" data-url={specUrl}></script>
+		<script
+			is:inline
+			id="api-reference-loader"
+			src={SCALAR_SRC}
+			integrity={SCALAR_INTEGRITY}
+			crossorigin="anonymous"
+		></script>
+	</div>
+</StarlightPage>
+
+<style>
+	.api-reference {
+		margin-top: 1.5rem;
+		min-height: 60vh;
+	}
+
+	.api-reference-fallback {
+		border: 1px solid var(--sl-color-gray-5);
+		border-radius: 0.5rem;
+		padding: 1rem 1.25rem;
+	}
+
+	.api-reference-fallback p:first-child {
+		margin-top: 0;
+	}
+
+	.api-reference-fallback ul {
+		margin-bottom: 0;
+		padding-inline-start: 1.25rem;
+	}
+</style>

@@ -1,0 +1,2 @@
+# Written by scripts/tauri-config.ts from apps/web/.env (CSP for the shipped binary)
+/tauri.build.conf.json

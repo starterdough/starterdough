@@ -1,0 +1,14 @@
+# Runs infra/demo/reset.sh once; demo-reset.timer schedules it. Install both, as root:
+#   cp infra/demo/demo-reset.service infra/demo/demo-reset.timer /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now demo-reset.timer
+# Change User= and the two paths if the demo clone lives elsewhere or belongs to another user.
+[Unit]
+Description=Reset the public demo to empty
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/opt/starterdough-demo
+ExecStart=/bin/bash /opt/starterdough-demo/infra/demo/reset.sh
