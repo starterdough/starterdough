@@ -10,6 +10,7 @@ import { createLogger } from './log';
 import { latestDumpStamp, type Manifest, manifestName, uploadsName } from './names';
 import { run } from './proc';
 import { drillDatabaseName, quoteIdentifier, restore } from './restore';
+import { BackupBucket, type S3ClientLike } from './s3';
 
 /**
  * End-to-end against a real cluster; needs pg_dump/pg_restore 17 on PATH and a database the test
@@ -103,7 +104,9 @@ describe.skipIf(!databaseUrl)('backup + drill against a live Postgres', () => {
 		expect(result.report?.dropped).toBe(true);
 		expect(result.report?.tableCount).toBeGreaterThan(0);
 		expect(result.report?.uploadsEntries).toBeGreaterThan(0);
-		expect(result.database).toBe(drillDatabaseName(config.database, result.stamp));
+		expect(result.database).toMatch(
+			new RegExp(`^starterdough_drill_${result.stamp.toLowerCase()}_[0-9a-f]{12}$`),
+		);
 		// Every table of the live database came back in the restored one.
 		expect(result.report?.missingTables).toEqual([]);
 		expect(result.report?.liveTableCount).toBe(result.report?.tableCount ?? 0);
@@ -120,21 +123,87 @@ describe.skipIf(!databaseUrl)('backup + drill against a live Postgres', () => {
 		}
 	});
 
-	it('drills again after one was interrupted before it could drop its database', async () => {
+	it('uses every artifact from remote when the same-stamp local set is partial', async () => {
+		const stamp = latestDumpStamp(await readdir(config.backupDir)) as string;
+		const names = [`starterdough_${stamp}.dump`, manifestName(stamp), uploadsName(stamp)];
+		const objects = new Map<string, Uint8Array>();
+		for (const name of names) {
+			objects.set(`backups/${name}`, await Bun.file(join(config.backupDir, name)).bytes());
+		}
+		const client: S3ClientLike = {
+			async list() {
+				return {
+					contents: [...objects].map(([key, value]) => ({ key, size: value.byteLength })),
+					isTruncated: false,
+				};
+			},
+			file(key: string) {
+				const value = objects.get(key) ?? new Uint8Array();
+				return new Blob([value.slice()]);
+			},
+			async stat(key: string) {
+				const value = objects.get(key);
+				if (!value) throw new Error('NoSuchKey');
+				return { size: value.byteLength };
+			},
+			async write() {
+				throw new Error('not used');
+			},
+			async delete() {},
+		};
+		const bucket = new BackupBucket(
+			{
+				bucket: 'test',
+				endpoint: 'https://example.invalid',
+				region: 'auto',
+				accessKeyId: 'test',
+				secretAccessKey: 'test',
+				prefix: 'backups/',
+				source: 'backup',
+			},
+			client,
+		);
+		const dumpPath = join(config.backupDir, names[0] as string);
+		const manifestPath = join(config.backupDir, names[1] as string);
+		const originalDump = await Bun.file(dumpPath).bytes();
+		const originalManifest = await Bun.file(manifestPath).bytes();
+		try {
+			await Bun.write(dumpPath, 'same-stamp local partial must not win');
+			await rm(manifestPath);
+			const result = await restore(config, { name: 'latest', drill: true }, log, { bucket });
+			expect(result.ok).toBe(true);
+			expect(result.source).toBe('s3');
+			expect(await Bun.file(dumpPath).bytes()).toEqual(originalDump);
+		} finally {
+			await Bun.write(dumpPath, originalDump);
+			await Bun.write(manifestPath, originalManifest);
+		}
+	});
+
+	it('does not reuse or delete a pre-existing drill database', async () => {
 		const stamp = latestDumpStamp(await readdir(config.backupDir));
 		expect(stamp).not.toBeNull();
-		const leftover = drillDatabaseName(config.database, stamp ?? '');
+		const leftover = drillDatabaseName(
+			config.database,
+			stamp ?? '',
+			'11111111-2222-3333-4444-555555555555',
+		);
 		const admin = new Bun.SQL(withDatabase(config.databaseUrl, 'postgres'), { max: 1 });
 		try {
 			await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(leftover)}`);
+			const result = await restore(config, { name: 'latest', drill: true }, log);
+			expect(result.report?.errors).toEqual([]);
+			expect(result.ok).toBe(true);
+			expect(result.database).not.toBe(leftover);
+			const rows = await admin.unsafe<{ datname: string }[]>(
+				'select datname from pg_database where datname = $1',
+				[leftover],
+			);
+			expect(rows).toHaveLength(1);
 		} finally {
+			await admin.unsafe(`DROP DATABASE IF EXISTS ${quoteIdentifier(leftover)} WITH (FORCE)`);
 			await admin.close();
 		}
-
-		const result = await restore(config, { name: 'latest', drill: true }, log);
-		expect(result.report?.errors).toEqual([]);
-		expect(result.ok).toBe(true);
-		expect(result.database).toBe(leftover);
 	});
 
 	it('refuses a live restore without --yes and says what it would do', async () => {
@@ -180,6 +249,29 @@ describe.skipIf(!databaseUrl)('backup + drill against a live Postgres', () => {
 			expect(result.ok).toBe(false);
 			expect(result.report?.shortTables).toEqual([table]);
 			expect(result.report?.errors.join(' ')).toContain('fall short of the manifest');
+		} finally {
+			await Bun.write(path, original);
+		}
+	});
+
+	it('fails when a table recorded by the manifest is absent from the restored database', async () => {
+		const stamp = latestDumpStamp(await readdir(config.backupDir)) as string;
+		const path = join(config.backupDir, manifestName(stamp));
+		const original = await Bun.file(path).text();
+		const manifest = JSON.parse(original) as Manifest;
+		await Bun.write(
+			path,
+			JSON.stringify({
+				...manifest,
+				rowCounts: { ...manifest.rowCounts, table_that_was_not_restored: 1 },
+			}),
+		);
+		try {
+			const result = await restore(config, { name: stamp, drill: true }, log);
+			expect(result.ok).toBe(false);
+			expect(result.report?.errors.join(' ')).toContain(
+				'tables recorded by the manifest are missing',
+			);
 		} finally {
 			await Bun.write(path, original);
 		}

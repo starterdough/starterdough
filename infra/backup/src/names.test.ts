@@ -9,6 +9,7 @@ import {
 	latestDumpStamp,
 	manifestName,
 	newestCompleteStamps,
+	newestCompleteStampsBySource,
 	parseArtifact,
 	parseStamp,
 	RETENTION_FLOOR_SETS,
@@ -130,7 +131,7 @@ describe('selectExpired', () => {
 });
 
 describe('grouping', () => {
-	it('groups artifacts by stamp, newest first, and finds the latest dump', () => {
+	it('groups artifacts by stamp, newest first, and finds the latest complete set', () => {
 		const names = [
 			'starterdough_20260908T023000Z.dump',
 			'starterdough_20260909T023000Z.json',
@@ -154,6 +155,18 @@ describe('grouping', () => {
 		expect(latestDumpStamp(['junk'])).toBeNull();
 	});
 
+	it('ignores a newer partial set and never combines artifacts from separate sources', () => {
+		const older = ['starterdough_20260908T023000Z.dump', 'starterdough_20260908T023000Z.json'];
+		const partialNewer = [...older, 'starterdough_20260909T023000Z.dump'];
+		expect(latestDumpStamp(partialNewer, NOW)).toBe('20260908T023000Z');
+		expect(
+			newestCompleteStampsBySource(
+				[['starterdough_20260909T023000Z.dump'], ['starterdough_20260909T023000Z.json']],
+				3,
+			),
+		).toEqual(new Set());
+	});
+
 	it('does not let a stamp from the future become "latest", and reports it instead', () => {
 		const now = new Date('2026-09-09T03:00:00Z');
 		const names = [
@@ -168,7 +181,7 @@ describe('grouping', () => {
 		expect(futureStamps(names, now)).toEqual(['20260911T023000Z']);
 
 		// An hour of clock skew between the writer and the reader is not a wrong clock.
-		const skewed = ['starterdough_20260909T033000Z.dump'];
+		const skewed = ['starterdough_20260909T033000Z.dump', 'starterdough_20260909T033000Z.json'];
 		expect(latestDumpStamp(skewed, now)).toBe('20260909T033000Z');
 		expect(futureStamps(skewed, now)).toEqual([]);
 		// Once real time catches up, the set is selectable again.

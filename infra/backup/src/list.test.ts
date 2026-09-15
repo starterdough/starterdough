@@ -6,6 +6,7 @@ import { type BackupConfig, configFromEnv } from './config';
 import { listBackups } from './list';
 import { createLogger, type LogLevel } from './log';
 import { createManifest, dumpName, manifestName, uploadsName } from './names';
+import type { BackupBucket } from './s3';
 
 const tmp = await mkdtemp(join(tmpdir(), 'starterdough-backup-list-'));
 afterAll(() => rm(tmp, { recursive: true, force: true }));
@@ -62,6 +63,35 @@ describe('list --max-age', () => {
 				(entry) => entry.level === 'error' && entry.line.includes('9d old, past the 36h limit'),
 			),
 		).toBe(true);
+	});
+
+	it('uses the newest complete set for freshness and skips newer partial sets', async () => {
+		const dir = await mkdtemp(join(tmp, 'partial-newer-'));
+		await writeSet(dir, '20260908T023000Z');
+		await writeSet(dir, '20260910T023000Z', { manifest: false });
+		const { result } = await listIn(dir);
+		expect(result.sets[0]?.stamp).toBe('20260910T023000Z');
+		expect(result.newestAgeMs).toBe(51.5 * 3_600_000);
+		expect(result.fresh).toBe(false);
+	});
+
+	it('does not combine a local dump with a remote manifest for freshness', async () => {
+		const dir = await mkdtemp(join(tmp, 'cross-source-'));
+		await Bun.write(join(dir, dumpName('20260910T023000Z')), 'dump');
+		const bucket = {
+			list: async () => [{ key: `backups/${manifestName('20260910T023000Z')}`, size: 20 }],
+			keyFor: (name: string) => `backups/${name}`,
+		} as unknown as BackupBucket;
+		const lines: { level: LogLevel; line: string }[] = [];
+		const log = createLogger((line, level) => lines.push({ level, line }));
+		const config: BackupConfig = {
+			...configFromEnv({ DATABASE_URL: 'postgres://d:s@postgres:5432/starterdough' }),
+			backupDir: dir,
+		};
+		const result = await listBackups(config, log, bucket, NOW);
+		expect(result.newestAgeMs).toBeNull();
+		expect(result.fresh).toBe(false);
+		expect(lines.some((entry) => entry.line.includes('no restorable backup'))).toBe(true);
 	});
 
 	it('is stale when there is no restorable set at all', async () => {

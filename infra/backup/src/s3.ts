@@ -5,9 +5,9 @@ export interface S3ClientLike {
 	write(path: string, data: Bun.BunFile | string): Promise<number>;
 	list(input?: Bun.S3ListObjectsOptions | null): Promise<Bun.S3ListObjectsResponse>;
 	delete(path: string): Promise<void>;
-	file(path: string): Bun.S3File;
+	file(path: string): Blob;
 	/** HEAD on the object. This is the only call that reports what the *bucket* holds. */
-	stat(path: string): Promise<Bun.S3Stats>;
+	stat(path: string): Promise<Pick<Bun.S3Stats, 'size'>>;
 }
 
 export interface RemoteObject {

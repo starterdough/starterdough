@@ -180,6 +180,7 @@ export function selectExpired(names: string[], retentionDays: number, now: Date)
  * and uploaded last, so its presence is what makes a set restorable rather than half-written.
  */
 export function newestCompleteStamps(names: string[], count: number): Set<string> {
+	if (count <= 0) return new Set();
 	const complete: string[] = [];
 	for (const [stamp, artifacts] of groupByStamp(names)) {
 		const kinds = new Set(artifacts.map((artifact) => artifact.kind));
@@ -187,6 +188,19 @@ export function newestCompleteStamps(names: string[], count: number): Set<string
 		if (complete.length === count) break;
 	}
 	return new Set(complete);
+}
+
+/**
+ * Stamps of the newest complete sets across independent sources. Each inner array is one source
+ * (for example, the local directory or the remote bucket); artifacts from different sources must
+ * never combine to make a set complete.
+ */
+export function newestCompleteStampsBySource(sources: string[][], count: number): Set<string> {
+	const complete = new Set<string>();
+	for (const names of sources) {
+		for (const stamp of newestCompleteStamps(names, Number.POSITIVE_INFINITY)) complete.add(stamp);
+	}
+	return new Set([...complete].sort().reverse().slice(0, Math.max(0, count)));
 }
 
 /** Groups artifact names (or keys) by stamp, newest first. */
@@ -203,22 +217,19 @@ export function groupByStamp(names: string[]): Map<string, ParsedArtifact[]> {
 }
 
 /**
- * The newest stamp among the names that carry a dump, or null. Stamps are the UTC instant the run
+ * The newest complete stamp among the names from one source, or null. Stamps are the UTC instant the run
  * started, so ordering by stamp is ordering by the manifest's `createdAt` without reading 30 files.
  * Stamps more than {@link FUTURE_STAMP_TOLERANCE_MS} ahead of `now` are skipped, not sorted highest:
  * see {@link futureStamps}.
  */
 export function latestDumpStamp(names: string[], now: Date = new Date()): string | null {
 	const horizon = now.getTime() + FUTURE_STAMP_TOLERANCE_MS;
-	let latest: string | null = null;
-	for (const name of names) {
-		const parsed = parseArtifact(name);
-		if (parsed?.kind !== 'dump') continue;
-		const date = stampToDate(parsed.stamp);
+	for (const stamp of newestCompleteStamps(names, Number.POSITIVE_INFINITY)) {
+		const date = stampToDate(stamp);
 		if (date === null || date.getTime() > horizon) continue;
-		if (latest === null || parsed.stamp > latest) latest = parsed.stamp;
+		return stamp;
 	}
-	return latest;
+	return null;
 }
 
 /**

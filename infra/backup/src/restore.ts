@@ -166,8 +166,14 @@ export function safetyDumpName(database: string, stamp: string): string {
 }
 
 /** Lower-cased so the name reads the same whether or not someone quotes it in psql. */
-export function drillDatabaseName(database: string, stamp: string): string {
-	return `${database}_drill_${stamp.toLowerCase()}`;
+export function drillDatabaseName(
+	_database: string,
+	stamp: string,
+	nonce: string = crypto.randomUUID(),
+): string {
+	// PostgreSQL silently truncates identifiers at 63 bytes. A fixed ASCII prefix plus a random
+	// suffix stays below that boundary and cannot alias another deployment's long database name.
+	return `starterdough_drill_${stamp.toLowerCase()}_${nonce.replaceAll('-', '').slice(0, 12)}`;
 }
 
 export async function restore(
@@ -185,13 +191,10 @@ export async function restore(
 
 	// The manifest is the only record of what this dump is and what it should weigh. Both a drill and
 	// a live restore verify it: a drill that restores a corrupt archive proves nothing either.
-	const manifest = await loadManifest(config, located.stamp, bucket, options, log);
+	const manifest = await loadManifest(config, located.stamp, bucket, options, log, located.source);
 	if (manifest) await verifyArtifact(config, manifest, dumpName(located.stamp), log);
 
 	if (options.drill) {
-		if (options.uploads) {
-			log.info('--uploads is ignored in a drill; the archive is listed instead of extracted');
-		}
 		const report = await runDrill(config, located, baseDatabase, manifest, bucket, log);
 		return {
 			...base,
@@ -212,7 +215,7 @@ export async function restore(
 	// Locate and verify the uploads before the confirmation. Extraction itself happens under the
 	// restore lock, after --yes, but still before the database safety dump and destructive restore.
 	const uploads = options.uploads
-		? await prepareUploads(config, located.stamp, manifest, bucket, log)
+		? await prepareUploads(config, located.stamp, manifest, bucket, log, located.source)
 		: null;
 
 	const targetUrl = withDatabase(config.databaseUrl, baseDatabase);
@@ -305,15 +308,21 @@ async function loadManifest(
 	bucket: BackupBucket | null,
 	options: RestoreOptions,
 	log: Logger,
+	preferredSource?: 'local' | 's3',
 ): Promise<Manifest | null> {
 	const name = manifestName(stamp);
 	const path = join(config.backupDir, name);
-	if (!(await exists(path)) && bucket) {
+	if ((preferredSource === 's3' || !(await exists(path))) && bucket) {
 		const key = bucket.keyFor(name);
 		log.info('downloading manifest', { bucket: bucket.bucket, key });
-		await writeViaPartFile(path, (part) => bucket.download(key, part)).catch((error: unknown) =>
-			log.warn('could not download the manifest', { key, error }),
-		);
+		await writeViaPartFile(path, (part) => bucket.download(key, part)).catch((error: unknown) => {
+			if (preferredSource === 's3') {
+				throw new RestoreError(`could not download the selected remote manifest ${key}`, {
+					cause: error,
+				});
+			}
+			log.warn('could not download the manifest', { key, error });
+		});
 	}
 	const parsed = await Bun.file(path)
 		.json()
@@ -496,6 +505,7 @@ async function locateDump(
 	await mkdir(config.backupDir, { recursive: true });
 	const local = await readdir(config.backupDir);
 	let stamp: string | null;
+	let preferredSource: 'local' | 's3' | undefined;
 	if (name === 'latest') {
 		const remoteKeys = bucket ? (await bucket.list()).map((object) => object.key) : [];
 		const now = new Date();
@@ -515,6 +525,7 @@ async function locateDump(
 			);
 		}
 		stamp = latest.stamp;
+		preferredSource = latest.source;
 		log.info('latest dump selected', {
 			stamp: latest.stamp,
 			source: latest.source,
@@ -535,7 +546,7 @@ async function locateDump(
 
 	const file = dumpName(stamp);
 	const path = join(config.backupDir, file);
-	if (local.includes(file)) return { stamp, path, source: 'local' };
+	if (preferredSource !== 's3' && local.includes(file)) return { stamp, path, source: 'local' };
 	if (!bucket) throw new RestoreError(`${file} is not in ${config.backupDir}`);
 	const key = bucket.keyFor(file);
 	log.info('downloading dump', { bucket: bucket.bucket, key });
@@ -556,10 +567,11 @@ async function locateUploads(
 	stamp: string,
 	bucket: BackupBucket | null,
 	log: Logger,
+	preferredSource?: 'local' | 's3',
 ): Promise<string | null> {
 	const file = uploadsName(stamp);
 	const path = join(config.backupDir, file);
-	if (await exists(path)) return path;
+	if (preferredSource !== 's3' && (await exists(path))) return path;
 	if (!bucket) return null;
 	const key = bucket.keyFor(file);
 	const remote = await bucket.list(key);
@@ -602,9 +614,6 @@ async function runDrill(
 	const admin = new Bun.SQL(withDatabase(config.databaseUrl, 'postgres'), { max: 1 });
 	try {
 		log.info('drill: creating database', { database });
-		// A drill interrupted between create and drop (Ctrl-C, a killed container) leaves the scratch
-		// database behind; dropping it first means the next drill runs instead of failing on the name.
-		await admin.unsafe(`DROP DATABASE IF EXISTS ${quoteIdentifier(database)} WITH (FORCE)`);
 		await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(database)}`);
 	} catch (error) {
 		await admin.close();
@@ -630,14 +639,33 @@ async function runDrill(
 			await verify(drillUrl, withDatabase(config.databaseUrl, baseDatabase), manifest, report, log);
 		}
 
-		const uploads = await locateUploads(config, dump.stamp, bucket, log).catch((error: unknown) => {
-			report.errors.push(`uploads archive: ${String(error)}`);
-			return null;
-		});
+		const uploads = await locateUploads(config, dump.stamp, bucket, log, dump.source).catch(
+			(error: unknown) => {
+				report.errors.push(`uploads archive: ${String(error)}`);
+				return null;
+			},
+		);
 		if (uploads) {
-			const listed = await run(tarListArgs(uploads), { timeoutMs: SHORT_COMMAND_TIMEOUT_MS });
-			if (listed.code !== 0) report.errors.push(new CommandError('tar', listed).message);
-			else report.uploadsEntries = listed.stdout.split('\n').filter((line) => line.trim()).length;
+			let uploadsValid = true;
+			if (manifest) {
+				await verifyArtifact(config, manifest, uploadsName(dump.stamp), log).catch(
+					(error: unknown) => {
+						uploadsValid = false;
+						report.errors.push(`uploads archive: ${String(error)}`);
+					},
+				);
+				if (manifest.uploadsDegraded) {
+					uploadsValid = false;
+					report.errors.push(`uploads archive was incomplete: ${manifest.uploadsDegraded}`);
+				}
+			}
+			if (uploadsValid) {
+				await verifyDrillUploads(config, drillUrl, uploads, report, log);
+			}
+		} else if (manifest?.uploadsIncluded) {
+			report.errors.push(
+				`uploads archive: ${uploadsName(dump.stamp)} is listed by the manifest but was not found`,
+			);
 		}
 	} catch (error) {
 		report.errors.push(String(error instanceof Error ? error.message : error));
@@ -668,6 +696,41 @@ async function runDrill(
 		{ ...report, stamp: dump.stamp, dump: dump.path },
 	);
 	return report;
+}
+
+async function rejectLinks(directory: string): Promise<void> {
+	for (const entry of await readdir(directory, { withFileTypes: true })) {
+		const path = join(directory, entry.name);
+		const info = await lstat(path);
+		if (info.isSymbolicLink())
+			throw new RestoreError(`uploads archive contains a symlink: ${entry.name}`);
+		if (info.isDirectory()) await rejectLinks(path);
+		else if (!info.isFile())
+			throw new RestoreError(`uploads archive contains a non-regular file: ${entry.name}`);
+	}
+}
+
+/**
+ * Extracts the archive into a private throwaway directory and proves that every ready document in
+ * the restored database has the bytes that row names. Final-generation objects also carry the
+ * committed promotion marker, which prevents a same-sized but different generation from passing.
+ */
+async function verifyDrillUploads(
+	config: BackupConfig,
+	drillUrl: string,
+	archive: string,
+	report: DrillReport,
+	log: Logger,
+): Promise<void> {
+	const root = await mkdtemp(join(config.backupDir, '.starterdough-drill-uploads-'));
+	try {
+		const listed = await runOrThrow(tarListArgs(archive), { timeoutMs: SHORT_COMMAND_TIMEOUT_MS });
+		report.uploadsEntries = listed.stdout.split('\n').filter((line) => line.trim()).length;
+		await runOrThrow(tarExtractArgs(archive, root), { timeoutMs: config.commandTimeoutMs });
+		await rejectLinks(root);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
 }
 
 const PUBLIC_TABLES_QUERY =
@@ -704,6 +767,12 @@ async function verify(
 		// Every table the manifest counted; without a manifest, the tables the app cannot live
 		// without, so a drill of an old set still reports something a human can read.
 		const wanted = expected ? Object.keys(expected) : FALLBACK_ROW_COUNT_TABLES;
+		const missingExpected = wanted.filter((table) => !report.tables.includes(table));
+		if (missingExpected.length > 0) {
+			report.errors.push(
+				`tables recorded by the manifest are missing from the restored database: ${missingExpected.join(', ')}`,
+			);
+		}
 		for (const table of wanted) {
 			if (!report.tables.includes(table)) continue;
 			const rows = await sql.unsafe<{ n: number }[]>(
@@ -843,6 +912,7 @@ async function prepareUploads(
 	manifest: Manifest | null,
 	bucket: BackupBucket | null,
 	log: Logger,
+	preferredSource?: 'local' | 's3',
 ): Promise<UploadsPlan> {
 	if (config.uploads.kind !== 'directory') {
 		throw new RestoreError(
@@ -850,7 +920,7 @@ async function prepareUploads(
 		);
 	}
 	const dir = config.uploads.dir;
-	const archive = await locateUploads(config, stamp, bucket, log);
+	const archive = await locateUploads(config, stamp, bucket, log, preferredSource);
 	if (!archive)
 		throw new RestoreError(`${uploadsName(stamp)} was not found locally or in the bucket`);
 	if (manifest) {

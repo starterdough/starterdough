@@ -153,10 +153,20 @@ describe('pre-restore dump', () => {
 });
 
 describe('drill database naming', () => {
-	it('derives a lower-case scratch name from the database and the stamp', () => {
-		expect(drillDatabaseName('starterdough', '20260909T023000Z')).toBe(
-			'starterdough_drill_20260909t023000z',
+	it('uses a unique lower-case scratch name that PostgreSQL cannot truncate', () => {
+		const one = drillDatabaseName(
+			'a_database_name_that_is_far_longer_than_postgresql_identifiers_allow',
+			'20260909T023000Z',
+			'11111111-2222-3333-4444-555555555555',
 		);
+		const two = drillDatabaseName(
+			'a_database_name_that_is_far_longer_than_postgresql_identifiers_allow',
+			'20260909T023000Z',
+			'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+		);
+		expect(one).toBe('starterdough_drill_20260909t023000z_111111112222');
+		expect(two).not.toBe(one);
+		expect(Buffer.byteLength(one)).toBeLessThanOrEqual(63);
 	});
 
 	it('quotes identifiers so mixed case and quotes survive', () => {

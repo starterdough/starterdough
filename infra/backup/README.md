@@ -34,10 +34,10 @@ docker compose run --rm -v starterdough_uploads:/restore/uploads -e STORAGE_DIR=
 | Command | What |
 | --- | --- |
 | `backup` | take the lock, pre-flight, dump (`--format=custom --compress=6 --no-privileges`; ownership is dropped at restore time by `pg_restore --no-owner`), verify the archive, optional uploads tarball, row counts, manifest, upload **and verify the objects against the bucket**, prune, heartbeat |
-| `list` | sets on disk and in the bucket, plus the pre-restore dumps nothing prunes. **Exits 1 when the newest set is older than `--max-age` (default `BACKUP_MAX_AGE`, `36h`).** This is the command a monitor runs |
+| `list` | sets on disk and in the bucket, plus the pre-restore dumps nothing prunes. Freshness and `restore latest` use the newest set with both a dump and manifest on the same source (local directory or bucket); partial newer sets do not shadow an older complete set. **Exits 1 when the newest complete set is older than `--max-age` (default `BACKUP_MAX_AGE`, `36h`).** This is the command a monitor runs |
 | `list --no-max-age` | list without the freshness check, so browsing a fresh box exits 0 |
-| `restore <stamp\|latest> --drill` | restore into `<db>_drill_<stamp>`, compare its table list against the live database, compare the restored row counts against the manifest's, drop it |
-| | The scratch database is dropped with `DROP DATABASE IF EXISTS … WITH (FORCE)` *before* it is created as well, so a drill killed half-way (Ctrl-C, a killed container) does not block the next one |
+| `restore <stamp\|latest> --drill` | restore into a uniquely named scratch database, compare its table list and row counts against the live database and manifest, extract and verify the uploads archive, then drop it |
+| | The drill name includes a random suffix and does not drop a database before creating its own. A database left by an interrupted drill has a different name from the next run. |
 | `restore <stamp\|latest> --yes` | restore into the live database (`--clean --if-exists --single-transaction --exit-on-error`). Refused without `--yes` |
 | `restore … --uploads` | also restore the tarball into `STORAGE_DIR` (never by default). The archive is located, checksum-verified and fully extracted into staging on the uploads filesystem *before* `pg_restore`; see the one-shot command above for the writable mount |
 | `restore … --database <name>` | target database (live) or base name of the drill database; defaults to the one in `DATABASE_URL` |
@@ -51,6 +51,7 @@ docker compose run --rm -v starterdough_uploads:/restore/uploads -e STORAGE_DIR=
 Exit codes: `0` ok, `1` failure or refused, `2` usage. Durations (`--max-age`, `BACKUP_MAX_AGE`,
 `BACKUP_LOCK_TIMEOUT`) are one number and one unit: `90s`, `45m`, `36h`, `2d`. A bare number is
 rejected.
+
 
 Artifacts: `starterdough_<YYYYMMDDTHHMMSSZ>.dump`, `.uploads.tar.gz` (local driver only), `.json`
 (manifest: stamp, file sizes and SHA-256s, `pg_dump` version, the `TABLE DATA` entry count of the
@@ -84,6 +85,11 @@ them yourself once you are sure the restore was the right one.
   per query) goes into the manifest, so a drill can assert that the data came back. The counts are
   taken just after the dump, not inside its snapshot, so a database still taking writes drifts by a
   few rows; a drill allows 5 %. Failing to count is a warning, not a failed backup.
+- **A local backup does not pause writes.** The built-in schedule runs `pg_dump` while the app may be
+  changing the database and uploads. PostgreSQL's dump is internally consistent, but the uploads
+  archive is captured separately, so database references and files can reflect different moments.
+  Use a coordinated host backup that quiesces the API/worker across both captures when that
+  cross-resource consistency fence is required.
 - **The off-box copy is verified against the bucket.** After each `put` the object is `HEAD`ed and
   the size the *bucket* reports is compared with the local file's. A mismatch deletes the bad
   object and retries once. A second mismatch fails the run, so the heartbeat stays silent and the
@@ -186,8 +192,10 @@ atomically. If promotion fails after PostgreSQL succeeds, the command exits 1, k
 staged files, and reports both their path and the pre-restore safety dump so the operator can finish
 or roll back. Interrupted staging directories are excluded from later upload archives.
 
-`restore latest` compares the newest dump on disk with the newest in the bucket and takes the newer
-of the two (a tie goes to the local copy, which needs no download). The chosen source is logged.
+`restore latest` compares the newest complete set on disk with the newest complete set in the bucket
+and takes the newer of the two (a tie goes to the local copy, which needs no download). It never
+combines a local dump with a remote manifest. The chosen source is logged. An explicit stamp remains
+available for recovery when a set is partial or future-dated.
 
 ### Bare-metal disaster recovery
 
@@ -281,11 +289,24 @@ The database password never goes on the `pg_dump`/`pg_restore` command line. It 
 Keep the production `.env` (or its SOPS copy) with the backups. A dump without `BETTER_AUTH_SECRET`
 is not a restore.
 
-## S3 / R2
+## S3 / R2 / B2
 
 Create a bucket and put its name and credentials in `BACKUP_S3_*` (or reuse the uploads bucket).
+The bucket and valid credentials must already exist; configure its name, endpoint or AWS region,
+access key ID and secret access key in the environment. Do not put credential values in
+documentation or logs.
 For Cloudflare R2 the endpoint is `https://<account-id>.r2.cloudflarestorage.com` and the region is
 `auto`. CORS is not involved: this is a server-side copy, not a browser upload.
+
+For Backblaze B2, use the bucket's S3 endpoint and region with the dedicated `BACKUP_S3_*`
+settings. The tool prunes by object key without a version ID. B2 treats that operation as a
+delete marker: old versions continue occupying storage until removed. Configure a lifecycle rule
+for hidden/noncurrent versions under the deployment's backup prefix, with a recovery interval
+chosen for your retention policy. Keep current versions under the tool's retention policy so its
+newest-three-set floor still applies. Verify a real upload, download and restore with your account;
+S3 API compatibility alone is not an integration test. See
+[B2 deletion behavior](https://www.backblaze.com/apidocs/s3-delete-object) and
+[B2 lifecycle rules](https://www.backblaze.com/docs/cloud-storage-lifecycle-rules).
 
 ### The backup bucket holds a credential that can delete every off-site copy
 

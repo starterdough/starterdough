@@ -37,9 +37,10 @@ Commands:
                                  off-box copy, prune, then ping BACKUP_HEARTBEAT_URL
   restore <name|latest> [flags]  restore a dump; <name> is a stamp (20260909T023000Z) or file
       --drill                    restore into a scratch database, report, drop it (safe)
-      --database <name>          target database (live) or base name of the drill database
+      --database <name>          target database (live) or schema source for a drill
       --yes                      required to restore into the live database (--clean --if-exists)
-      --uploads                  also extract the uploads archive into STORAGE_DIR (live only)
+      --uploads                  also install the uploads archive into STORAGE_DIR (live only;
+                                 drills always verify the archive without installing it)
       --no-safety-dump           skip the pre-restore dump a live restore takes by default
       --force-database-mismatch  restore even though the manifest names another database
       --no-manifest-check        restore a set whose manifest is missing (nothing is verified)

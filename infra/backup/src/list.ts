@@ -10,6 +10,7 @@ import {
 	isManifest,
 	type Manifest,
 	manifestName,
+	newestCompleteStampsBySource,
 	stampToDate,
 } from './names';
 import { BackupBucket } from './s3';
@@ -128,11 +129,13 @@ export async function listBackups(
 
 	// The newest set that could actually be restored: a manifest without its dump is not a backup,
 	// and a future-dated stamp is not evidence that a backup happened.
-	const usable = sets.find(
-		(set) => !ahead.has(set.stamp) && (set.local.includes('dump') || set.remote.includes('dump')),
+	const complete = newestCompleteStampsBySource(
+		[localNames, remote.map((object) => object.key)],
+		Number.POSITIVE_INFINITY,
 	);
+	const usableStamp = [...complete].find((stamp) => !ahead.has(stamp));
 	const newestAgeMs =
-		usable === undefined ? null : now.getTime() - (stampToDate(usable.stamp)?.getTime() ?? 0);
+		usableStamp === undefined ? null : now.getTime() - (stampToDate(usableStamp)?.getTime() ?? 0);
 	// An infinite limit is `--no-max-age`: list, do not judge.
 	const fresh =
 		!Number.isFinite(config.maxAgeMs) || (newestAgeMs !== null && newestAgeMs <= config.maxAgeMs);
@@ -142,7 +145,7 @@ export async function listBackups(
 		bucket: bucket ? `${bucket.bucket}/${bucket.prefix}` : null,
 		safetyDumps: safetyDumps.length,
 		safetyDumpBytes: safetyDumps.reduce((sum, dump) => sum + dump.bytes, 0),
-		newest: usable?.stamp ?? null,
+		newest: usableStamp ?? null,
 		newestAgeMs,
 		maxAgeMs: config.maxAgeMs,
 		fresh,
@@ -152,7 +155,7 @@ export async function listBackups(
 			newestAgeMs === null
 				? 'no restorable backup set exists'
 				: `the newest backup set is ${humanMs(newestAgeMs)} old, past the ${humanMs(config.maxAgeMs)} limit`,
-			{ newest: usable?.stamp ?? null, maxAgeMs: config.maxAgeMs },
+			{ newest: usableStamp ?? null, maxAgeMs: config.maxAgeMs },
 		);
 	}
 	return { sets, safetyDumps, newestAgeMs, fresh };
