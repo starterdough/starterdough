@@ -9,6 +9,7 @@ import tailwindcss from '@tailwindcss/vite';
 import { playwright } from '@vitest/browser-playwright';
 import { loadEnv } from 'vite';
 import { defineConfig } from 'vitest/config';
+import { paraglideOptions } from './i18n.config.ts';
 
 /**
  * One codebase, three deployment targets (README → "Serve anywhere"):
@@ -115,12 +116,11 @@ export default defineConfig(({ command, mode }) => ({
 		'import.meta.env.ADAPTER': JSON.stringify(target),
 	},
 	plugins: [
-		// i18n: compiles apps/web/messages/** into $lib/paraglide (strategy etc. live in
-		// project.inlang/paraglide.config.ts). One module per locale while developing (few files,
-		// fast HMR); one module per message for builds so each route chunk carries only its own text.
+		// i18n: compiles apps/web/messages/** into $lib/paraglide using the shared options in
+		// i18n.config.ts. One module per locale while developing (few files, fast HMR); one module per
+		// message for builds so each route chunk carries only its own text.
 		paraglideVitePlugin({
-			project: './project.inlang',
-			outdir: './src/lib/paraglide',
+			...paraglideOptions,
 			outputStructure: command === 'serve' ? 'locale-modules' : 'message-modules',
 		}),
 		tailwindcss(),

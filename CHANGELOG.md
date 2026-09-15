@@ -150,6 +150,10 @@ release into a renamed fork.
   lost while the browser is still loading the Svelte application.
 - **First-admin quickstarts** promote the account created during signup with `--yes`, preserve
   its password, and use a command that works in Bash and PowerShell.
+- **Free-edition locale configuration** survives publication. The compiler and Vite now share a
+  source config outside the SDK-managed Inlang project directory, so a fresh checkout detects
+  browser language instead of silently compiling Paraglide defaults. A publisher regression covers
+  this boundary.
 - **Desktop release actions** are pinned to commit SHAs, including installer signing and artifact
   publication steps; the Rust toolchain is selected explicitly.
 - **Backup recovery:** known-incomplete uploads archives send a failure heartbeat. Live restores
