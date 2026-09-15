@@ -224,8 +224,8 @@ Rollback = deploy an older tag: Actions → Deploy → Run workflow with `tag: s
 the build), or the first command above. `deploy.sh` writes the deployed `IMAGE_TAG` back into
 `.env`, so the rollback survives a later plain `docker compose up -d`. The workflow validates the
 `tag` input (`[A-Za-z0-9._-]`, no leading `-`). The `pgdata` volume is never touched by a deploy.
-Migrations are forward-only, so roll back code, not schema; a migration that must be undone is a
-new migration.
+Migrations are forward-only. Check release compatibility before rolling back code; a migration
+that must be undone requires a new migration or a coordinated database and file recovery.
 
 ### Backups and the restore drill
 
@@ -541,4 +541,9 @@ design (the project is `starterdough`, not the demo): the reset on that box is
   them itself through signed URLs) and are included in the nightly backup. For Cloudflare R2 / S3 /
   MinIO set `S3_BUCKET`, `S3_ENDPOINT`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`.
   Browsers then upload and download straight from the bucket, so its CORS rules must allow the web
-  origin (`PUT`, `GET`, header `Content-Type`).
+  origin (`PUT`, `GET`, header `Content-Type`). Browser PUTs target staging keys only. Finalization
+  verifies the selected bytes and publishes a unique server-only final key. The worker must remain
+  active for namespace sweeps and permanent legacy-key cleanup, even when no jobs are queued.
+  Migration `0009_immutable_uploads` requires draining old API/worker replicas; the deployment
+  scripts do so after pulling/building images. Do not roll back to an image predating this storage
+  layout after migration. See the documents-and-jobs guide for recovery and provider validation.

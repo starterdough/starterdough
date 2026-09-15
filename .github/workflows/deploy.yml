@@ -274,7 +274,9 @@ jobs:
           # GHCR namespaces are lowercase; github.repository keeps the owner's casing.
           IMAGE_REGISTRY="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           # shellcheck disable=SC2029  # expands here on purpose: validated tag/ref, single-quoted for the remote shell
-          ssh target "cd '$DEPLOY_PATH' && IMAGE_REGISTRY='$IMAGE_REGISTRY' IMAGE_TAG='$IMAGE_TAG' GIT_REF='$GIT_REF' bash infra/scripts/deploy.sh"
+          # Launch the selected release's script so its migration/writer-drain logic is active
+          # even when this is the first upgrade from an older deployment script.
+          ssh target "cd '$DEPLOY_PATH' && git fetch --quiet origin && git checkout --quiet --detach '$GIT_REF' && IMAGE_REGISTRY='$IMAGE_REGISTRY' IMAGE_TAG='$IMAGE_TAG' GIT_REF='' bash infra/scripts/deploy.sh"
       - name: Update the public demo, when one runs on this box
         if: vars.DEMO_PATH != ''
         env:
@@ -290,4 +292,4 @@ jobs:
           # production's: not the drop-in site blocks, not the production clone, not its containers.
           IMAGE_REGISTRY="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           # shellcheck disable=SC2029  # expands here on purpose: validated tag/ref, single-quoted for the remote shell
-          ssh target "cd '$DEMO_PATH' && IMAGE_REGISTRY='$IMAGE_REGISTRY' IMAGE_TAG='$IMAGE_TAG' GIT_REF='$GIT_REF' bash infra/demo/update.sh"
+          ssh target "cd '$DEMO_PATH' && git fetch --quiet origin && git checkout --quiet --detach '$GIT_REF' && IMAGE_REGISTRY='$IMAGE_REGISTRY' IMAGE_TAG='$IMAGE_TAG' GIT_REF='' bash infra/demo/update.sh"

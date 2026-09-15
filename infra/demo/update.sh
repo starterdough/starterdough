@@ -110,6 +110,10 @@ if ! docker compose pull --quiet; then
 	echo "✓ every image for $IMAGE_TAG is already on this box; carrying on with those"
 fi
 
+# The same upload-generation boundary as production, even if this demo disables uploads today.
+source infra/scripts/stop-upload-writers.sh
+stop_upload_writers demo-api
+
 # --wait returns once every service is healthy and `migrate` has completed, so a bad build fails here.
 echo "▸ starting"
 docker compose up -d --remove-orphans --wait --wait-timeout 300

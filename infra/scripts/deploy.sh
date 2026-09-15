@@ -73,6 +73,7 @@ else
 	docker compose pull --quiet
 fi
 
+
 # --wait returns once every service is running and healthy (and one-shots like `migrate` have
 # completed) or fails after the timeout, so a broken deploy fails here.
 echo "▸ starting"
