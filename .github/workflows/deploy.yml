@@ -12,6 +12,10 @@
 #   DEPLOY_HOST           the server (hostname, IP, or its tailnet name)
 #   DEPLOY_USER           SSH user, default `deploy` (infra/scripts/provision.sh creates it)
 #   DEPLOY_PATH           the clone on the server, default /opt/starterdough
+#   DEMO_PATH             optional: the public demo's clone on the same box (infra/README.md, "A
+#                         public demo"). Set it and every deploy also moves the demo onto the build
+#                         it just deployed, so what visitors try is what you ship; unset, the demo
+#                         is never touched.
 #   DEPLOY_VIA_TAILSCALE  'true' when the server is reachable only over your tailnet
 #   IMAGE_PLATFORMS       default linux/amd64; add linux/arm64 for an ARM VPS (slower builds via QEMU)
 #   SITE_URL DOCS_URL WEB_URL API_URL   REQUIRED: baked into the static sites (caddy image) at build
@@ -271,3 +275,19 @@ jobs:
           IMAGE_REGISTRY="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           # shellcheck disable=SC2029  # expands here on purpose: validated tag/ref, single-quoted for the remote shell
           ssh target "cd '$DEPLOY_PATH' && IMAGE_REGISTRY='$IMAGE_REGISTRY' IMAGE_TAG='$IMAGE_TAG' GIT_REF='$GIT_REF' bash infra/scripts/deploy.sh"
+      - name: Update the public demo, when one runs on this box
+        if: vars.DEMO_PATH != ''
+        env:
+          IMAGE_TAG: ${{ steps.tag.outputs.value }}
+          GIT_REF: ${{ steps.tag.outputs.ref }}
+          DEMO_PATH: ${{ vars.DEMO_PATH }}
+        run: |
+          # A second compose project beside production (infra/README.md, "A public demo"), moved onto
+          # the build that just went live so the demo cannot drift from what the site sells. A step
+          # of this job rather than a job of its own: the SSH config and the GHCR login above are
+          # exactly what it needs, and production is already deployed by the time it runs, so a demo
+          # that fails to come back is a red job and never a rollback. It touches nothing of
+          # production's: not the drop-in site blocks, not the production clone, not its containers.
+          IMAGE_REGISTRY="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          # shellcheck disable=SC2029  # expands here on purpose: validated tag/ref, single-quoted for the remote shell
+          ssh target "cd '$DEMO_PATH' && IMAGE_REGISTRY='$IMAGE_REGISTRY' IMAGE_TAG='$IMAGE_TAG' GIT_REF='$GIT_REF' bash infra/demo/update.sh"

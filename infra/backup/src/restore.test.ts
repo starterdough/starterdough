@@ -1,17 +1,26 @@
-import { describe, expect, it } from 'bun:test';
+import { afterAll, describe, expect, it } from 'bun:test';
+import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { configFromEnv } from './config';
+import { createLogger } from './log';
 import { parseStamp } from './names';
 import {
 	drillDatabaseName,
 	pgRestoreArgs,
+	promoteStagedUploads,
 	quoteIdentifier,
 	restoreSessionEnv,
 	safetyDumpName,
 	selectLatest,
+	stageUploads,
 	tarExtractArgs,
 	tarListArgs,
 } from './restore';
 
 const DUMP = '/backups/starterdough_20260909T023000Z.dump';
+const tmp = await mkdtemp(join(tmpdir(), 'starterdough-restore-unit-'));
+afterAll(() => rm(tmp, { recursive: true, force: true }));
 
 describe('pg_restore arguments', () => {
 	it('restores a drill into an empty database without dropping anything', () => {
@@ -72,7 +81,6 @@ describe('pg_restore arguments', () => {
 			'tar',
 			'-xzf',
 			'/backups/x.uploads.tar.gz',
-			'--no-overwrite-dir',
 			'-C',
 			'/data/uploads',
 		]);
@@ -154,5 +162,64 @@ describe('drill database naming', () => {
 	it('quotes identifiers so mixed case and quotes survive', () => {
 		expect(quoteIdentifier('user')).toBe('"user"');
 		expect(quoteIdentifier('we"ird')).toBe('"we""ird"');
+	});
+});
+
+describe('uploads staging', () => {
+	const log = createLogger(() => {});
+	const config = configFromEnv({
+		DATABASE_URL: 'postgres://starterdough@postgres:5432/starterdough',
+	});
+
+	it('rejects a broken archive and removes its staging directory', async () => {
+		const dir = await mkdtemp(join(tmp, 'broken-'));
+		const archive = join(dir, 'broken.tar.gz');
+		const uploads = join(dir, 'uploads');
+		await mkdir(uploads);
+		await Bun.write(join(uploads, 'existing'), 'untouched');
+		await Bun.write(archive, 'not a tar archive');
+
+		await expect(stageUploads(config, { archive, dir: uploads }, log)).rejects.toThrow(
+			'the database was not changed',
+		);
+		expect(await readdir(uploads)).toEqual(['existing']);
+		expect(await Bun.file(join(uploads, 'existing')).text()).toBe('untouched');
+	});
+
+	it('merges staged directories, replaces archived files and retains unrelated live files', async () => {
+		const dir = await mkdtemp(join(tmp, 'promote-'));
+		const stage = join(dir, 'stage');
+		const target = join(dir, 'target');
+		await mkdir(join(stage, 'organization'), { recursive: true });
+		await mkdir(join(target, 'organization'), { recursive: true });
+		await Bun.write(join(stage, 'organization', 'replaced'), 'from backup');
+		await Bun.write(join(stage, 'organization', 'new'), 'new from backup');
+		await Bun.write(join(target, 'organization', 'replaced'), 'live value');
+		await Bun.write(join(target, 'unrelated'), 'retained');
+
+		await promoteStagedUploads(stage, target);
+		expect(await Bun.file(join(target, 'organization', 'replaced')).text()).toBe('from backup');
+		expect(await Bun.file(join(target, 'organization', 'new')).text()).toBe('new from backup');
+		expect(await Bun.file(join(target, 'unrelated')).text()).toBe('retained');
+		expect(await readdir(stage)).toEqual([]);
+	});
+
+	it('rejects a staged directory/file conflict before the database can change', async () => {
+		const dir = await mkdtemp(join(tmp, 'conflict-'));
+		const source = join(dir, 'source');
+		const archive = join(dir, 'uploads.tar.gz');
+		const uploads = join(dir, 'uploads');
+		await mkdir(join(source, 'organization'), { recursive: true });
+		await mkdir(uploads);
+		await Bun.write(join(source, 'organization', 'document'), 'from backup');
+		await Bun.write(join(uploads, 'organization'), 'live file');
+		const archived = await Bun.spawn(['tar', '-czf', archive, '-C', source, '.']).exited;
+		expect(archived).toBe(0);
+
+		await expect(stageUploads(config, { archive, dir: uploads }, log)).rejects.toThrow(
+			'the database was not changed',
+		);
+		expect(await readdir(uploads)).toEqual(['organization']);
+		expect(await Bun.file(join(uploads, 'organization')).text()).toBe('live file');
 	});
 });

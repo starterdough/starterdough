@@ -2,4 +2,5 @@
 # (core.autocrlf on Windows would otherwise hand `bash` a "\r" after every line).
 *.sh text eol=lf
 *.Caddyfile text eol=lf
+*.caddy text eol=lf
 Dockerfile* text eol=lf

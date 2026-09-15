@@ -8,7 +8,7 @@ import { expect, test } from '@playwright/test';
  *
  * Same pages as the a11y suite: everything that renders without an API.
  */
-const pages = ['/', '/login', '/signup', '/offline'];
+const pages = ['/login', '/signup', '/offline'];
 
 for (const path of pages) {
 	test(`${path} loads with no CSP violation`, async ({ page }) => {

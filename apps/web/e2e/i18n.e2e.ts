@@ -37,14 +37,14 @@ test('the switcher persists the choice and reloads in the new language', async (
 	page,
 	context,
 }) => {
-	await page.goto('/');
+	await page.goto('/login');
 	await expect(page.locator('html')).toHaveAttribute('lang', 'en');
 
 	await page.getByRole('button', { name: /^Language: / }).click();
 	await page.getByRole('menuitemradio', { name: 'Deutsch' }).click();
 
 	await expect(page.locator('html')).toHaveAttribute('lang', 'de');
-	await expect(page.getByRole('link', { name: 'App öffnen' })).toBeVisible();
+	await expect(page.getByRole('heading', { level: 1 })).toHaveText('Anmelden');
 	const cookie = (await context.cookies()).find((c) => c.name === 'PARAGLIDE_LOCALE');
 	expect(cookie?.value).toBe('de');
 
@@ -52,4 +52,30 @@ test('the switcher persists the choice and reloads in the new language', async (
 	await page.goto('/offline');
 	await expect(page.locator('html')).toHaveAttribute('lang', 'de');
 	await expect(page.getByRole('heading', { level: 1 })).toHaveText('Du bist offline');
+});
+
+test('the switcher waits for hydration before accepting input', async ({ page }) => {
+	let releaseEntry: () => void = () => {};
+	const entryGate = new Promise<void>((resolve) => {
+		releaseEntry = resolve;
+	});
+	let observeEntry: () => void = () => {};
+	const entryRequested = new Promise<void>((resolve) => {
+		observeEntry = resolve;
+	});
+	await page.route('**/_app/immutable/entry/start.*.js', async (route) => {
+		observeEntry();
+		await entryGate;
+		await route.continue();
+	});
+
+	await page.goto('/login', { waitUntil: 'commit' });
+	const trigger = page.getByRole('button', { name: /^Language: / });
+	await expect(trigger).toBeVisible();
+	await entryRequested;
+	await expect(trigger).toBeDisabled();
+	releaseEntry();
+
+	await trigger.click();
+	await expect(page.getByRole('menuitemradio', { name: 'Deutsch' })).toBeVisible();
 });

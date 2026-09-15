@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from 'bun:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -9,6 +9,7 @@ import {
 	pgDumpArgs,
 	pgRestoreListArgs,
 	runHousekeeping,
+	sendBackupHeartbeat,
 	sendFailureHeartbeat,
 	sendHeartbeat,
 	tarCreateArgs,
@@ -17,7 +18,7 @@ import {
 import { ConfigError, configFromEnv, type S3Target } from './config';
 import { createLogger, type LogLevel } from './log';
 import type { ManifestFile } from './names';
-import { parseVersion } from './proc';
+import { parseVersion, run } from './proc';
 import { BackupBucket } from './s3';
 import { fakeClient } from './s3.test';
 
@@ -44,10 +45,30 @@ describe('pg_dump arguments', () => {
 			'tar',
 			'-czf',
 			'/backups/x.uploads.tar.gz.part',
+			'--exclude=./.starterdough-restore-*',
 			'-C',
 			'/data/uploads',
 			'.',
 		]);
+	});
+
+	it('never archives a restore staging directory left by an interrupted process', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'starterdough-backup-stage-exclude-'));
+		const archive = join(dir, 'uploads.tar.gz');
+		const uploads = join(dir, 'uploads');
+		await mkdir(join(uploads, 'organization'), { recursive: true });
+		await mkdir(join(uploads, '.starterdough-restore-leftover'), { recursive: true });
+		await Bun.write(join(uploads, 'organization', 'document'), 'kept');
+		await Bun.write(join(uploads, '.starterdough-restore-leftover', 'partial'), 'excluded');
+		try {
+			expect((await run(tarCreateArgs(uploads, archive))).code).toBe(0);
+			const listed = await run(['tar', '-tzf', archive]);
+			expect(listed.code).toBe(0);
+			expect(listed.stdout).toContain('./organization/document');
+			expect(listed.stdout).not.toContain('.starterdough-restore-leftover');
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
 	});
 
 	it('extracts the version number from pg_dump --version', () => {
@@ -303,6 +324,28 @@ describe('heartbeat', () => {
 				throw new Error('should not be called');
 			}),
 		).toBe('skipped');
+	});
+
+	it('signals a known-incomplete uploads archive through the failure endpoint', async () => {
+		const urls: string[] = [];
+		const captured = capture();
+		expect(
+			await sendBackupHeartbeat(
+				'https://hc.example/ping/abc',
+				'tar exited 1: a file changed',
+				captured.log,
+				async (input) => {
+					urls.push(String(input));
+					return new Response('OK');
+				},
+			),
+		).toBe('sent');
+		expect(urls).toEqual(['https://hc.example/ping/abc/fail']);
+		expect(
+			captured.lines.some(
+				(entry) => entry.level === 'warn' && entry.line.includes('backup set is degraded'),
+			),
+		).toBe(true);
 	});
 
 	it('pings <url>/fail for a failed scheduled run, without a double slash', async () => {

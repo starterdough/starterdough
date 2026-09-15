@@ -1,0 +1,87 @@
+# The production Caddy's half of the public demo: the two site blocks that put the demo's
+# containers on the internet. Copy this file into the PRODUCTION clone and set the one row it
+# reads, then validate and reload (infra/README.md, "A public demo"):
+#
+#   cp infra/demo/caddy/demo.caddy /opt/starterdough/infra/caddy/conf.d/demo.caddy
+#   # in the production clone's .env: DEMO_DOMAIN=demo.example.com
+#   docker compose up -d caddy    # recreates it with DEMO_DOMAIN in its environment
+#   docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile
+#   docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
+#
+# DEMO_DOMAIN has no default on purpose. Unset, `{$DEMO_DOMAIN}` expands to nothing and the site
+# address becomes keyless, so `caddy validate` fails and the reload never happens: a half-configured
+# demo cannot take production's Caddy down with it.
+#
+# The demo is a second compose project on this box, reached over the starterdough-proxy network
+# (infra/compose.proxy-network.yml). The marketing site and the docs come from demo-static, which
+# compresses them and sets their Content-Security-Policy and X-Robots-Tag itself
+# (infra/demo/caddy/demo-static.Caddyfile); this end adds TLS and the headers every host on this
+# box shares.
+{$DEMO_DOMAIN} {
+	import security
+	import logs
+
+	# Static pages never take a body.
+	request_body {
+		max_size 1MB
+	}
+
+	# The docs were built with DOCS_URL=…/docs, so their own links carry that base; the container
+	# serves them at its root, which is what handle_path strips the prefix for.
+	redir /docs /docs/ 301
+	handle_path /docs/* {
+		reverse_proxy demo-static:8081 {
+			import upstream
+			import resilient
+			health_uri /
+		}
+	}
+
+	# The marketing site: the demo's front door, so a visitor sees the surface before signing in.
+	handle {
+		reverse_proxy demo-static:8080 {
+			import upstream
+			import resilient
+			health_uri /
+		}
+	}
+}
+
+# The app and the API on one origin: no CORS between them, and the app's baked
+# Content-Security-Policy already covers the API it calls, as 'self'.
+app.{$DEMO_DOMAIN} {
+	import security
+	import logs
+
+	# 1 MB is plenty: every request here is a page or JSON.
+	request_body {
+		max_size 1MB
+	}
+
+	@api path /api/* /rpc/* /healthz /readyz
+	handle @api {
+		# JSON only, so a streamed response is passed through as it arrives.
+		encode {
+			zstd
+			gzip
+			match {
+				header Content-Type application/json*
+			}
+		}
+		reverse_proxy demo-api:3000 {
+			import upstream
+			import resilient
+			health_uri /readyz
+			flush_interval -1
+		}
+	}
+
+	handle {
+		encode zstd gzip
+		reverse_proxy demo-web:3000 {
+			import upstream
+			import resilient
+			health_uri /healthz
+		}
+	}
+}

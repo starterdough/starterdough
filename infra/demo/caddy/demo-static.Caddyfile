@@ -1,0 +1,74 @@
+# The demo's marketing site (:8080) and docs (:8081), served to the PRODUCTION Caddy over the
+# starterdough-proxy network. This Caddy terminates no TLS and owns no hostname: production's does
+# both and reverse-proxies here (caddy/conf.d/demo.caddy, in the production clone). All it does is
+# file-serve what Dockerfile.static baked for the demo's own origins, which is why the demo cannot
+# reuse production's `caddy` image the way it reuses production's `api` and `web`: SITE_URL,
+# DOCS_URL, PUBLIC_APP_URL and PUBLIC_API_URL are compiled into every page.
+#
+# Snippet twins: (site_csp), (docs_csp) and the static-file handling of subdomains.Caddyfile, with
+# this demo's API origin instead of {$API_URL} interpolated in production's Caddy, which is
+# production's API. Keep them in step.
+{
+	# Behind production's Caddy on a private Docker network. Without this Caddy would decide these
+	# are public sites, bind :443 and ask Let's Encrypt for certificates it does not need and could
+	# not get: the hostnames resolve to production's Caddy, not to this container.
+	auto_https off
+	servers {
+		# The only client is production's Caddy, one hop away on the bridge network, and it sets
+		# X-Forwarded-For itself. Strict: stop at the first untrusted hop so a client-supplied
+		# prefix is ignored.
+		trusted_proxies static private_ranges
+		trusted_proxies_strict
+	}
+}
+
+# One JSON object per request on stdout. No query filtering twin here: static pages carry no
+# credentials in the query string (that is the API's and the auth links' problem, on the app host).
+(logs) {
+	log {
+		output stdout
+		format json
+	}
+}
+
+(static_site) {
+	import logs
+	encode zstd gzip
+	header {
+		# A demo must never outrank the product site in search results. The app says so in its own
+		# `<meta name="robots">` (PUBLIC_DEMO_MODE); these pages are prerendered by an Astro build
+		# that knows nothing about the demo, so the header is the only place left to say it.
+		X-Robots-Tag "noindex, nofollow"
+		X-Content-Type-Options nosniff
+		Cross-Origin-Opener-Policy same-origin
+		-Server
+	}
+	# Static pages never take a body; the cap only has to be smaller than "unbounded".
+	request_body {
+		max_size 1MB
+	}
+	# Hashed build assets never change; everything else is revalidated.
+	@assets path /_astro/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+	try_files {path} {path}/ {path}.html /404.html
+	file_server
+}
+
+# The marketing site: the demo's front door, so a visitor sees the surface they are buying before
+# they sign in to it. Unprivileged ports, so this container needs no NET_BIND_SERVICE back.
+:8080 {
+	root * /srv/site
+	# (site_csp). {$API_URL} is the demo's API, which the contact form posts to.
+	header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' {$API_URL}; form-action 'self' {$API_URL}; base-uri 'self'; object-src 'none'; frame-ancestors 'none'"
+	import static_site
+}
+
+# The docs, which production's Caddy serves under /docs on the same host: `handle_path` strips that
+# prefix, and Dockerfile.static built them with DOCS_URL=…/docs so their own links carry the base.
+:8081 {
+	root * /srv/docs
+	# (docs_csp), looser for two shipped features: 'wasm-unsafe-eval' is pagefind (the search index
+	# is WebAssembly) and cdn.jsdelivr.net is the Scalar bundle behind /reference/api-reference.
+	header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; font-src 'self' data: https://cdn.jsdelivr.net; connect-src 'self' {$API_URL} https://cdn.jsdelivr.net; worker-src 'self' blob:; form-action 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'"
+	import static_site
+}

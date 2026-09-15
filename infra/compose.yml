@@ -201,8 +201,10 @@ services:
 
   caddy:
     <<: *hardening
-    # The Caddy image runs as root and binds 80/443 *inside* the container, which needs this one
-    # capability once `cap_drop: ALL` has taken the rest away (even root is checked by capability).
+    # Not only to bind 80/443 inside the container (even root is checked by capability): the image
+    # ships its binary with the file capability `cap_net_bind_service=ep`, and the kernel refuses to
+    # execve a file whose permitted set is not inside the bounding set `cap_drop: ALL` leaves. Drop
+    # it and the container fails at `exec`, whatever ports it binds.
     cap_add: [NET_BIND_SERVICE]
     pids_limit: 512
     build:
@@ -232,6 +234,11 @@ services:
       API_URL: ${API_URL:-https://api.${DOMAIN:-localhost}}
       # Let's Encrypt contact address (expiry warnings, account recovery). Optional; empty = none.
       ACME_EMAIL: ${ACME_EMAIL:-}
+      # The public demo's drop-in site blocks read this one (infra/demo/caddy/demo.caddy, copied
+      # into caddy/conf.d). No default: unset, `{$DEMO_DOMAIN}` expands to nothing and the drop-in
+      # becomes a keyless site block, so `caddy validate` refuses it instead of Caddy loading a
+      # half-configured demo. Harmless while no drop-in reads it, which is the default.
+      DEMO_DOMAIN: ${DEMO_DOMAIN:-}
     volumes:
       - ./caddy/${CADDY_MODE:-subdomains}.Caddyfile:/etc/caddy/Caddyfile:ro
       # Your own site blocks: every *.caddy in here is imported by both Caddyfiles (caddy/conf.d/README.md).

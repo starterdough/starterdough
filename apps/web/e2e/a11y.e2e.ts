@@ -3,11 +3,11 @@ import { expect, test } from '@playwright/test';
 
 /**
  * Automated accessibility checks (axe-core, WCAG 2.2 AA) on the pages that render without an
- * API (the e2e web server has none): the landing page, the auth forms and the offline page (the
+ * API (the e2e web server has none): the auth forms and the offline page (`/` is a redirect, the
  * guarded routes answer 503 without an API). Authenticated pages are covered by the
  * manual keyboard/contrast pass; axe finds structure and contrast issues, not usability.
  */
-const pages = ['/', '/login', '/signup', '/forgot-password', '/offline'];
+const pages = ['/login', '/signup', '/forgot-password', '/offline'];
 
 for (const path of pages) {
 	test(`${path} has no WCAG 2.2 AA violations`, async ({ page }) => {

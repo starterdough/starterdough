@@ -4,7 +4,6 @@
 	"public_consent_decline": "Ablehnen",
 	"public_consent_label": "Einwilligung zur Analyse",
 	"public_consent_text": "Wir nutzen datenschutzfreundliche Analysen, um zu verstehen, wie die App genutzt wird. Es wird nichts erfasst, bevor du zustimmst.",
-	"public_landing_description": "Bun-nativer SaaS-Starter, der überall läuft. Dies ist die Anwendungs-Shell — Marketing-Website und Dokumentation sind eigene Astro-Apps.",
 	"public_offline_description": "Diese Seite braucht eine Verbindung. Deine Arbeit ist sicher auf dem Server; verbinde dich neu und versuche es erneut.",
 	"public_offline_title": "Du bist offline"
 }

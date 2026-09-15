@@ -4,12 +4,15 @@
 #
 #   git clone <repo> /opt/starterdough-demo && cd /opt/starterdough-demo
 #   cp infra/demo/.env.example .env      # COMPOSE_FILE=infra/demo/compose.yml is set in there
+#   docker compose build demo-static     # the one image that cannot be production's
 #   docker compose pull && docker compose up -d --wait
 #
-# Runbook, the Caddy site block and the reset timer: infra/README.md ("A public demo").
+# Runbook, the Caddy site blocks and the reset timer: infra/README.md ("A public demo").
 #
-# What runs: postgres, migrate, demo-api and demo-web, the same images as production. No caddy
-# (production's serves the site block) and no backup (the data is wiped on a schedule by reset.sh).
+# What runs: postgres, migrate, demo-api and demo-web from the images production runs, plus
+# demo-static, which serves the marketing site and the docs built for this demo's own origins. No
+# caddy of its own (production's terminates TLS and routes both hosts) and no backup (the data is
+# wiped on a schedule by reset.sh).
 # Memory and CPU are capped well below production's, so a hammered demo runs out of its own share
 # long before it competes with production.
 name: starterdough-demo
@@ -36,10 +39,16 @@ x-api-env: &api-env
   NODE_ENV: production
   DATABASE_URL: postgres://starterdough:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/starterdough
   BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
-  # One origin: the app at /, the API under /api, /rpc and the probes (the site block routes them),
-  # so both are https://DOMAIN unless .env says otherwise.
-  API_URL: ${API_URL:-https://${DOMAIN:?set DOMAIN in .env}}
-  WEB_URL: ${WEB_URL:-https://${DOMAIN:?set DOMAIN in .env}}
+  # Two hosts, the split a default deployment of the kit has: the marketing site and the docs on
+  # DOMAIN (the docs under /docs), the app and the API together on app.DOMAIN. Sharing one origin
+  # with the app is what lets the demo run production's `web` image unchanged: the
+  # Content-Security-Policy baked into that image allows 'self', so an api.DOMAIN of its own here
+  # would mean building `web` on the box as well.
+  API_URL: ${API_URL:-https://app.${DOMAIN:?set DOMAIN in .env}}
+  WEB_URL: ${WEB_URL:-https://app.${DOMAIN:?set DOMAIN in .env}}
+  # The marketing site is a cross-origin caller: its contact form posts from DOMAIN to the API on
+  # app.DOMAIN, and CORS refuses that unless the origin is listed. A row in .env replaces this.
+  TRUSTED_ORIGINS: ${TRUSTED_ORIGINS:-https://${DOMAIN:?set DOMAIN in .env}}
   # Pinned here rather than read from .env: this stack is a demo by construction, and reset.sh
   # checks the running demo-api for exactly this value before it wipes anything.
   PUBLIC_DEMO_MODE: 'true'
@@ -116,9 +125,10 @@ services:
       context: ../..
       dockerfile: apps/web/Dockerfile
       args:
-        # Baked into the page's Content-Security-Policy. 'self' already covers a same-origin API,
-        # which is why production's image works here unchanged when you pull instead of build.
-        PUBLIC_API_URL: ${API_URL:-https://${DOMAIN:?set DOMAIN in .env}}
+        # Baked into the page's Content-Security-Policy. 'self' already covers the API, which
+        # shares this origin, and that is why production's image works here unchanged when you
+        # pull instead of build.
+        PUBLIC_API_URL: ${API_URL:-https://app.${DOMAIN:?set DOMAIN in .env}}
     image: ${IMAGE_REGISTRY:-starterdough}/web:${IMAGE_TAG:-local}
     restart: unless-stopped
     logging: *logging
@@ -126,8 +136,8 @@ services:
       NODE_ENV: production
       PORT: '3000'
       HOST: 0.0.0.0
-      ORIGIN: ${WEB_URL:-https://${DOMAIN:?set DOMAIN in .env}}
-      PUBLIC_API_URL: ${API_URL:-https://${DOMAIN:?set DOMAIN in .env}}
+      ORIGIN: ${WEB_URL:-https://app.${DOMAIN:?set DOMAIN in .env}}
+      PUBLIC_API_URL: ${API_URL:-https://app.${DOMAIN:?set DOMAIN in .env}}
       # Internal API origin for SSR
       API_URL: http://demo-api:3000
       # The banner and noindex. Read at run time; pinned for the same reason as in x-api-env.
@@ -136,6 +146,51 @@ services:
     depends_on:
       demo-api:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: '1'
+          pids: 512
+
+  # The marketing site and the docs: the two surfaces the app is not, and the only image built on
+  # the box. Dockerfile.static compiles SITE_URL, DOCS_URL, PUBLIC_APP_URL and PUBLIC_API_URL into
+  # every page, so production's `caddy` image would serve the demo a site whose every link points
+  # at production. Deliberately no `image:`: a build-only service is skipped by
+  # `docker compose pull` instead of failing it, and `up` reuses what `build` left behind rather
+  # than rebuilding on every nightly reset.
+  demo-static:
+    <<: *hardening
+    # The caddy image ships its binary with the file capability `cap_net_bind_service=ep`, and the
+    # kernel refuses to execve a file whose permitted set is not inside the bounding set. With
+    # `cap_drop: ALL` alone the container crash-loops on `exec /usr/bin/caddy: operation not
+    # permitted`, whatever ports it listens on. Same reason production's caddy adds it back.
+    cap_add: [NET_BIND_SERVICE]
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.static
+      args:
+        SITE_URL: ${SITE_URL:-https://${DOMAIN:?set DOMAIN in .env}}
+        # A path, not a host of its own: the docs are served under /docs on the same origin, and
+        # Astro takes that path as the base every link and asset carries (apps/docs/astro.config.mjs).
+        DOCS_URL: ${DOCS_URL:-https://${DOMAIN:?set DOMAIN in .env}/docs}
+        PUBLIC_APP_URL: ${WEB_URL:-https://app.${DOMAIN:?set DOMAIN in .env}}
+        PUBLIC_API_URL: ${API_URL:-https://app.${DOMAIN:?set DOMAIN in .env}}
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      # The contact form's origin, interpolated into the site's Content-Security-Policy.
+      API_URL: ${API_URL:-https://app.${DOMAIN:?set DOMAIN in .env}}
+    volumes:
+      - ./caddy/demo-static.Caddyfile:/etc/caddy/Caddyfile:ro
+    # Only the proxy network: it serves the production Caddy and talks to nothing else.
+    networks: [proxy]
+    healthcheck:
+      # Caddy's admin API listens on localhost inside the container; a 200 means the config loaded.
+      test: ['CMD', 'wget', '-q', '--spider', 'http://127.0.0.1:2019/config/']
+      interval: 10s
+      timeout: 3s
+      retries: 5
     deploy:
       resources:
         limits:

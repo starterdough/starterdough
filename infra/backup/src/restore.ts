@@ -1,4 +1,14 @@
-import { access, constants, mkdir, readdir, stat } from 'node:fs/promises';
+import {
+	access,
+	constants,
+	lstat,
+	mkdir,
+	mkdtemp,
+	readdir,
+	rename,
+	rm,
+	stat,
+} from 'node:fs/promises';
 import { join } from 'node:path';
 import {
 	countTableEntries,
@@ -6,6 +16,7 @@ import {
 	pgRestoreListArgs,
 	quoteIdentifier,
 	sha256,
+	UPLOADS_STAGE_PREFIX,
 } from './backup';
 import { type BackupConfig, detachPassword, redactUrl, withDatabase } from './config';
 import { acquireLock } from './lock';
@@ -136,13 +147,9 @@ export function restoreSessionEnv(lockTimeoutMs: number): Record<string, string>
 	return { PGOPTIONS: `-c lock_timeout=${lockTimeoutMs}` };
 }
 
-/**
- * `--no-overwrite-dir` keeps the mode and mtime of directories that already exist, above all the
- * mounted `STORAGE_DIR` itself (the archive carries a `.` entry for it and a volume or bind mount
- * often belongs to another owner, which would otherwise end the extraction with an error).
- */
+/** Extracts only into a newly created private staging directory, never the live uploads tree. */
 export function tarExtractArgs(archivePath: string, targetDir: string): string[] {
-	return ['tar', '-xzf', archivePath, '--no-overwrite-dir', '-C', targetDir];
+	return ['tar', '-xzf', archivePath, '-C', targetDir];
 }
 
 export function tarListArgs(archivePath: string): string[] {
@@ -202,8 +209,8 @@ export async function restore(
 	// database is a perfectly sensible thing to drill.
 	if (manifest) requireMatchingDatabase(manifest, baseDatabase, options, log);
 
-	// The uploads are located and their target checked before the database is touched, so a missing
-	// archive or a read-only mount cannot leave a restored database next to un-restored files.
+	// Locate and verify the uploads before the confirmation. Extraction itself happens under the
+	// restore lock, after --yes, but still before the database safety dump and destructive restore.
 	const uploads = options.uploads
 		? await prepareUploads(config, located.stamp, manifest, bucket, log)
 		: null;
@@ -240,12 +247,15 @@ export async function restore(
 	// Held across the pre-restore dump and the restore itself, so a scheduled backup cannot start
 	// mid-restore and capture a database with half its objects dropped.
 	const lock = await acquireLock(targetUrl, baseDatabase, `restore ${located.stamp}`, log);
+	let stagedUploads: StagedUploads | null = null;
+	let databaseRestored = false;
 	try {
 		// Everything that can still say no happens before `--clean --if-exists` drops a single object:
-		// an archive pg_restore cannot open, writers still connected, and the copy of what is about
-		// to be replaced.
+		// an archive pg_restore cannot open, writers still connected, uploads that cannot fully extract,
+		// and the copy of what is about to be replaced.
 		await requireReadableArchive(located.path, log);
 		await requireNoWriters(targetUrl, baseDatabase, lock.pid, options, log);
+		stagedUploads = uploads ? await stageUploads(config, uploads, log) : null;
 		const safetyDump = options.noSafetyDump
 			? null
 			: await takeSafetyDump(config, baseDatabase, targetUrl, log);
@@ -263,8 +273,9 @@ export async function restore(
 			timeoutMs: config.commandTimeoutMs,
 		});
 		log.info('pg_restore finished', { database: baseDatabase, durationMs: result.durationMs });
+		databaseRestored = true;
 
-		if (uploads) await extractUploads(config, uploads, log);
+		if (stagedUploads) await installStagedUploads(stagedUploads, safetyDump, log);
 
 		return {
 			...base,
@@ -275,6 +286,9 @@ export async function restore(
 			safetyDump,
 			durationMs: elapsed(),
 		};
+	} catch (error) {
+		if (stagedUploads && !databaseRestored) await discardStagedUploads(stagedUploads, log);
+		throw error;
 	} finally {
 		await lock.release();
 	}
@@ -809,9 +823,13 @@ async function requireNoWriters(
 	}
 }
 
-interface UploadsPlan {
+export interface UploadsPlan {
 	archive: string;
 	dir: string;
+}
+
+export interface StagedUploads extends UploadsPlan {
+	stageDir: string;
 }
 
 /**
@@ -855,16 +873,118 @@ async function prepareUploads(
 	return { archive, dir };
 }
 
-async function extractUploads(
+/**
+ * Fully decompresses the archive before pg_restore. The staging directory is inside STORAGE_DIR,
+ * so it uses the same mounted filesystem and proves that filesystem has the required capacity.
+ */
+export async function stageUploads(
 	config: BackupConfig,
 	{ archive, dir }: UploadsPlan,
 	log: Logger,
+): Promise<StagedUploads> {
+	const stageDir = await mkdtemp(join(dir, UPLOADS_STAGE_PREFIX));
+	log.info('staging uploads archive', { archive, dir, stageDir });
+	try {
+		const result = await runOrThrow(tarExtractArgs(archive, stageDir), {
+			timeoutMs: config.commandTimeoutMs,
+		});
+		await validateStagedUploads(stageDir, dir);
+		log.info('uploads archive staged', { stageDir, durationMs: result.durationMs });
+		return { archive, dir, stageDir };
+	} catch (error) {
+		await rm(stageDir, { recursive: true, force: true }).catch((cleanupError: unknown) => {
+			log.warn('could not remove failed uploads staging directory', {
+				stageDir,
+				error: cleanupError,
+			});
+		});
+		throw new RestoreError(
+			`could not fully extract the uploads archive into ${dir}; the database was not changed`,
+			{ cause: error },
+		);
+	}
+}
+
+/**
+ * Promotes a fully extracted tree with the restore's existing merge semantics: archived files
+ * replace names that exist, archived directories merge, and unrelated live files remain.
+ */
+export async function promoteStagedUploads(stageDir: string, targetDir: string): Promise<void> {
+	for (const entry of await readdir(stageDir, { withFileTypes: true })) {
+		const source = join(stageDir, entry.name);
+		const target = join(targetDir, entry.name);
+		const current = await lstatIfExists(target);
+
+		if (entry.isDirectory() && current?.isDirectory()) {
+			await promoteStagedUploads(source, target);
+			await rm(source, { recursive: true, force: true });
+			continue;
+		}
+		if (current && entry.isDirectory() !== current.isDirectory()) {
+			throw new RestoreError(
+				`cannot restore uploads path ${target}: the archive and live storage disagree on whether it is a directory`,
+			);
+		}
+		await rename(source, target);
+	}
+}
+
+/** Detects deterministic directory/file conflicts before pg_restore changes the database. */
+async function validateStagedUploads(stageDir: string, targetDir: string): Promise<void> {
+	for (const entry of await readdir(stageDir, { withFileTypes: true })) {
+		const source = join(stageDir, entry.name);
+		const target = join(targetDir, entry.name);
+		const current = await lstatIfExists(target);
+		if (current && entry.isDirectory() !== current.isDirectory()) {
+			throw new RestoreError(
+				`cannot restore uploads path ${target}: the archive and live storage disagree on whether it is a directory`,
+			);
+		}
+		if (entry.isDirectory() && current?.isDirectory()) {
+			await validateStagedUploads(source, target);
+		}
+	}
+}
+
+async function lstatIfExists(path: string): Promise<Awaited<ReturnType<typeof lstat>> | null> {
+	try {
+		return await lstat(path);
+	} catch (error) {
+		if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
+		throw error;
+	}
+}
+
+async function installStagedUploads(
+	staged: StagedUploads,
+	safetyDump: string | null,
+	log: Logger,
 ): Promise<void> {
-	log.info('extracting uploads archive', { archive, dir });
-	const result = await runOrThrow(tarExtractArgs(archive, dir), {
-		timeoutMs: config.commandTimeoutMs,
+	const { archive, dir, stageDir } = staged;
+	log.info('installing staged uploads', { archive, dir, stageDir });
+	try {
+		await promoteStagedUploads(stageDir, dir);
+		await rm(stageDir, { recursive: true, force: true });
+		log.info('uploads restored', { dir });
+	} catch (error) {
+		throw new RestoreError(
+			`the database restore completed, but staged uploads could not be installed into ${dir}. Remaining staged files were kept at ${stageDir}. Fix the storage filesystem and re-run the same restore${
+				safetyDump
+					? `, or roll the database back from ${safetyDump}`
+					: '; no pre-restore safety dump exists'
+			}`,
+			{ cause: error },
+		);
+	}
+}
+
+async function discardStagedUploads(staged: StagedUploads, log: Logger): Promise<void> {
+	await rm(staged.stageDir, { recursive: true, force: true }).catch((error: unknown) => {
+		log.warn('could not remove uploads staging directory after the restore stopped', {
+			stageDir: staged.stageDir,
+			error,
+		});
 	});
-	log.info('uploads restored', { dir, durationMs: result.durationMs });
 }
 
 async function exists(path: string): Promise<boolean> {

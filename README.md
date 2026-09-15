@@ -124,11 +124,11 @@ bun run db:migrate
 bun run dev:app
 ```
 
-Open http://localhost:5173 and sign up. Then create your admin. The password comes from
-`ADMIN_PASSWORD` or an interactive prompt, never from the command line:
+Open http://localhost:5173 and sign up. Then promote that account to platform administrator. The
+`--yes` flag confirms promotion of the existing account and leaves its password unchanged:
 
 ```sh
-bun run admin:create -- --email you@example.com --name 'You'
+bun run admin:create -- --email you@example.com --name 'You' --yes
 ```
 
 That is the whole local setup. Emails print to the API terminal and social sign-in stays off.

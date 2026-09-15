@@ -18,4 +18,5 @@ docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
 ```
 
 To reach the containers of another compose project by name, add `compose.proxy-network.yml` to
-`COMPOSE_FILE` (its header says how). The public demo in `infra/README.md` is the worked example.
+`COMPOSE_FILE` (its header says how). The public demo in `infra/README.md` is the worked example,
+and it ships its drop-in ready to copy in here: `infra/demo/caddy/demo.caddy`.

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import LanguagesIcon from '@lucide/svelte/icons/languages';
 	import { Button, DropdownMenu } from '@repo/ui';
+	import { onMount } from 'svelte';
 	import { getLocale, type Locale, localeName, locales, switchLocale } from '$lib/i18n';
 	import { m } from '$lib/paraglide/messages';
 
@@ -11,8 +12,13 @@
 	}
 
 	let { class: className, compact = false }: Props = $props();
+	let hydrated = $state(false);
 
 	const current = getLocale();
+
+	onMount(() => {
+		hydrated = true;
+	});
 
 	function choose(value: string) {
 		if ((locales as readonly string[]).includes(value)) switchLocale(value as Locale);
@@ -28,6 +34,7 @@
 				class={className}
 				aria-label="{m.common_language()}: {localeName(current)}"
 				{...props}
+				disabled={!hydrated}
 			>
 				<LanguagesIcon class="size-4" aria-hidden="true" />
 				{#if !compact}

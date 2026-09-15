@@ -17,7 +17,8 @@ compose.dev.yml           Postgres for local development (`bun run db:up`)
 caddy/                    subdomains.Caddyfile (public domain) · single-origin.Caddyfile (tailnet / LAN)
 caddy/conf.d/             your own site blocks, imported by both Caddyfiles (ships empty; README inside)
 compose.proxy-network.yml optional overlay: caddy joins a network shared with other compose projects
-demo/                     a public demo next to production: compose file, .env template, reset script + timer
+demo/                     a public demo next to production: compose file, .env template, its two
+                          Caddyfiles, reset script + timer, update script run by every deploy
 docker/Dockerfile.static  builds apps/site + apps/docs into the Caddy image
 backup/                   pg_dump + uploads to a volume and S3/R2, retention, restore drill (its own README)
 scripts/provision.sh      one-time VPS setup: Docker, Tailscale, deploy user, firewall, clone, .env with secrets
@@ -111,8 +112,10 @@ build output and the uploads directory out of the build context. `apps/api/` and
 copied into the api image's runtime stage, so a stray `apps/api/.env` would otherwise ship with the
 image.
 
-Containers run with `no-new-privileges`, `cap_drop: ALL` and a 512-pid limit (caddy adds back
-`NET_BIND_SERVICE` to bind 80/443 inside the container). Postgres gets `shm_size: 1gb`: Docker's
+Containers run with `no-new-privileges`, `cap_drop: ALL` and a 512-pid limit. Both Caddy services
+add `NET_BIND_SERVICE` back: the image's binary carries that file capability, and the kernel
+refuses to execve a file whose permitted set is not inside the bounding set, so without it the
+container fails at `exec` whatever ports it binds. Postgres gets `shm_size: 1gb`: Docker's
 64 MB default `/dev/shm` is where parallel-query workers put their shared memory.
 
 ### Two Caddy modes
@@ -363,41 +366,46 @@ writes the server's `.env` before restarting. 1Password (`op inject`) and Dopple
 
 `infra/demo/` runs a second, disposable copy of the product on the same box as production, for
 visitors to try before they buy. It is its own compose project (`starterdough-demo`) in its own
-clone, with its own `.env` and database volume. Production is untouched, and a push to `main`
-still deploys production only; the demo is updated by hand (below). Inside it
+clone, with its own `.env` and database volume. Nothing in it touches production, and every
+deploy of production moves the demo onto the same build (below). Inside it
 `PUBLIC_DEMO_MODE=true` is pinned by the compose file, which gives the app a banner and `noindex`
-on every page.
+on every page; the marketing site and the docs come out of an Astro build that knows nothing about
+the demo, so they are kept out of search results by an `X-Robots-Tag` header instead.
 No mail is ever sent: an empty `RESEND_API_KEY` selects the console provider, which in production
 logs `NOT SENT` and drops the message, so the demo cannot burn the sending reputation of the
 domain that sells the product. Hence `REQUIRE_EMAIL_VERIFICATION=false`: anyone who signs up with
 any address gets an empty account straight away. No seeded accounts, no seeded data.
 
 **How the production Caddy reaches it.** Production's Caddy owns ports 80 and 443, so the demo
-has no Caddy of its own. Its `demo-web` and `demo-api` containers join a Docker network shared
-with production's Caddy (`starterdough-proxy`; production joins it through
-`compose.proxy-network.yml`), and a drop-in site block in `caddy/conf.d/` proxies the demo host
-to them by name. No host port is published: the demo is reachable only through Caddy, and nothing
+terminates no TLS and answers on no hostname of its own. Its `demo-web`, `demo-api` and
+`demo-static` containers join a Docker network shared with production's Caddy
+(`starterdough-proxy`; production joins it through `compose.proxy-network.yml`), and two drop-in
+site blocks in `caddy/conf.d/` proxy the demo's two hosts to them by name. No host port is published: the demo is reachable only through Caddy, and nothing
 new bypasses ufw. The other option, publishing the demo on loopback ports and having Caddy proxy
 to the host gateway, does not work: a port bound to `127.0.0.1` is reachable from the host only
 (Docker's NAT rule matches that address and nothing else), and binding `0.0.0.0` instead would
-publish the demo past the firewall. The services are called `demo-web` and `demo-api` rather
-than `web` and `api` because Docker resolves a name across every network a container is on; Caddy
-on both networks would find two `web`s and pick one by a rule you do not control.
+publish the demo past the firewall. The services are called `demo-web`, `demo-api` and
+`demo-static` rather than `web`, `api` and `caddy` because Docker resolves a name across every
+network a container is on; Caddy on both networks would find two `web`s and pick one by a rule you
+do not control.
 
 **What runs.** `postgres` (its own `starterdough-demo_pgdata` volume), `migrate`, `demo-api` and
-`demo-web`, from the images production runs, pulled from GHCR. No caddy (above) and no backup:
-the data is disposable by design.
-Limits, caps not reservations: 512 MB and 2 CPUs for the API, 256 MB and 1 CPU for the app,
-512 MB and 1 CPU for Postgres. A hammered demo exhausts its own share long before production
-notices.
+`demo-web`, from the images production runs, pulled from GHCR, and `demo-static`, which serves the
+marketing site on :8080 and the docs on :8081. That last one is the only image built on the box:
+`Dockerfile.static` compiles `SITE_URL`, `DOCS_URL`, `PUBLIC_APP_URL` and `PUBLIC_API_URL` into
+every page, so production's `caddy` image would serve the demo a site whose every link points at
+production. No backup: the data is disposable by design.
+Limits, caps not reservations: 512 MB and 2 CPUs for the API, 256 MB and 1 CPU each for the app
+and the static server, 512 MB and 1 CPU for Postgres. A hammered demo exhausts its own share long
+before production notices.
 
 **Bring it up**, with production already running as described above. On the box as the `deploy`
 user, except where it says root.
 
-1. DNS: an `A` record `demo` pointing at the box (`152.53.19.145`), **DNS-only** (grey cloud in
-   Cloudflare), like production's records. A proxied record breaks Caddy's Let's Encrypt HTTP-01
-   challenge: Cloudflare would answer the challenge URL itself and terminate TLS in front of a
-   Caddy that expects to do both.
+1. DNS: two `A` records, `demo` and `app.demo`, pointing at the box (`152.53.19.145`),
+   **DNS-only** (grey cloud in Cloudflare), like production's records. A proxied record breaks
+   Caddy's Let's Encrypt HTTP-01 challenge: Cloudflare would answer the challenge URL itself and
+   terminate TLS in front of a Caddy that expects to do both.
 2. In the production clone (`/opt/starterdough`): the shared network, the overlay, and Caddy
    recreated on both networks.
    ```sh
@@ -406,21 +414,30 @@ user, except where it says root.
    docker compose up -d
    docker compose ps          # caddy healthy again; nothing else was recreated
    ```
-3. Still in the production clone, the site block: write the example below to
-   `infra/caddy/conf.d/demo.caddy` (git ignores it there), then
+3. Still in the production clone, the site blocks. The demo ships them ready to copy in, and
+   `conf.d` keeps `*.caddy` out of git, so this is a copy and not a commit. `DEMO_DOMAIN` has no
+   default: while it is unset the drop-in is a keyless site block and Caddy refuses the whole
+   config, which is what keeps a half-configured demo from taking production's Caddy with it.
    ```sh
+   cp infra/demo/caddy/demo.caddy infra/caddy/conf.d/demo.caddy
+   # in .env: DEMO_DOMAIN=demo.starterdough.dev
+   docker compose up -d caddy   # recreates caddy with DEMO_DOMAIN in its environment
    docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile
    docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
    ```
-   The demo host answers 502 until step 4 is done.
-4. The demo clone and stack:
+   Both demo hosts answer 502 until step 4 is done.
+4. The demo clone and stack. Only `demo-static` is built, and it takes a few minutes the first
+   time: it installs the two Astro apps and compiles them against the demo's own URLs.
    ```sh
    git clone https://github.com/starterdough/starterdough-turbo.git /opt/starterdough-demo
    cd /opt/starterdough-demo
    cp infra/demo/.env.example .env && chmod 600 .env
    $EDITOR .env               # fill in the secrets: openssl rand -hex 32 for each
+   docker compose build demo-static
    docker compose pull && docker compose up -d --wait
-   curl -sS https://demo.starterdough.dev/readyz
+   curl -sS https://app.demo.starterdough.dev/readyz
+   curl -sS -o /dev/null -w '%{http_code}\n' https://demo.starterdough.dev/
+   curl -sS -o /dev/null -w '%{http_code}\n' https://demo.starterdough.dev/docs/
    ```
 5. The nightly reset, as root:
    ```sh
@@ -429,50 +446,13 @@ user, except where it says root.
    systemctl list-timers demo-reset.timer
    ```
 
-The site block, `infra/caddy/conf.d/demo.caddy` in the production clone. It is
-`single-origin.Caddyfile`'s routing with the demo's upstreams and without `/docs`:
-
-```caddy
-# The public demo (infra/demo): a second compose project on this box, reached over the
-# starterdough-proxy network (infra/compose.proxy-network.yml). One origin: the API under its
-# paths, the app everywhere else.
-demo.starterdough.dev {
-	import security
-	import logs
-
-	# 1 MB is plenty: every request here is a page or JSON.
-	request_body {
-		max_size 1MB
-	}
-
-	@api path /api/* /rpc/* /healthz /readyz
-	handle @api {
-		# JSON only, so a streamed response is passed through as it arrives.
-		encode {
-			zstd
-			gzip
-			match {
-				header Content-Type application/json*
-			}
-		}
-		reverse_proxy demo-api:3000 {
-			import upstream
-			import resilient
-			health_uri /readyz
-			flush_interval -1
-		}
-	}
-
-	handle {
-		encode zstd gzip
-		reverse_proxy demo-web:3000 {
-			import upstream
-			import resilient
-			health_uri /healthz
-		}
-	}
-}
-```
+The site blocks are `infra/demo/caddy/demo.caddy`, copied into the production clone's
+`caddy/conf.d/` in step 3. Two hosts: the two static sites on the demo's own name, the app and its
+API together on `app.` in front of it, which is `single-origin.Caddyfile`'s routing pointed at the
+demo's upstreams. Both names come from `{$DEMO_DOMAIN}`, so the file is the same on every
+deployment and never has a domain edited into it, and CI validates it the way Caddy loads it:
+imported into a real `subdomains.Caddyfile`, and again with `DEMO_DOMAIN` unset, to prove that it
+fails closed rather than loading half-configured.
 
 **Reset.** `bash infra/demo/reset.sh` from the demo clone, by hand at any time; the timer runs it
 every night at 04:00 UTC. It stops `demo-web` and `demo-api`, drops the database and creates it
@@ -489,15 +469,32 @@ address and whatever they typed then live on the box for at most a day, while ev
 a day to explore; change it with `systemctl edit demo-reset.timer` (`OnCalendar=`, explained in
 the timer file). `journalctl -u demo-reset` shows what each run did.
 
-**Update.** Production's deploy never touches the demo. In the demo clone:
-`git pull && docker compose pull && docker compose up -d --wait` (the pull of the clone for the
-compose file and the migrations, the pull of the images for the code).
+**Update.** Every deploy of production moves the demo onto the same build. The last step of
+`.github/workflows/deploy.yml` runs `bash infra/demo/update.sh` in the demo clone with the tag and
+commit it just deployed, whenever the repository variable `DEMO_PATH` names that clone; unset it
+and nothing over there is ever touched. The same script is the by-hand update, run from the demo
+clone.
+
+It checks out that commit (the compose file and the migrations have to match the images), builds
+`demo-static`, pulls the images and restarts, and it refuses to run anywhere but the demo before
+it moves anything, the way `reset.sh` does. It is not a reset: the database, the volume and
+whoever has signed up all survive, and visitors lose only their session when `demo-api` and
+`demo-web` restart. The build is a cache hit unless `apps/site`, `apps/docs`, `packages/` or the
+lockfile changed; when they did it is minutes on the box, with production already live.
+
+The pull needs a GHCR login, and by hand that is a login of the box's own: the one `deploy.yml`
+makes is the workflow's token, which is revoked when the job ends. Rather than fail there, a run
+whose `IMAGE_TAG` is a `sha-<commit>` falls back to the images already on the box when every one
+of them is present, which on a shared box they are, because production pulled that same immutable
+build minutes earlier. Set a PAT with `read:packages` as the `GHCR_PULL_TOKEN` secret and the
+question goes away: every deploy then leaves a login behind that does not expire.
 
 **Take it down.** In the demo clone `docker compose down` (keeps the volume) or
-`docker compose down -v` (wipes it); as root `systemctl disable --now demo-reset.timer`; in the
-production clone delete `infra/caddy/conf.d/demo.caddy` and `caddy reload` as above. The overlay
-row and the network can stay or go: remove the row from `COMPOSE_FILE`, `docker compose up -d`,
-`docker network rm starterdough-proxy`.
+`docker compose down -v` (wipes it); as root `systemctl disable --now demo-reset.timer`; unset the
+`DEMO_PATH` repository variable, so deploys stop looking for a clone that is no longer there; in
+the production clone delete `infra/caddy/conf.d/demo.caddy`, drop the `DEMO_DOMAIN` row from
+`.env` and `caddy reload` as above. The overlay row and the network can stay or go: remove the row
+from `COMPOSE_FILE`, `docker compose up -d`, `docker network rm starterdough-proxy`.
 
 **Its own box later.** On a box of its own the demo is the ordinary self-hosted stack:
 `provision.sh` with `EXPOSE=public`, the demo `.env` values on top of the generated `.env`

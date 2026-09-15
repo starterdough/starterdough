@@ -89,9 +89,12 @@ export function pgDumpArgs(databaseUrl: string, outputPath: string): string[] {
 	];
 }
 
+/** Hidden prefix shared by restore staging and the backup exclusion that prevents archiving it. */
+export const UPLOADS_STAGE_PREFIX = '.starterdough-restore-';
+
 /** Archives the directory's contents (not the directory itself) so restores land in any `STORAGE_DIR`. */
 export function tarCreateArgs(sourceDir: string, outputPath: string): string[] {
-	return ['tar', '-czf', outputPath, '-C', sourceDir, '.'];
+	return ['tar', '-czf', outputPath, `--exclude=./${UPLOADS_STAGE_PREFIX}*`, '-C', sourceDir, '.'];
 }
 
 /** Reads an archive's table of contents. Touches no database, so it is safe on any dump. */
@@ -149,7 +152,12 @@ export async function runBackup(
 		const pruned = await housekeep(config, bucket, now, stamp, log);
 		if (!attempt.ok) throw attempt.error;
 
-		const heartbeat = await sendHeartbeat(config.heartbeatUrl, log, deps.fetch ?? fetch);
+		const heartbeat = await sendBackupHeartbeat(
+			config.heartbeatUrl,
+			attempt.value.uploadsDegraded,
+			log,
+			deps.fetch ?? fetch,
+		);
 		return {
 			...attempt.value,
 			pruned,
@@ -637,14 +645,33 @@ async function pruneRemote(
 	return removed;
 }
 
-/** The success ping `runBackup` sends; exported so both of its outcomes are testable. */
+/**
+ * A known-incomplete uploads archive must page the monitor even though its database dump and
+ * surviving files remain useful. The manifest retains the reason for a later restore.
+ */
+export async function sendBackupHeartbeat(
+	url: string | undefined,
+	uploadsDegraded: string | null,
+	log: Logger,
+	fetchImpl: FetchLike,
+): Promise<BackupSummary['heartbeat']> {
+	if (uploadsDegraded) {
+		log.warn('backup set is degraded; sending a failure heartbeat', {
+			detail: uploadsDegraded,
+		});
+	}
+	return sendHeartbeat(url, log, fetchImpl, uploadsDegraded ? 'fail' : 'ok');
+}
+
+/** A heartbeat ping; exported so success, degradation and transport failures are testable. */
 export async function sendHeartbeat(
 	url: string | undefined,
 	log: Logger,
 	fetchImpl: FetchLike,
+	outcome: 'ok' | 'fail' = 'ok',
 ): Promise<BackupSummary['heartbeat']> {
 	if (!url) return 'skipped';
-	return (await ping(url, 'ok', log, fetchImpl)) ? 'sent' : 'failed';
+	return (await ping(url, outcome, log, fetchImpl)) ? 'sent' : 'failed';
 }
 
 /**
@@ -657,7 +684,7 @@ export async function sendFailureHeartbeat(
 	deps: BackupDeps = {},
 ): Promise<void> {
 	if (!config.heartbeatUrl) return;
-	await ping(config.heartbeatUrl, 'fail', log, deps.fetch ?? fetch);
+	await sendHeartbeat(config.heartbeatUrl, log, deps.fetch ?? fetch, 'fail');
 }
 
 /**

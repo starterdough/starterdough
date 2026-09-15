@@ -119,7 +119,16 @@ jobs:
           # Every optional service too: a profile is the easiest place for a YAML mistake to hide.
           COMPOSE_PROFILES=worker,backup,monitoring,observability docker compose config --quiet
           docker compose -f infra/compose.dev.yml config --quiet
-      - name: Validate both Caddyfiles
+          # The public demo (infra/demo) is a second project with a second .env, built the way its
+          # runbook builds it. It reads the root .env too (env_file), which the step above created.
+          cp infra/demo/.env.example .env.demo
+          {
+            echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)"
+            echo "SERVICE_TOKEN=$(openssl rand -hex 24)"
+            echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)"
+          } >> .env.demo
+          docker compose --env-file .env.demo -f infra/demo/compose.yml config --quiet
+      - name: Validate the Caddyfiles
         run: |
           for mode in subdomains single-origin; do
             # Two env states. API_URL and ACME_EMAIL are optional and `.env.example` ships them empty:
@@ -137,6 +146,34 @@ jobs:
             docker run --rm -v "$PWD/infra/caddy:/work:ro" -w /work caddy:2-alpine \
               caddy fmt --diff "$mode.Caddyfile"
           done
+          # The demo's own static server, which runs behind the production Caddy and serves the
+          # marketing site and the docs. One env state: API_URL is never empty there (the compose
+          # file derives it from DOMAIN), and it has no {$DOMAIN} of its own.
+          docker run --rm -v "$PWD/infra/demo/caddy/demo-static.Caddyfile:/etc/caddy/Caddyfile:ro" \
+            -e API_URL=https://app.demo.example.com \
+            caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          docker run --rm -v "$PWD/infra/demo/caddy:/work:ro" -w /work caddy:2-alpine \
+            caddy fmt --diff demo-static.Caddyfile
+          # The demo's other half: the site blocks that go into the PRODUCTION Caddy's conf.d. They
+          # are only valid as an import (they use its snippets), so they are checked the way they
+          # run, mounted into a real subdomains.Caddyfile.
+          docker run --rm -v "$PWD/infra/caddy/subdomains.Caddyfile:/etc/caddy/Caddyfile:ro" \
+            -v "$PWD/infra/demo/caddy/demo.caddy:/etc/caddy/conf.d/demo.caddy:ro" \
+            -e DOMAIN=example.com -e API_URL=https://api.example.com -e ACME_EMAIL=ops@example.com \
+            -e DEMO_DOMAIN=demo.example.com \
+            caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          # And that it fails closed. DEMO_DOMAIN has no default, so an unset one must stop the whole
+          # config from loading: that is what stops a half-configured demo being reloaded into the
+          # Caddy that serves production.
+          if docker run --rm -v "$PWD/infra/caddy/subdomains.Caddyfile:/etc/caddy/Caddyfile:ro" \
+            -v "$PWD/infra/demo/caddy/demo.caddy:/etc/caddy/conf.d/demo.caddy:ro" \
+            -e DOMAIN=example.com -e API_URL=https://api.example.com -e ACME_EMAIL=ops@example.com \
+            caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>/dev/null; then
+            echo "::error title=demo.caddy accepts an empty DEMO_DOMAIN::infra/demo/caddy/demo.caddy must fail validation when DEMO_DOMAIN is unset. Copied into a production conf.d without the row set, it would otherwise load as a keyless site block."
+            exit 1
+          fi
+          docker run --rm -v "$PWD/infra/demo/caddy:/work:ro" -w /work caddy:2-alpine \
+            caddy fmt --diff demo.caddy
 
   # The five images behind infra/compose.yml, built but never pushed: a Dockerfile that stops building
   # must fail on the pull request, not on the push to `main` that deploys. Keep the matrix in step with
@@ -183,7 +220,7 @@ jobs:
           build-args: ${{ matrix.build_args }}
 
   backup:
-    name: Backup tool against a real Postgres
+    name: Database regressions and backup/restore
     runs-on: ubuntu-latest
     services:
       postgres:

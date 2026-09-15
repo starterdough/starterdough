@@ -67,7 +67,7 @@ axe on the public pages; `e2e/i18n.e2e.ts` checks locale resolution and the swit
 
 | Route | What |
 | --- | --- |
-| `/` | landing |
+| `/` | 307 to `/app`, where the guard below sends a visitor without a session on to `/login`; the public landing page is apps/site, not a second one here |
 | `/healthz` | liveness probe (`{ "status": "ok" }`), prerendered; used by the container HEALTHCHECK and Caddy |
 | `/offline` | prerendered fallback served by the service worker when a navigation fails |
 | `/login` · `/signup` · `/forgot-password` · `/reset-password` · `/verify-email` · `/two-factor` | auth (`(auth)` group; buttons follow `system.authConfig`) |

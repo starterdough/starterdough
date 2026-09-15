@@ -99,8 +99,8 @@ queue and its worker, and a FastAPI service for semantic search and OCR. It is o
 [starterdough.dev](https://starterdough.dev). You receive an invitation to the private repository
 it is published from.
 
-Moving across is the `--allow-unrelated-histories` case above. This repository is published as a
-single commit against an empty history, so it shares no ancestor with the paid one and the first
+Moving across is the `--allow-unrelated-histories` case above. This repository has its own
+public release history, so it shares no ancestor with the paid one and the first
 diff reads as the whole tree. Cloning the paid edition and merging your work onto it is usually
 shorter than the reverse.
 

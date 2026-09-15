@@ -2,8 +2,9 @@
 
 Nightly `pg_dump` of the compose Postgres, plus a tarball of the uploads directory when the API
 uses the local storage driver. Copies go to the `backups` volume and, when a bucket is configured,
-to S3/R2. Old sets are pruned. A heartbeat URL is pinged after each successful run, so you hear
-about backups that *stop*.
+to S3/R2. Old sets are pruned. A heartbeat URL is pinged after each complete run, and its `/fail`
+endpoint is pinged when the uploads archive is known to be incomplete, so you hear about backups
+that stop or lose files.
 
 The tool is `@repo/backup`, Bun built-ins only (`Bun.spawn`, `Bun.S3Client`, `Bun.cron`,
 `Bun.SQL`). The image is `oven/bun:1.4-alpine` plus Alpine's `postgresql17-client` package (and GNU
@@ -38,7 +39,7 @@ docker compose run --rm -v starterdough_uploads:/restore/uploads -e STORAGE_DIR=
 | `restore <stamp\|latest> --drill` | restore into `<db>_drill_<stamp>`, compare its table list against the live database, compare the restored row counts against the manifest's, drop it |
 | | The scratch database is dropped with `DROP DATABASE IF EXISTS … WITH (FORCE)` *before* it is created as well, so a drill killed half-way (Ctrl-C, a killed container) does not block the next one |
 | `restore <stamp\|latest> --yes` | restore into the live database (`--clean --if-exists --single-transaction --exit-on-error`). Refused without `--yes` |
-| `restore … --uploads` | also extract the tarball into `STORAGE_DIR` (never by default). The archive is located, its checksum verified and the directory checked for write access *before* `pg_restore` runs; see the one-shot command above for the writable mount |
+| `restore … --uploads` | also restore the tarball into `STORAGE_DIR` (never by default). The archive is located, checksum-verified and fully extracted into staging on the uploads filesystem *before* `pg_restore`; see the one-shot command above for the writable mount |
 | `restore … --database <name>` | target database (live) or base name of the drill database; defaults to the one in `DATABASE_URL` |
 | `restore … --no-safety-dump` | skip the pre-restore dump (below). Only for a target you are certain you never want back |
 | `restore … --force-database-mismatch` | restore even though the manifest says the dump came from another database. Without it a staging dump cannot be restored into production by accident |
@@ -87,6 +88,9 @@ them yourself once you are sure the restore was the right one.
   the size the *bucket* reports is compared with the local file's. A mismatch deletes the bad
   object and retries once. A second mismatch fails the run, so the heartbeat stays silent and the
   local copy remains the good one.
+- **A degraded uploads archive pages the monitor.** Tar exit code 1 keeps the useful database dump
+  and readable upload files, and the manifest records why the archive is incomplete. The heartbeat
+  goes to `<BACKUP_HEARTBEAT_URL>/fail` instead of the success URL for that set.
 - **Housekeeping runs either way.** Retention pruning and the sweep of stale `.part` files happen
   after every attempt and once when the scheduler starts, so a container that crash-loops or a
   schedule that never fires still gets tidied. The set just written is never a pruning candidate.
@@ -152,7 +156,10 @@ A live restore is destructive. Before `pg_restore --clean --if-exists` drops a s
    with rows pointing at objects that were dropped underneath it, and `--single-transaction` with
    `--clean` cannot take its locks while another session holds them. `--terminate-connections`
    disconnects them instead (they come back if their service is still running, so stop it).
-5. The current contents of the target database are dumped to `<db>_<stamp>_pre_restore.dump` in
+5. With `--uploads`, the verified tarball is fully extracted into a unique hidden staging directory
+   inside `STORAGE_DIR`. This consumes capacity on the actual uploads volume and catches corrupt
+   data, insufficient space and extraction I/O errors before PostgreSQL changes.
+6. The current contents of the target database are dumped to `<db>_<stamp>_pre_restore.dump` in
    `BACKUP_DIR`, and the path is logged with the `pg_restore` command that puts it back.
    `--no-safety-dump` skips this.
 
@@ -170,10 +177,14 @@ on a lock. Two trade-offs to know:
   table list. The drill also compares the restored row counts against the manifest's (5 %
   tolerance, and a table the manifest says has rows may not come back empty).
 
-`--uploads` extraction is `tar -xzf … --no-overwrite-dir`, which **merges** into `STORAGE_DIR`: it
+`--uploads` extracts into staging before the database restore, then promotes the staged files with
+same-filesystem renames after PostgreSQL commits. Promotion **merges** into `STORAGE_DIR`: it
 restores what the archive holds and leaves everything else alone. Documents deleted after the
 backup was taken reappear, and documents added since survive. Nothing is deleted. For an exact copy
-of the backup's state, empty `STORAGE_DIR` first.
+of the backup's state, empty `STORAGE_DIR` first. PostgreSQL and the filesystem still cannot commit
+atomically. If promotion fails after PostgreSQL succeeds, the command exits 1, keeps the remaining
+staged files, and reports both their path and the pre-restore safety dump so the operator can finish
+or roll back. Interrupted staging directories are excluded from later upload archives.
 
 `restore latest` compares the newest dump on disk with the newest in the bucket and takes the newer
 of the two (a tie goes to the local copy, which needs no download). The chosen source is logged.
@@ -231,7 +242,7 @@ docker compose up -d
 | `STORAGE_DIR` | empty | Local storage driver: archive this directory. Skipped when `S3_BUCKET` is set (objects already live in S3) or when unset. Set but missing (mount gone, typo) fails the run in the pre-flight, before `pg_dump`, so the heartbeat stays silent. |
 | `BACKUP_S3_BUCKET` + `BACKUP_S3_ENDPOINT` / `BACKUP_S3_REGION` / `BACKUP_S3_ACCESS_KEY_ID` / `BACKUP_S3_SECRET_ACCESS_KEY` | empty | Off-box copy. `BACKUP_S3_REGION` defaults to `auto`, which is only valid together with an endpoint (R2 and other S3-compatible services); with no endpoint a real AWS region is required. Key id and secret must be set together. |
 | `BACKUP_S3_PREFIX` | `backups/` | Key prefix inside the bucket. One prefix per deployment; see below. |
-| `BACKUP_HEARTBEAT_URL` | empty | `GET` after a successful backup, `GET <url>/fail` when a scheduled run fails (10 s timeout, best effort, logged). Healthchecks.io, Uptime Kuma push and Better Stack heartbeats all accept a plain GET. |
+| `BACKUP_HEARTBEAT_URL` | empty | `GET` after a complete backup; `GET <url>/fail` when a scheduled run fails or the uploads archive is known to be incomplete (10 s timeout, best effort, logged). Healthchecks.io, Uptime Kuma push and Better Stack heartbeats all accept a plain GET. |
 | `S3_BUCKET` (and the other `S3_*`) | empty | Fallback: when `BACKUP_S3_BUCKET` is empty and the uploads bucket is set, copies go there under `BACKUP_S3_PREFIX`. |
 
 With neither bucket, backups stay on the same box. The tool logs a warning. That is not a backup.

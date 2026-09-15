@@ -2,12 +2,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runBackup } from './backup';
+import { runBackup, sha256 } from './backup';
 import { type BackupConfig, configFromEnv, withDatabase } from './config';
 import { listBackups } from './list';
 import { acquireLock, advisoryKey } from './lock';
 import { createLogger } from './log';
-import { latestDumpStamp, type Manifest, manifestName } from './names';
+import { latestDumpStamp, type Manifest, manifestName, uploadsName } from './names';
 import { run } from './proc';
 import { drillDatabaseName, quoteIdentifier, restore } from './restore';
 
@@ -209,7 +209,77 @@ describe.skipIf(!databaseUrl)('backup + drill against a live Postgres', () => {
 	it('refuses a live restore into a database the manifest does not name', async () => {
 		await expect(
 			restore(config, { name: 'latest', yes: true, database: 'postgres' }, log),
-		).rejects.toThrow('was taken from database "starterdough" and the target is "postgres"');
+		).rejects.toThrow(`was taken from database "${config.database}" and the target is "postgres"`);
+	});
+
+	it('fully stages uploads before changing the target database', async () => {
+		const stamp = latestDumpStamp(await readdir(config.backupDir)) as string;
+		const archivePath = join(config.backupDir, uploadsName(stamp));
+		const manifestPath = join(config.backupDir, manifestName(stamp));
+		const originalArchive = await Bun.file(archivePath).bytes();
+		const originalManifest = await Bun.file(manifestPath).text();
+		const brokenArchive = new TextEncoder().encode('not a tar archive');
+		const manifest = JSON.parse(originalManifest) as Manifest;
+		const uploadsFile = manifest.files.find((file) => file.name === uploadsName(stamp));
+		if (!uploadsFile) throw new Error(`manifest ${manifestPath} has no uploads archive`);
+		const target = `${config.database}_restore_stage_probe`;
+		const admin = new Bun.SQL(withDatabase(config.databaseUrl, 'postgres'), { max: 1 });
+		const targetUrl = withDatabase(config.databaseUrl, target);
+		try {
+			await Bun.write(archivePath, brokenArchive);
+			uploadsFile.bytes = brokenArchive.byteLength;
+			uploadsFile.sha256 = await sha256(archivePath);
+			await Bun.write(manifestPath, JSON.stringify(manifest));
+
+			await admin.unsafe(`DROP DATABASE IF EXISTS ${quoteIdentifier(target)} WITH (FORCE)`);
+			await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(target)}`);
+			const setup = new Bun.SQL(targetUrl, { max: 1 });
+			try {
+				await setup.unsafe('create table restore_stage_sentinel (value text not null)');
+				await setup.unsafe("insert into restore_stage_sentinel (value) values ('before')");
+			} finally {
+				await setup.close();
+			}
+
+			const restoreDir = join(root, 'failed-restore-uploads');
+			await mkdir(restoreDir);
+			await Bun.write(join(restoreDir, 'existing'), 'untouched');
+			const restoreConfig: BackupConfig = {
+				...config,
+				uploads: { kind: 'directory', dir: restoreDir },
+			};
+			await expect(
+				restore(
+					restoreConfig,
+					{
+						name: stamp,
+						yes: true,
+						uploads: true,
+						database: target,
+						forceDatabaseMismatch: true,
+						noSafetyDump: true,
+					},
+					log,
+				),
+			).rejects.toThrow('the database was not changed');
+
+			const unchanged = new Bun.SQL(targetUrl, { max: 1 });
+			try {
+				const rows = await unchanged.unsafe<{ value: string }[]>(
+					'select value from restore_stage_sentinel',
+				);
+				expect(rows).toEqual([{ value: 'before' }]);
+			} finally {
+				await unchanged.close();
+			}
+			expect(await readdir(restoreDir)).toEqual(['existing']);
+			expect(await Bun.file(join(restoreDir, 'existing')).text()).toBe('untouched');
+		} finally {
+			await Bun.write(archivePath, originalArchive);
+			await Bun.write(manifestPath, originalManifest);
+			await admin.unsafe(`DROP DATABASE IF EXISTS ${quoteIdentifier(target)} WITH (FORCE)`);
+			await admin.close();
+		}
 	});
 
 	it('restores into a throwaway database: writers block it, --terminate-connections does not', async () => {
@@ -218,6 +288,14 @@ describe.skipIf(!databaseUrl)('backup + drill against a live Postgres', () => {
 		await admin.unsafe(`DROP DATABASE IF EXISTS ${quoteIdentifier(target)} WITH (FORCE)`);
 		await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(target)}`);
 		const holder = new Bun.SQL(withDatabase(config.databaseUrl, target), { max: 1 });
+		const restoreDir = join(root, 'restored-uploads');
+		await mkdir(join(restoreDir, 'org_1'), { recursive: true });
+		await Bun.write(join(restoreDir, 'org_1', 'doc_1'), 'replace me');
+		await Bun.write(join(restoreDir, 'unrelated'), 'retain me');
+		const restoreConfig: BackupConfig = {
+			...config,
+			uploads: { kind: 'directory', dir: restoreDir },
+		};
 		try {
 			await holder.unsafe('select 1');
 			const options = {
@@ -230,9 +308,19 @@ describe.skipIf(!databaseUrl)('backup + drill against a live Postgres', () => {
 			// A live writer must refuse the restore, never only warn.
 			await expect(restore(config, options, log)).rejects.toThrow('other session(s) are connected');
 
-			const result = await restore(config, { ...options, terminateConnections: true }, log);
+			const result = await restore(
+				restoreConfig,
+				{ ...options, uploads: true, terminateConnections: true },
+				log,
+			);
 			expect(result.ok).toBe(true);
 			expect(result.mode).toBe('live');
+			expect(result.uploadsRestored).toBe(true);
+			expect(await Bun.file(join(restoreDir, 'org_1', 'doc_1')).text()).toBe('hello uploads');
+			expect(await Bun.file(join(restoreDir, 'unrelated')).text()).toBe('retain me');
+			expect(
+				(await readdir(restoreDir)).some((name) => name.startsWith('.starterdough-restore-')),
+			).toBe(false);
 			const restored = new Bun.SQL(withDatabase(config.databaseUrl, target), { max: 1 });
 			try {
 				const tables = await restored.unsafe<{ n: number }[]>(

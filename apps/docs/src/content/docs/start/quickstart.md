@@ -11,7 +11,7 @@ description: From a clone to a running API and app in a few commands.
 
 ## Install and run
 
-Every command below is the same in bash and in PowerShell.
+The local setup commands below use the same syntax in bash and PowerShell.
 
 1. Install dependencies and copy the env templates:
 
@@ -50,7 +50,7 @@ for local development: emails print to the API terminal and social sign-in stays
 | `bun run verify` | lint, typecheck and tests, in CI's order. Run it before every push |
 | `bun run check` · `bun run test` · `bun run lint` · `bun run build` | the same steps one at a time, plus the build. `test` runs Svelte components in a real browser and installs Playwright's Chromium on first run |
 | `bun run test:e2e` | Playwright against a production preview of `apps/web` |
-| `bun run admin:create -- --email … [--name …]` | create the first platform administrator. The password comes from `ADMIN_PASSWORD` or a prompt |
+| `bun run admin:create -- --email … [--name …] [--yes]` | create or promote the first platform administrator. New accounts use `ADMIN_PASSWORD` or a prompt; promoting an existing account requires `--yes` |
 
 The full list is in [Commands](/reference/commands/).
 
@@ -65,15 +65,16 @@ The full list is in [Commands](/reference/commands/).
 ## First platform administrator
 
 Platform administrators are users whose `role` is `admin`. This role is independent of organization
-roles. Create the first one from the command line, then promote others from `/admin/users`:
+roles. Promote the account you created during signup, then manage others from `/admin/users`:
 
 ```sh
-ADMIN_PASSWORD='…' bun run admin:create -- --email you@example.com --name 'You'
-# add --yes to promote an account that already exists
+bun run admin:create -- --email you@example.com --name 'You' --yes
 ```
 
-With `ADMIN_PASSWORD` unset the script prompts for one. The password is never read from the command
-line, because arguments stay in shell history and are visible in `ps`.
+`--yes` confirms promotion of the existing account and leaves its password unchanged. For a new
+email, the script creates the account and reads its password from `ADMIN_PASSWORD` or an interactive
+prompt. The password is never read from a command-line argument, because arguments stay in shell
+history and are visible in `ps`.
 
 ## Where things live
 

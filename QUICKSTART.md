@@ -45,8 +45,8 @@ docker --version
 git --version
 ```
 
-> Windows: use PowerShell. Every command in this guide works there as written. If a port is taken,
-> see [troubleshooting](#troubleshooting).
+> Windows: use PowerShell. The local setup commands use the same syntax. Platform-specific
+> deployment commands are labelled. If a port is taken, see [troubleshooting](#troubleshooting).
 
 ## Step 1 · Boot it (10 minutes)
 
@@ -108,11 +108,11 @@ bun run dev:app
 Open **http://localhost:5173**. Then:
 
 1. **Sign up** at `/signup`. In development the verification link prints in the API terminal.
-2. **Create your admin account** in a new terminal at the repo root. The password comes from
-   `ADMIN_PASSWORD` or an interactive prompt, never from the command line:
+2. **Promote your account to platform administrator** in a new terminal at the repo root. The
+   `--yes` flag confirms promotion of the account you just created and leaves its password
+   unchanged:
    ```sh
-   ADMIN_PASSWORD='Something-Strong-123' bun run admin:create -- --email you@example.com --name 'You'
-   # add --yes at the end to promote an account that already exists
+   bun run admin:create -- --email you@example.com --name 'You' --yes
    ```
    Sign in as that user and open **http://localhost:5173/admin** for users, feature flags and
    system status.

@@ -3,10 +3,9 @@
 #
 # Bun's own Alpine image plus Alpine's PostgreSQL 17 client package: pg_dump/pg_restore match the
 # postgres:17-alpine server major (pg_dump must not be older than the server), GNU tar and gzip
-# from apk (`--no-overwrite-dir`, which the restore relies on, is not in busybox tar), and the
-# image keeps the `bun` user (uid 1000, the same as the api image, so files on the shared uploads
-# volume are readable). Building on postgres:17-alpine instead would drag in its data VOLUME and
-# an entrypoint that starts a server when the first argument looks like a flag.
+# from apk, and the image keeps the `bun` user (uid 1000, the same as the api image, so files on the
+# shared uploads volume are readable). Building on postgres:17-alpine instead would drag in its data
+# VOLUME and an entrypoint that starts a server when the first argument looks like a flag.
 FROM oven/bun:1.4-alpine
 # Unpinned on purpose (Alpine only keeps one build of each package), but the major must match the
 # `postgres` service image: bump `postgresql17-client` here in the same commit as a Postgres upgrade.

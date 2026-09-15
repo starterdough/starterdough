@@ -50,6 +50,7 @@ const ALIASES: Record<string, string> = {
 	'BSD 3-Clause License': 'BSD-3-Clause',
 	'PSF-2.0': 'Python-2.0',
 	'Apache 2.0': 'Apache-2.0',
+	'MIT License': 'MIT',
 	'The MIT License (MIT)': 'MIT',
 };
 

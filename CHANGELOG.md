@@ -135,8 +135,30 @@ release into a renamed fork.
 
 ### Fixed
 
-- **Deleting a workspace, organization or account no longer orphans stored objects.** The cascade
-  returns the storage keys and the bytes go with the rows.
+- **Billing and data recovery.** Retryable Stripe entitlement writes and incomplete-checkout
+  reconciliation, atomic terminal-job refunds, serialized invitation/member mutations, and durable
+  object cleanup after document/workspace/organization deletion. Paid search checks credits before
+  embedding and refuses an unknown provider. New failure and concurrency tests run against Postgres.
+- **Migration required:** `0008_storage_deletion` adds a document deletion trigger and an outbox
+  independent of tenant foreign keys. Run `bun run db:migrate` before starting the new API/worker.
+  The upload-expiry column has a default for older API replicas during a rolling deployment.
+  Keep a worker running to drain pending cleanup; do not replace this migration with `db:push`,
+  which does not install its trigger.
+- **Verification:** recognize the Python `MIT License` metadata spelling and scan Python licences
+  in CI. Backup integration checks now use the configured database name.
+- **The locale switcher waits for hydration before accepting input**, so an early click cannot be
+  lost while the browser is still loading the Svelte application.
+- **First-admin quickstarts** promote the account created during signup with `--yes`, preserve
+  its password, and use a command that works in Bash and PowerShell.
+- **Desktop release actions** are pinned to commit SHAs, including installer signing and artifact
+  publication steps; the Rust toolchain is selected explicitly.
+- **Backup recovery:** known-incomplete uploads archives send a failure heartbeat. Live restores
+  fully extract uploads and check path conflicts in staging before changing PostgreSQL. Files are
+  promoted after the database restore; failures retain staging and identify the recovery dump.
+  Database and filesystem changes remain separate commits. Backup archives exclude restore staging.
+
+- **Deleting a workspace, organization or account preserves cleanup obligations.** The database
+  queues storage keys in the deleting transaction; workers retry physical deletion after URL expiry.
 - **An organization can no longer be left with no owner.** Deleting the account of a sole owner
   who has co-members is refused, a solo organization is deleted with the account, and either is
   refused while a subscription is live.
@@ -150,8 +172,6 @@ release into a renamed fork.
 - **Both cursors stopped skipping rows.** `created_at` is microsecond `timestamptz` while the
   cursor was a millisecond `toISOString()`, so page two dropped rows inside the truncated
   millisecond. Cursors are now an opaque `(created_at, id)` pair.
-- **`workspaces.delete` removes the workspace's stored objects.** Best effort: an unreachable
-  bucket is a logged leak rather than an undeletable workspace.
 - **The pricing page's plan choice reaches checkout.** `/pricing?plan=…` carries through sign-up
   and email verification to `/app/billing`, which preselects that plan.
 
