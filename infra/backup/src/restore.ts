@@ -717,10 +717,10 @@ async function rejectLinks(directory: string): Promise<void> {
  */
 async function verifyDrillUploads(
 	config: BackupConfig,
-	drillUrl: string,
+	_drillUrl: string,
 	archive: string,
 	report: DrillReport,
-	log: Logger,
+	_log: Logger,
 ): Promise<void> {
 	const root = await mkdtemp(join(config.backupDir, '.starterdough-drill-uploads-'));
 	try {
