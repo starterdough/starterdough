@@ -154,6 +154,3 @@ Run the focused checks from the repository root:
 cd apps/web && bunx vitest --run src/lib/admin-flags-page.svelte.spec.ts
 cd ../.. && SKIP_ENV_VALIDATION=1 bun test apps/api/src/rpc/admin-authorization.test.ts
 ```
-
-For a release, the free edition is generated from this source and passes its own verification. Keep
-cross-edition code and prose shared where possible; put paid-only behavior inside the established

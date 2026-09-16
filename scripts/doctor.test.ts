@@ -123,6 +123,30 @@ describe('Starterdough doctor', () => {
 		);
 	});
 
+	it('uses only the root .env and inherited shell overrides for server configuration', async () => {
+		await writeFile(
+			join(root, '.env'),
+			[
+				'NODE_ENV=development',
+				'DATABASE_URL=postgres://starterdough:starterdough@localhost:5433/starterdough',
+				'BETTER_AUTH_SECRET=',
+			].join('\n'),
+		);
+		await writeFile(join(root, '.env.local'), `BETTER_AUTH_SECRET=${'l'.repeat(48)}\n`);
+
+		const fileOnly = await doctor({ database: 'external' }, dependencies({}));
+		expect(fileOnly.ok).toBe(false);
+		expect(fileOnly.checks.find((check) => check.name === 'Root environment')?.detail).toContain(
+			'BETTER_AUTH_SECRET is missing',
+		);
+
+		const inherited = await doctor(
+			{ database: 'external' },
+			dependencies({}, { BETTER_AUTH_SECRET: 's'.repeat(48) }),
+		);
+		expect(inherited.ok).toBe(true);
+	});
+
 	it('does not expose credentials from invalid configuration', async () => {
 		const secret = 'never-print-this-password';
 		await writeFile(

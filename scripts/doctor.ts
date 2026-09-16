@@ -324,25 +324,17 @@ export async function runDoctor(
 			: 'dependencies are incomplete; run `bun install --frozen-lockfile`',
 	});
 
-	const rootBasePaths = ['.env', '.env.local'];
-	const rootBaseFiles = await Promise.all(
-		rootBasePaths.map((name) => loadEnv(join(options.rootDir, name), dependencies)),
-	);
-	const baseEnvironment = mergeEnv(rootBaseFiles, dependencies.env);
-	const mode = value(baseEnvironment, 'NODE_ENV') ?? 'development';
-	const rootModeFiles = await Promise.all(
-		[`.env.${mode}`, `.env.${mode}.local`].map((name) =>
-			loadEnv(join(options.rootDir, name), dependencies),
-		),
-	);
-	const rootFiles = [...rootBaseFiles, ...rootModeFiles];
-	const rootFile = rootFiles[0] ?? { errors: [], exists: false, values: {} };
-	const rootEnvironment = mergeEnv(rootFiles, dependencies.env);
+	// API, database and auth commands explicitly load the root `.env`; inherited shell variables
+	// are their only higher-precedence source. Keep the doctor on that same boundary.
+	const rootFile = await loadEnv(join(options.rootDir, '.env'), dependencies);
+	const rootEnvironment = mergeEnv([rootFile], dependencies.env);
 	checks.push(
-		environmentCheck('Root environment', rootFile, '.env', [
-			...rootFiles.slice(1).flatMap((file) => file.errors),
-			...rootEnvironmentProblems(rootEnvironment, options.database),
-		]),
+		environmentCheck(
+			'Root environment',
+			rootFile,
+			'.env',
+			rootEnvironmentProblems(rootEnvironment, options.database),
+		),
 	);
 
 	const webPaths = [
