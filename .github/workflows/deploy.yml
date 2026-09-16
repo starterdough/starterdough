@@ -15,7 +15,7 @@
 #   DEPLOY_PATH           the clone on the server, default /opt/starterdough
 #   DEMO_PATH             optional: the public demo's clone on the same box (infra/README.md, "A
 #                         public demo"). Set it and every deploy also moves the demo onto the build
-#                         it just deployed, so what visitors try is what you ship; unset, the demo
+#                         being released, so what visitors try is what you ship; unset, the demo
 #                         is never touched.
 #   DEMO_DOMAIN           required with DEMO_PATH: the demo's base host, such as demo.example.com.
 #   DEMO_SITE_URL DEMO_DOCS_URL DEMO_WEB_URL DEMO_API_URL
@@ -67,7 +67,7 @@ on:
         default: ''
 
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: deploy-production
   cancel-in-progress: false
 
 # Per job below: only the two image-building jobs may write packages.
@@ -309,6 +309,18 @@ jobs:
           # rebuilt, and the runner reaches the host over the tailnet or a known IP.
           printf 'Host target\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/deploy\n  BatchMode yes\n  IdentitiesOnly yes\n  ConnectTimeout 15\n  ServerAliveInterval 15\n  ServerAliveCountMax 6\n  StrictHostKeyChecking accept-new\n' \
             "$DEPLOY_HOST" "$DEPLOY_USER" > ~/.ssh/config
+      - name: Refuse a new release while deployment recovery is pending
+        run: |
+          ssh target 'set -euo pipefail
+            state_dir="${STARTERDOUGH_STATE_DIR:-$HOME/.local/state/starterdough}"
+            mkdir -p "$state_dir"
+            chmod 700 "$state_dir"
+            exec 8>"$state_dir/operations.lock"
+            flock -w 1800 8
+            if [ -e "$state_dir/deployment-interrupted" ] || [ -L "$state_dir/deployment-interrupted" ]; then
+              echo "deployment recovery is pending; use the Recover deployment workflow before starting another release" >&2
+              exit 1
+            fi'
       - name: Ship the environment file (only when SOPS_AGE_KEY is set)
         env:
           SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
@@ -331,7 +343,19 @@ jobs:
           sops --decrypt --input-type dotenv --output-type dotenv infra/env/production.enc.env > /tmp/.env
           # Written over stdin and locked to the owner in the same hop (secrets: never world-readable).
           # shellcheck disable=SC2029  # $DEPLOY_PATH expands here on purpose, single-quoted for the remote shell
-          ssh target "mkdir -p '$DEPLOY_PATH' && cat > '$DEPLOY_PATH/.env' && chmod 600 '$DEPLOY_PATH/.env'" < /tmp/.env
+          ssh target "set -euo pipefail
+            state_dir=\"\${STARTERDOUGH_STATE_DIR:-\$HOME/.local/state/starterdough}\"
+            mkdir -p \"\$state_dir\"
+            chmod 700 \"\$state_dir\"
+            exec 8>\"\$state_dir/operations.lock\"
+            flock -w 1800 8
+            if [ -e \"\$state_dir/deployment-interrupted\" ] || [ -L \"\$state_dir/deployment-interrupted\" ]; then
+              echo 'deployment recovery is pending; environment unchanged' >&2
+              exit 1
+            fi
+            mkdir -p '$DEPLOY_PATH'
+            cat > '$DEPLOY_PATH/.env'
+            chmod 600 '$DEPLOY_PATH/.env'" < /tmp/.env
           rm -f /tmp/.env
       - name: Log the server into GHCR
         env:
@@ -346,26 +370,37 @@ jobs:
         env:
           IMAGE_TAG: ${{ steps.tag.outputs.value }}
           GIT_REF: ${{ steps.tag.outputs.ref }}
+          DEMO_PATH: ${{ vars.DEMO_PATH }}
         run: |
           # GHCR namespaces are lowercase; github.repository keeps the owner's casing.
           IMAGE_REGISTRY="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-          # shellcheck disable=SC2029  # expands here on purpose: validated tag/ref, single-quoted for the remote shell
-          # Launch the selected release's script so its migration/writer-drain logic is active
-          # even when this is the first upgrade from an older deployment script.
-          ssh target "cd '$DEPLOY_PATH' && git fetch --quiet origin && git checkout --quiet --detach '$GIT_REF' && IMAGE_REGISTRY='$IMAGE_REGISTRY' IMAGE_TAG='$IMAGE_TAG' GIT_REF='' bash infra/scripts/deploy.sh"
-      - name: Update the public demo, when one runs on this box
-        if: vars.DEMO_PATH != ''
-        env:
-          IMAGE_TAG: ${{ steps.tag.outputs.value }}
-          GIT_REF: ${{ steps.tag.outputs.ref }}
-          DEMO_PATH: ${{ vars.DEMO_PATH }}
-        run: |
-          # A second compose project beside production (infra/README.md, "A public demo"), moved onto
-          # the build that just went live so the demo cannot drift from what the site sells. A step
-          # of this job rather than a job of its own: the SSH config and the GHCR login above are
-          # exactly what it needs, and production is already deployed by the time it runs, so a demo
-          # that fails to come back is a red job and never a rollback. It touches nothing of
-          # production's: not the drop-in site blocks, not the production clone, not its containers.
-          IMAGE_REGISTRY="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-          # shellcheck disable=SC2029  # expands here on purpose: validated tag/ref, single-quoted for the remote shell
-          ssh target "cd '$DEMO_PATH' && git fetch --quiet origin && git checkout --quiet --detach '$GIT_REF' && IMAGE_REGISTRY='$IMAGE_REGISTRY' IMAGE_TAG='$IMAGE_TAG' GIT_REF='' bash infra/demo/update.sh"
+          # Hold one host fence before either checkout. The demo updates first so a failed demo
+          # leaves production on its prior healthy release, and both scripts inherit FD 8.
+          ssh target "set -euo pipefail
+            state_dir=\"\${STARTERDOUGH_STATE_DIR:-\$HOME/.local/state/starterdough}\"
+            mkdir -p \"\$state_dir\"
+            chmod 700 \"\$state_dir\"
+            exec 8>\"\$state_dir/operations.lock\"
+            flock -w 1800 8
+            export STARTERDOUGH_OPERATION_LOCK_HELD=1
+            if [ -e \"\$state_dir/deployment-interrupted\" ] || [ -L \"\$state_dir/deployment-interrupted\" ]; then
+              echo 'deployment recovery is pending; use Recover deployment before deploying' >&2
+              exit 1
+            fi
+            cd '$DEPLOY_PATH'
+            git fetch --quiet origin
+            for path in infra/scripts/operation-lock.sh infra/scripts/deployment-recovery.py infra/scripts/deployment-recovery.sh infra/scripts/recover-deployment.sh; do
+              git cat-file -e '$GIT_REF':\$path
+            done
+            git show '$GIT_REF:infra/scripts/deploy.sh' | grep -F 'deployment-recovery.sh' >/dev/null
+            if [ -n '$DEMO_PATH' ]; then
+              git show '$GIT_REF:infra/demo/update.sh' | grep -F 'deployment-recovery.sh' >/dev/null
+              git show '$GIT_REF:infra/demo/reset.sh' | grep -F 'deployment-recovery.sh' >/dev/null
+              git -C '$DEMO_PATH' fetch --quiet origin
+              git -C '$DEMO_PATH' checkout --quiet --detach '$GIT_REF'
+              (cd '$DEMO_PATH' && IMAGE_REGISTRY='$IMAGE_REGISTRY' IMAGE_TAG='$IMAGE_TAG' GIT_REF='' bash infra/demo/update.sh)
+            fi
+            git checkout --quiet --detach '$GIT_REF'
+            source infra/scripts/operation-lock.sh
+            acquire_operation_lock
+            IMAGE_REGISTRY='$IMAGE_REGISTRY' IMAGE_TAG='$IMAGE_TAG' GIT_REF='' bash infra/scripts/deploy.sh"

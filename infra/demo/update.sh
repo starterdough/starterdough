@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Move the public demo onto the build production is running: check out that commit, pull its images
-# and restart. Run it from the demo clone:
+# Move the public demo onto the exact build selected for the paired production release: check out
+# that commit, pull its images and restart. Run it from the demo clone:
 #
 #   bash infra/demo/update.sh                                            # whatever .env already pins
 #   IMAGE_TAG=sha-abc1234 GIT_REF=abc1234 bash infra/demo/update.sh      # a specific build
 #   BUILD_DEMO_STATIC=1 bash infra/demo/update.sh                        # self-hosted local build
 #
-# .github/workflows/deploy.yml runs exactly this over SSH after every production deploy, with the
-# tag and commit it just deployed, when the repository variable DEMO_PATH names the demo clone.
+# .github/workflows/deploy.yml runs exactly this over SSH before the paired production deploy, with
+# the selected tag and commit, when the repository variable DEMO_PATH names the demo clone.
 # That is what keeps the demo showing the version the site sells; without it the demo stays on
 # whatever it was last given and drifts away from the product it is supposed to be advertising.
 #
@@ -19,6 +19,11 @@
 # Idempotent: a second run checks out the same commit, pulls nothing new and recreates nothing.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+source infra/scripts/operation-lock.sh
+source infra/scripts/deployment-recovery.sh
+STARTERDOUGH_OPERATION_LOCK_WAIT_SECONDS=0
+acquire_operation_lock || { echo 'demo update: another production operation is running' >&2; exit 1; }
+deployment_refuse_pending || exit 1
 
 refuse() {
 	echo "demo update: $*" >&2
@@ -32,7 +37,8 @@ refuse() {
 [ -f .env ] || refuse "no .env in $(pwd)"
 project="$( (docker compose config 2>/dev/null || true) | sed -n 's/^name: //p' | head -n 1)"
 [ "$project" = starterdough-demo ] || refuse "the compose project here is '${project:-none}', not starterdough-demo"
-docker compose config --services | grep -qx demo-api || refuse "no demo-api service in this compose project"
+# Do not use grep -q here: under pipefail it can close early and turn a healthy Compose stream into SIGPIPE.
+docker compose config --services | grep -x demo-api >/dev/null || refuse "no demo-api service in this compose project"
 
 # The compose file and the migrations have to match the images, exactly as on production
 # (infra/scripts/deploy.sh). Detached, because this clone tracks whatever production was given, not
@@ -40,6 +46,16 @@ docker compose config --services | grep -qx demo-api || refuse "no demo-api serv
 if [ -n "${GIT_REF:-}" ]; then
 	echo "▸ checking out $GIT_REF"
 	git fetch --quiet origin
+	for path in infra/scripts/operation-lock.sh infra/scripts/deployment-recovery.py infra/scripts/deployment-recovery.sh infra/scripts/recover-deployment.sh; do
+		git cat-file -e "$GIT_REF:$path" || {
+			echo "ref $GIT_REF predates deployment recovery safeguards" >&2
+			exit 1
+		}
+	done
+	git show "$GIT_REF:infra/demo/update.sh" | grep -F 'deployment-recovery.sh' >/dev/null || {
+		echo "ref $GIT_REF predates deployment recovery safeguards" >&2
+		exit 1
+	}
 	git checkout --quiet --detach "$GIT_REF"
 fi
 
@@ -91,10 +107,9 @@ fi
 if [ "$pull_failed" = 1 ]; then
 	# Nearly always the GHCR login. deploy.yml logs this box in with the workflow's own token, which
 	# is revoked when that job ends, so a by-hand run hours later gets a bare "denied" from the
-	# registry. That on its own is not fatal here: the demo runs the images production runs, and on
-	# a shared box production has already pulled this exact tag. Trust that only for a
-	# `sha-<commit>` tag, which names one immutable build, so a local copy cannot be some other
-	# build wearing the same name the way `latest` or `main` could be.
+	# registry. That on its own is not fatal if this host already has every selected immutable image.
+	# Trust that only for a `sha-<commit>` tag, so a local copy cannot be some other build wearing the
+	# same name the way `latest` or `main` could be.
 	echo "  pull failed; checking whether this box already has every image for $IMAGE_TAG"
 	usable=1
 	case "$IMAGE_TAG" in
@@ -128,10 +143,13 @@ if [ "${BUILD_DEMO_STATIC:-0}" = 1 ]; then
 	docker compose build demo-static
 fi
 
+deployment_begin starterdough-demo demo-api
+deployment_stop_recorded
+deployment_mark_forward_only
 
 # --wait returns once every service is healthy and `migrate` has completed, so a bad build fails here.
 echo "▸ starting"
-docker compose up -d --remove-orphans --wait --wait-timeout 300 --no-build
+docker compose up -d --remove-orphans --wait --wait-timeout 300 --no-build --pull never
 
 echo "▸ readiness (database reachable through the demo API)"
 docker compose exec -T demo-api bun -e \
@@ -142,4 +160,5 @@ docker compose exec -T demo-api bun -e \
 docker image prune -f >/dev/null
 
 docker compose ps
+deployment_complete demo-api
 echo "✓ demo updated to $IMAGE_TAG"

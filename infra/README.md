@@ -36,7 +36,7 @@ from the root would use the right file but interpolate those values from nothing
 form is `docker compose --env-file .env -f infra/compose.yml …`.
 
 ```sh
-# new server: Docker, Tailscale, a `deploy` user, ufw, unattended upgrades, the clone, .env with fresh secrets
+# new server: Docker, Tailscale, Python, flock, a `deploy` user, ufw, unattended upgrades, the clone, .env with fresh secrets
 curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/infra/scripts/provision.sh \
   | sudo REPO_URL=https://github.com/<owner>/<repo>.git EXPOSE=tailscale bash     # or EXPOSE=public
 
@@ -227,6 +227,41 @@ the build), or the first command above. `deploy.sh` writes the deployed `IMAGE_T
 Migrations are forward-only. Check release compatibility before rolling back code; a migration
 that must be undone requires a new migration or a coordinated database and file recovery.
 
+### Recover an interrupted deployment
+
+Deploys, demo updates, and demo resets share a host operation lock. Before a deploy stops an API
+writer, it writes a private journal at
+`~/.local/state/starterdough/deployment-interrupted`; set `STARTERDOUGH_STATE_DIR` to use a
+different state directory. The journal contains only the checkout path, revision, configuration
+digest, image identities, and exact prior containers. It never records environment values.
+
+If a rollout is interrupted, use **Actions → Recover deployment**. Run `status` for the affected
+`production` or `demo` checkout first, then `recover`. The same operation can be run on the
+server:
+
+```sh
+bash infra/scripts/recover-deployment.sh status
+bash infra/scripts/recover-deployment.sh recover
+```
+
+Recovery follows the phase recorded before interruption:
+
+| Recorded phase | Recovery action |
+| --- | --- |
+| `pre-replacement` | Validate and restart only the recorded prior writer containers. |
+| `forward-only` | Validate the staged release, then resume its local Compose startup and migrations. |
+
+The forward-only phase is persisted before Compose can start a migration. Once it is recorded,
+recovery never restarts the old release because its schema may be incompatible. Changed
+configuration, checkout, or image identities make recovery refuse instead of guessing. Recovery
+does not fetch, check out, pull, or build.
+
+The journal remains until recovery passes readiness. New deploys and demo resets refuse while it
+exists. A rollback to a commit from before these recovery helpers also refuses before
+containers are changed; deploy a release that includes the safeguards or use the explicit recovery
+workflow first. New hosts receive `python3` and `flock` from `provision.sh`; install both on
+existing hosts before their first recovery-aware deployment.
+
 ### Backups and the restore drill
 
 `COMPOSE_PROFILES=backup` in `.env` runs a scheduler (never `--profile` on the command line:
@@ -403,7 +438,7 @@ before production notices.
 **Bring it up**, with production already running as described above. On the box as the `deploy`
 user, except where it says root.
 
-1. DNS: two `A` records, `demo` and `app.demo`, pointing at the box (`152.53.19.145`),
+1. DNS: two `A` records, `demo` and `app.demo`, pointing at the box (`192.0.2.10`),
    **DNS-only** (grey cloud in Cloudflare), like production's records. A proxied record breaks
    Caddy's Let's Encrypt HTTP-01 challenge: Cloudflare would answer the challenge URL itself and
    terminate TLS in front of a Caddy that expects to do both.
@@ -480,11 +515,10 @@ address and whatever they typed then live on the box for at most a day, while ev
 a day to explore; change it with `systemctl edit demo-reset.timer` (`OnCalendar=`, explained in
 the timer file). `journalctl -u demo-reset` shows what each run did.
 
-**Update.** Every deploy of production moves the demo onto the same build. The last step of
-`.github/workflows/deploy.yml` runs `bash infra/demo/update.sh` in the demo clone with the tag and
-commit it just deployed, whenever the repository variable `DEMO_PATH` names that clone; unset it
-and nothing over there is ever touched. The same script is the by-hand update, run from the demo
-clone.
+**Update.** Every release updates the demo, then production, to the same build under one host
+operation lock. `.github/workflows/deploy.yml` runs `bash infra/demo/update.sh` in the demo clone
+first when the repository variable `DEMO_PATH` names that clone; unset it and nothing over there
+is touched. The same script is the by-hand update, run from the demo clone.
 
 It checks out that commit (the compose file and the migrations have to match the images), pulls
 all images and restarts with `--no-build`, and it refuses to run anywhere but the demo before
@@ -496,9 +530,9 @@ container is replaced.
 The pull needs a GHCR login, and by hand that is a login of the box's own: the one `deploy.yml`
 makes is the workflow's token, which is revoked when the job ends. Rather than fail there, a run
 whose `IMAGE_TAG` is a `sha-<commit>` falls back to the images already on the box when every one
-of them is present, which on a shared box they are, because production pulled that same immutable
-build minutes earlier. Set a PAT with `read:packages` as the `GHCR_PULL_TOKEN` secret and the
-question goes away: every deploy then leaves a login behind that does not expire.
+of them is present, for example after an earlier successful pull. Set a PAT with `read:packages`
+as the `GHCR_PULL_TOKEN` secret and the question goes away: every deploy then leaves a login
+behind that does not expire.
 
 For a self-host or an old tag whose pipeline never published `demo-static`, build only that image
 explicitly from the matching checkout:
