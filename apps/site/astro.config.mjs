@@ -1,23 +1,16 @@
 // @ts-check
-import { fileURLToPath } from 'node:url';
 import sitemap from '@astrojs/sitemap';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'astro/config';
+import { loadSiteEnv } from '../../scripts/load-site-env.mjs';
 
 /**
  * Astro loads `.env` into `import.meta.env` for source files, not into `process.env` for this
  * config, so `SITE_URL` is loaded here, anchored to this file rather than the working directory.
- * `process.loadEnvFile` never overwrites a variable that is already set: an explicit environment
- * value (CI, `Dockerfile.static`, the deploy workflow) wins, and `.env.local` (loaded first) wins
- * over `.env`, matching Vite's precedence.
+ * A nonempty explicit environment value (CI, `Dockerfile.static`, the deploy workflow) wins,
+ * `.env.local` wins over `.env`, and a blank `SITE_URL` is treated as absent at every layer.
  */
-for (const name of ['.env.local', '.env']) {
-	try {
-		process.loadEnvFile(fileURLToPath(new URL(name, import.meta.url)));
-	} catch {
-		// Absent (or an old runtime without `loadEnvFile`): the environment is the only source.
-	}
-}
+loadSiteEnv(import.meta.url);
 
 /** What `astro dev` / `astro check` use when `SITE_URL` is unset; a build refuses to guess. */
 const DEV_SITE_URL = 'http://localhost:4321';

@@ -9,8 +9,8 @@ Tauri desktop and mobile shells, and a self-hosting stack. Rename it and ship.**
 ![Tauri](https://img.shields.io/badge/Tauri-2-blue?logo=tauri)
 ![Postgres](https://img.shields.io/badge/Postgres-17-blue?logo=postgresql)
 
-> **New here?** Start with [`QUICKSTART.md`](./QUICKSTART.md). It gets the app running locally in
-> about 10 minutes and lists the accounts and keys you need next.
+> **New here?** Start with [`QUICKSTART.md`](./QUICKSTART.md). It gets the app running locally
+> and lists the accounts and keys you need next.
 
 > **This is the free edition.** It is generated from the full kit by removing the paid features.
 > Nothing in it is time-limited or crippled. See what the full edition adds at
@@ -111,12 +111,17 @@ start without it.
 bun -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-**4. Start Postgres and apply the migrations.**
+**4. Check setup, start Postgres and apply the migrations.**
 
 ```sh
+bun run doctor
 bun run db:up
 bun run db:migrate
 ```
+
+`doctor` checks configuration and distinguishes Docker, Compose and daemon availability. It does
+not connect to Postgres or apply migrations. For an existing Postgres database, set `DATABASE_URL`,
+run `bun run doctor -- --database=external`, and omit `db:up`.
 
 **5. Run it.**
 
@@ -139,6 +144,7 @@ launch checklist and a brief for your coding agent.
 | --- | --- |
 | `bun run dev` | All apps (adds site `:4321`, docs `:4322`) |
 | `bun run dev:desktop` / `preview:desktop` / `build:desktop` | Tauri shell: dev server with HMR / the shipped build in a debug window / installers (needs Rust) |
+| `bun run doctor` / `doctor -- --build` | Check local prerequisites and app configuration / also check the site and docs build origins. See the quickstart before using an external database |
 | `bun run verify` | Lint, typecheck and tests in CI's order. Run before pushing |
 | `bun run check` / `test` / `lint` / `build` / `test:e2e` | The same steps one at a time. `test` installs Playwright's Chromium on first run |
 | `bun run licenses` / `rename` | Audit dependency licences (`--strict` is CI's gate) / rename the kit (dry run without `--write`) |
@@ -178,6 +184,8 @@ imports in frontends**, **no literal UI strings** (use Paraglide messages).
 
 - [`QUICKSTART.md`](./QUICKSTART.md): setup, accounts, deploy, launch checklist
 - [`docs/DECISIONS.md`](./docs/DECISIONS.md): architecture decisions D1 to D30
+- [Worked feature example](./apps/docs/src/content/docs/guides/feature-example.md): follow feature
+  flags from database and contract to permissions, translated forms and regression checks
 - `apps/{web,site,docs,api,native}/README.md` and `infra/README.md`: per-app details and the ops
   runbook
 - [`LICENSE.md`](./LICENSE.md): the free edition's source-available licence. Build and sell

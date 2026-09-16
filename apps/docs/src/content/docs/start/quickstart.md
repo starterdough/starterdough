@@ -6,7 +6,8 @@ description: From a clone to a running API and app in a few commands.
 ## Prerequisites
 
 - **Bun 1.4 or newer**: runtime, package manager and test runner for the whole repository.
-- **Docker**: runs the local Postgres.
+- **Docker with Compose and a running daemon**: runs the local Postgres. The Docker executable
+  alone does not prove that `db:up` can run.
 - **Rust toolchain**: only for `apps/native` (the Tauri shells).
 
 ## Install and run
@@ -28,9 +29,10 @@ cp apps/web/.env.example apps/web/.env
 bun -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-3. Start Postgres, apply the migrations and run the app:
+3. Check setup, start Postgres, apply the migrations and run the app:
 
 ```sh
+bun run doctor                       # app configuration, dependencies, Docker + Compose + daemon
 bun run db:up                        # Postgres 17 in Docker (127.0.0.1:5433 by default)
 bun run db:migrate                   # applies packages/db/drizzle/*.sql (exits 1 if any stay pending)
 
@@ -40,6 +42,32 @@ bun run dev:app                      # api on :3000 + web on :5173
 Then open [http://localhost:5173](http://localhost:5173). The defaults in `.env.example` are enough
 for local development: emails print to the API terminal and social sign-in stays off. See
 [Configuration](/start/configuration/) for what each variable switches on.
+
+`doctor` checks prerequisites and configuration; it does not connect to Postgres or apply
+migrations. For an existing database, set `DATABASE_URL`, run
+`bun run doctor -- --database=external`, omit `db:up`, then run `db:migrate`.
+
+### Build all apps locally
+
+App signup uses only the root and web configuration. A full build also needs the sites:
+
+```sh
+cp apps/site/.env.example apps/site/.env
+cp apps/docs/.env.example apps/docs/.env
+```
+
+Set `SITE_URL=http://localhost:4321` in `apps/site/.env` and
+`SITE_URL=http://localhost:4322` in `apps/docs/.env`. Then run:
+
+```sh
+bun run doctor -- --build
+bun run build
+```
+
+Add `--database=external` to the doctor command when using your own database. Keep the shell's
+`SITE_URL` unset for distinct per-site origins; a nonempty exported value overrides both files.
+Use your public origins before deployment. See [Configuration](/start/configuration/) for file
+precedence and [the worked feature example](/guides/feature-example/) when adding your first feature.
 
 ### Other entry points
 

@@ -19,6 +19,7 @@ across every workspace that defines the script.
 
 | Command | What |
 | --- | --- |
+| `bun run doctor` | Read-only local setup check: Bun, dependencies, app configuration, Docker CLI, Compose and daemon. `-- --database=external` skips Docker for your existing database; `-- --build` adds site/docs build configuration. Does not connect to Postgres or apply migrations |
 | `bun run verify` | `lint`, `check` and `test` in CI's order. The pre-push command. Add `bun run build` for the whole pipeline |
 | `bun run check` | `turbo check`: svelte-check in the app and packages, `astro check` in the sites |
 | `bun run test` | `turbo test`: `bun test` in the TS packages and the API, Vitest (unit + component in Chromium) in the app, and `packages/ui`'s contrast check, which recomputes every token pair's ratio from `theme.css`. The component tests need Playwright's Chromium; `apps/web`'s `pretest` installs it on first run |

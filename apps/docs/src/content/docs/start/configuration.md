@@ -28,6 +28,25 @@ the example files.
 | `apps/web/.env` (from `apps/web/.env.example`) | the SvelteKit app (Vite; only `PUBLIC_*` values reach the browser) |
 | `apps/site/.env`, `apps/docs/.env` | the Astro sites, at build time |
 
+Check the app configuration with `bun run doctor`; add `-- --build` to check both Astro sites
+before a full build. Use `-- --database=external` when `DATABASE_URL` points to an existing database.
+The checker covers local development/test setup and refuses `NODE_ENV=production`; full environment
+validation belongs to the API at startup. It never applies migrations or confirms database connectivity.
+
+### Local app versus complete build
+
+`dev:app` needs the root and web settings. `build` also requires **each site's own** canonical URL:
+set `SITE_URL=http://localhost:4321` in `apps/site/.env` and `SITE_URL=http://localhost:4322` in
+`apps/docs/.env` for local builds. Keep their public API/app targets consistent with your ports.
+Before deployment, replace local origins with your public URLs.
+
+Astro's canonical setting uses a nonempty explicit process `SITE_URL` first, then its own
+`.env.local`, then `.env`. Blank canonical entries fall through to the next source. A nonempty
+shell export applies to both sites, so leave it unset when using distinct per-site files. The root
+`DOCS_URL` belongs to container builds; a direct docs build uses `apps/docs/.env`'s `SITE_URL`.
+The build still rejects an unset canonical URL or an `example.com`, `example.org` or `example.net`
+placeholder.
+
 Never commit `.env` files. Only the `.env.example` files are tracked. In production the API refuses
 the example placeholders: any `change-me…` value (`BETTER_AUTH_SECRET`, the OAuth secrets,
 `RESEND_API_KEY`) and a `DATABASE_URL` whose password is `starterdough`,

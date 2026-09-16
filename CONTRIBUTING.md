@@ -6,6 +6,12 @@ are welcome; see the bottom of the page.
 
 ## The loop
 
+Follow `QUICKSTART.md` to copy and configure the environment files first. Run `bun run doctor`
+before starting the local database; use `bun run doctor -- --database=external` and omit `db:up`
+when you intentionally use an existing development database. The
+[worked feature example](apps/docs/src/content/docs/guides/feature-example.md) follows a shipped
+feature through the database, contract, permissions, localized form and tests.
+
 ```sh
 bun install                    # installs git hooks and syncs SvelteKit's generated types
 bun run db:up                  # Postgres 17 on 127.0.0.1:5433
@@ -19,9 +25,8 @@ Before you push:
 bun run verify                 # lint + typecheck + test, in CI's order
 ```
 
-The pre-push hook runs `bun run verify`. Skip it once with `LEFTHOOK=0 git push`. `bun run
-test:e2e` covers the browser suites (auth, accessibility, i18n). Run it when you touch routing,
-forms or the app shell.
+The pre-push hook runs `bun run verify`. `bun run test:e2e` covers the browser suites (auth,
+accessibility, i18n). Run it when you touch routing, forms or the app shell.
 
 Per-package gates are faster while you iterate:
 
