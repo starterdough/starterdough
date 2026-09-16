@@ -391,10 +391,11 @@ do not control.
 
 **What runs.** `postgres` (its own `starterdough-demo_pgdata` volume), `migrate`, `demo-api` and
 `demo-web`, from the images production runs, pulled from GHCR, and `demo-static`, which serves the
-marketing site on :8080 and the docs on :8081. That last one is the only image built on the box:
+marketing site on :8080 and the docs on :8081. CI builds that last image separately for the demo:
 `Dockerfile.static` compiles `SITE_URL`, `DOCS_URL`, `PUBLIC_APP_URL` and `PUBLIC_API_URL` into
 every page, so production's `caddy` image would serve the demo a site whose every link points at
-production. No backup: the data is disposable by design.
+production. Routine deploys pull it instead of compiling on the VPS. No backup: the data is
+disposable by design.
 Limits, caps not reservations: 512 MB and 2 CPUs for the API, 256 MB and 1 CPU each for the app
 and the static server, 512 MB and 1 CPU for Postgres. A hammered demo exhausts its own share long
 before production notices.
@@ -425,21 +426,31 @@ user, except where it says root.
    docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile
    docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
    ```
-   Both demo hosts answer 502 until step 4 is done.
-4. The demo clone and stack. Only `demo-static` is built, and it takes a few minutes the first
-   time: it installs the two Astro apps and compiles them against the demo's own URLs.
+   Both demo hosts answer 502 until step 5 is done.
+4. Prepare the demo clone and its environment before enabling automated demo deploys.
    ```sh
    git clone https://github.com/starterdough/starterdough-turbo.git /opt/starterdough-demo
    cd /opt/starterdough-demo
    cp infra/demo/.env.example .env && chmod 600 .env
    $EDITOR .env               # fill in the secrets: openssl rand -hex 32 for each
-   docker compose build demo-static
-   docker compose pull && docker compose up -d --wait
+   ```
+5. In the repository's Actions variables, set `DEMO_PATH=/opt/starterdough-demo` and
+   `DEMO_DOMAIN=demo.starterdough.dev`. The workflow derives the standard URLs from that domain.
+   Custom layouts can override any of them with `DEMO_SITE_URL`, `DEMO_DOCS_URL`, `DEMO_WEB_URL`
+   and `DEMO_API_URL`; those values must match the demo clone's `SITE_URL`, `DOCS_URL`, `WEB_URL`
+   and `API_URL` rows. `DEMO_DOMAIN` remains required because it also identifies an enabled,
+   fully configured demo build. Run the **Deploy** workflow with an empty `tag`: it publishes
+   `demo-static`, deploys production, then runs `infra/demo/update.sh` to pull and start the demo.
+   An existing tag from before demo images were published is rejected before deployment.
+6. Verify the stack. Initial bring-up pulled every image and did no compilation on the box.
+   ```sh
+   cd /opt/starterdough-demo
+   docker compose ps
    curl -sS https://app.demo.starterdough.dev/readyz
    curl -sS -o /dev/null -w '%{http_code}\n' https://demo.starterdough.dev/
    curl -sS -o /dev/null -w '%{http_code}\n' https://demo.starterdough.dev/docs/
    ```
-5. The nightly reset, as root:
+7. The nightly reset, as root:
    ```sh
    cp /opt/starterdough-demo/infra/demo/demo-reset.service /opt/starterdough-demo/infra/demo/demo-reset.timer /etc/systemd/system/
    systemctl daemon-reload && systemctl enable --now demo-reset.timer
@@ -475,12 +486,12 @@ commit it just deployed, whenever the repository variable `DEMO_PATH` names that
 and nothing over there is ever touched. The same script is the by-hand update, run from the demo
 clone.
 
-It checks out that commit (the compose file and the migrations have to match the images), builds
-`demo-static`, pulls the images and restarts, and it refuses to run anywhere but the demo before
+It checks out that commit (the compose file and the migrations have to match the images), pulls
+all images and restarts with `--no-build`, and it refuses to run anywhere but the demo before
 it moves anything, the way `reset.sh` does. It is not a reset: the database, the volume and
 whoever has signed up all survive, and visitors lose only their session when `demo-api` and
-`demo-web` restart. The build is a cache hit unless `apps/site`, `apps/docs`, `packages/` or the
-lockfile changed; when they did it is minutes on the box, with production already live.
+`demo-web` restart. A missing `demo-static` image fails before any upload writer is stopped or
+container is replaced.
 
 The pull needs a GHCR login, and by hand that is a login of the box's own: the one `deploy.yml`
 makes is the workflow's token, which is revoked when the job ends. Rather than fail there, a run
@@ -488,6 +499,18 @@ whose `IMAGE_TAG` is a `sha-<commit>` falls back to the images already on the bo
 of them is present, which on a shared box they are, because production pulled that same immutable
 build minutes earlier. Set a PAT with `read:packages` as the `GHCR_PULL_TOKEN` secret and the
 question goes away: every deploy then leaves a login behind that does not expire.
+
+For a self-host or an old tag whose pipeline never published `demo-static`, build only that image
+explicitly from the matching checkout:
+
+```sh
+IMAGE_TAG=sha-abc1234 BUILD_DEMO_STATIC=1 bash infra/demo/update.sh
+```
+
+That mode pulls the other services, builds `demo-static` locally with the URLs in `.env`, and only
+then stops writers and replaces containers. It is never selected automatically. The GitHub deploy
+workflow rejects an existing tag without `demo-static` before it connects to the server; use this
+command directly on a self-hosted demo, or publish the missing image before a workflow rollback.
 
 **Take it down.** In the demo clone `docker compose down` (keeps the volume) or
 `docker compose down -v` (wipes it); as root `systemctl disable --now demo-reset.timer`; unset the

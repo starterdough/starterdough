@@ -153,12 +153,11 @@ services:
           cpus: '1'
           pids: 512
 
-  # The marketing site and the docs: the two surfaces the app is not, and the only image built on
-  # the box. Dockerfile.static compiles SITE_URL, DOCS_URL, PUBLIC_APP_URL and PUBLIC_API_URL into
+  # The marketing site and the docs: the two surfaces the app is not. Dockerfile.static compiles
+  # SITE_URL, DOCS_URL, PUBLIC_APP_URL and PUBLIC_API_URL into
   # every page, so production's `caddy` image would serve the demo a site whose every link points
-  # at production. Deliberately no `image:`: a build-only service is skipped by
-  # `docker compose pull` instead of failing it, and `up` reuses what `build` left behind rather
-  # than rebuilding on every nightly reset.
+  # at production. CI publishes this demo-specific image for routine deploys; retaining `build:`
+  # lets self-hosters build it locally when they do not publish images from GitHub Actions.
   demo-static:
     <<: *hardening
     # The caddy image ships its binary with the file capability `cap_net_bind_service=ep`, and the
@@ -176,6 +175,7 @@ services:
         DOCS_URL: ${DOCS_URL:-https://${DOMAIN:?set DOMAIN in .env}/docs}
         PUBLIC_APP_URL: ${WEB_URL:-https://app.${DOMAIN:?set DOMAIN in .env}}
         PUBLIC_API_URL: ${API_URL:-https://app.${DOMAIN:?set DOMAIN in .env}}
+    image: ${IMAGE_REGISTRY:-starterdough}/demo-static:${IMAGE_TAG:-local}
     restart: unless-stopped
     logging: *logging
     environment:

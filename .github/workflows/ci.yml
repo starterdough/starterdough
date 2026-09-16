@@ -128,6 +128,68 @@ jobs:
             echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)"
           } >> .env.demo
           docker compose --env-file .env.demo -f infra/demo/compose.yml config --quiet
+          IMAGE_REGISTRY=ghcr.io/example/starterdough IMAGE_TAG=sha-test \
+            docker compose --env-file .env.demo -f infra/demo/compose.yml config --images \
+            | grep -qx 'ghcr.io/example/starterdough/demo-static:sha-test'
+      - name: Demo updates pull before replacing containers
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d)"
+          trap 'rm -rf "$root"' EXIT
+          mkdir -p "$root/case/infra/demo" "$root/case/infra/scripts" "$root/bin"
+          cp infra/demo/update.sh "$root/case/infra/demo/"
+          cat > "$root/case/.env" <<'EOF'
+          IMAGE_REGISTRY=ghcr.io/example/starterdough
+          IMAGE_TAG=sha-test
+          EOF
+          cat > "$root/bin/docker" <<'EOF'
+          #!/usr/bin/env bash
+          printf '%s\n' "$*" >> "$DOCKER_LOG"
+          case "$*" in
+            'compose config') echo 'name: starterdough-demo' ;;
+            'compose config --services') printf '%s\n' postgres migrate demo-api demo-web demo-static ;;
+            'compose config --images')
+              printf '%s\n' postgres:17 ghcr.io/example/starterdough/api:sha-test \
+                ghcr.io/example/starterdough/web:sha-test \
+                ghcr.io/example/starterdough/demo-static:sha-test
+              ;;
+            'compose pull --quiet'|'compose pull --quiet postgres migrate demo-api demo-web')
+              [ "${PULL_FAIL:-0}" != 1 ]
+              ;;
+            'image inspect ghcr.io/example/starterdough/demo-static:sha-test')
+              [ "${MISSING_DEMO:-0}" != 1 ]
+              ;;
+          esac
+          EOF
+          chmod +x "$root/bin/docker"
+
+          run_update() {
+            : > "$DOCKER_LOG"
+            (cd "$root/case" && PATH="$root/bin:$PATH" bash infra/demo/update.sh)
+          }
+          before() {
+            [ "$(grep -nF "$1" "$DOCKER_LOG" | head -1 | cut -d: -f1)" -lt \
+              "$(grep -nF "$2" "$DOCKER_LOG" | head -1 | cut -d: -f1)" ]
+          }
+
+          export DOCKER_LOG="$root/docker.log"
+          run_update
+          ! grep -qF 'compose build' "$DOCKER_LOG"
+          grep -qxF 'compose pull --quiet' "$DOCKER_LOG"
+          grep -qxF 'compose up -d --remove-orphans --wait --wait-timeout 300 --no-build' "$DOCKER_LOG"
+          before 'compose pull --quiet' 'compose up -d --remove-orphans --wait --wait-timeout 300 --no-build'
+
+          if PULL_FAIL=1 MISSING_DEMO=1 run_update; then
+            echo 'update unexpectedly accepted a missing demo-static image' >&2
+            exit 1
+          fi
+          ! grep -qF 'compose up ' "$DOCKER_LOG"
+
+          PULL_FAIL=1 MISSING_DEMO=1 BUILD_DEMO_STATIC=1 run_update
+          grep -qxF 'compose pull --quiet postgres migrate demo-api demo-web' "$DOCKER_LOG"
+          grep -qxF 'compose build demo-static' "$DOCKER_LOG"
+          before 'compose pull --quiet postgres migrate demo-api demo-web' 'compose build demo-static'
+          before 'compose build demo-static' 'compose up -d --remove-orphans --wait --wait-timeout 300 --no-build'
       - name: Validate the Caddyfiles
         run: |
           for mode in subdomains single-origin; do
@@ -175,9 +237,9 @@ jobs:
           docker run --rm -v "$PWD/infra/demo/caddy:/work:ro" -w /work caddy:2-alpine \
             caddy fmt --diff demo.caddy
 
-  # The five images behind infra/compose.yml, built but never pushed: a Dockerfile that stops building
-  # must fail on the pull request, not on the push to `main` that deploys. Keep the matrix in step with
-  # .github/workflows/deploy.yml.
+  # Production's five images plus demo-static, built but never pushed: a Dockerfile that stops
+  # building must fail on the pull request, not on the push to `main` that deploys. Keep the matrix
+  # in step with .github/workflows/deploy.yml.
   docker:
     name: Build image (${{ matrix.name }})
     if: github.event_name == 'pull_request'
@@ -203,6 +265,14 @@ jobs:
               DOCS_URL=https://docs.ci.invalid
               PUBLIC_APP_URL=https://app.example.com
               PUBLIC_API_URL=https://api.example.com
+          - name: demo-static
+            context: .
+            dockerfile: infra/docker/Dockerfile.static
+            build_args: |
+              SITE_URL=https://demo.ci.invalid
+              DOCS_URL=https://demo.ci.invalid/docs
+              PUBLIC_APP_URL=https://app.demo.ci.invalid
+              PUBLIC_API_URL=https://app.demo.ci.invalid
           - name: backup
             context: .
             dockerfile: infra/backup/Dockerfile

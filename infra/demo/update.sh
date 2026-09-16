@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Move the public demo onto the build production is running: check out that commit, rebuild the two
-# static sites for the demo's own origins, pull the images and restart. Run it from the demo clone:
+# Move the public demo onto the build production is running: check out that commit, pull its images
+# and restart. Run it from the demo clone:
 #
 #   bash infra/demo/update.sh                                            # whatever .env already pins
 #   IMAGE_TAG=sha-abc1234 GIT_REF=abc1234 bash infra/demo/update.sh      # a specific build
+#   BUILD_DEMO_STATIC=1 bash infra/demo/update.sh                        # self-hosted local build
 #
 # .github/workflows/deploy.yml runs exactly this over SSH after every production deploy, with the
 # tag and commit it just deployed, when the repository variable DEMO_PATH names the demo clone.
@@ -15,8 +16,7 @@
 # visitors have signed up with are left exactly as they are (infra/demo/reset.sh does that job, on
 # a timer). What visitors do lose is their session, when demo-api and demo-web restart.
 #
-# Idempotent: a second run checks out the same commit, hits the build cache, pulls nothing new and
-# recreates nothing.
+# Idempotent: a second run checks out the same commit, pulls nothing new and recreates nothing.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -70,16 +70,25 @@ if [ -z "$registry" ]; then
 	refuse "no IMAGE_REGISTRY in $(pwd)/.env; set it to the namespace CI pushes to (ghcr.io/<owner>/<repo>, lowercase)"
 fi
 
-# The one image that cannot be production's: Dockerfile.static compiles SITE_URL, DOCS_URL,
-# PUBLIC_APP_URL and PUBLIC_API_URL into every page, so production's `caddy` image would serve the
-# demo a site whose every link points at production. A cache hit unless apps/site, apps/docs,
-# packages/ or the lockfile changed, and minutes when they did.
-echo "▸ building demo-static (IMAGE_TAG=$IMAGE_TAG)"
-docker compose build demo-static
+# Dockerfile.static compiles the demo's URLs into every page. CI publishes that demo-specific image
+# for routine deployments. Self-hosters without that pipeline may opt into the retained Compose
+# build explicitly; never silently fall back to a long build on the server.
+pull_services=()
+if [ "${BUILD_DEMO_STATIC:-0}" = 1 ]; then
+	services="$(docker compose config --services)" || refuse "cannot resolve this demo's services"
+	while IFS= read -r service; do
+		[ "$service" = demo-static ] || pull_services+=("$service")
+	done <<<"$services"
+fi
 
-# demo-static has no `image:`, so a build-only service is skipped here rather than failing the pull.
-echo "▸ pulling the images production runs ($registry, IMAGE_TAG=$IMAGE_TAG)"
-if ! docker compose pull --quiet; then
+echo "▸ pulling images ($registry, IMAGE_TAG=$IMAGE_TAG)"
+pull_failed=0
+if [ "${BUILD_DEMO_STATIC:-0}" = 1 ]; then
+	docker compose pull --quiet "${pull_services[@]}" || pull_failed=1
+else
+	docker compose pull --quiet || pull_failed=1
+fi
+if [ "$pull_failed" = 1 ]; then
 	# Nearly always the GHCR login. deploy.yml logs this box in with the workflow's own token, which
 	# is revoked when that job ends, so a by-hand run hours later gets a bare "denied" from the
 	# registry. That on its own is not fatal here: the demo runs the images production runs, and on
@@ -95,8 +104,12 @@ if ! docker compose pull --quiet; then
 		echo "  $IMAGE_TAG is not a sha-<commit> tag, so a local copy of it proves nothing"
 		;;
 	esac
-	# Includes demo-static under its generated name, which the build above has just produced.
+	# Includes demo-static on the routine path. With BUILD_DEMO_STATIC=1 it may already exist from an
+	# earlier local build; the explicit build below still refreshes it before any writer is stopped.
 	for image in $(docker compose config --images); do
+		if [ "${BUILD_DEMO_STATIC:-0}" = 1 ] && [ "$image" = "$registry/demo-static:$IMAGE_TAG" ]; then
+			continue
+		fi
 		docker image inspect "$image" >/dev/null 2>&1 || { usable=0; echo "  not on this box: $image"; }
 	done
 	if [ "$usable" != 1 ]; then
@@ -110,10 +123,15 @@ if ! docker compose pull --quiet; then
 	echo "✓ every image for $IMAGE_TAG is already on this box; carrying on with those"
 fi
 
+if [ "${BUILD_DEMO_STATIC:-0}" = 1 ]; then
+	echo "▸ building demo-static locally (IMAGE_TAG=$IMAGE_TAG)"
+	docker compose build demo-static
+fi
+
 
 # --wait returns once every service is healthy and `migrate` has completed, so a bad build fails here.
 echo "▸ starting"
-docker compose up -d --remove-orphans --wait --wait-timeout 300
+docker compose up -d --remove-orphans --wait --wait-timeout 300 --no-build
 
 echo "▸ readiness (database reachable through the demo API)"
 docker compose exec -T demo-api bun -e \

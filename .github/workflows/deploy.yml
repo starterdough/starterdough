@@ -1,10 +1,11 @@
 # Container images + (optional) deploy to your server.
 #
-# On every push to `main` and every `v*` tag this builds the five images behind infra/compose.yml and
-# pushes them to GitHub Container Registry as ghcr.io/<owner>/<repo>/<name>:<tag>, tagged with the
-# commit (`sha-abc1234`), the branch or version (`main`, `1.2.0`) and `latest` on main. Nothing to
-# configure: GITHUB_TOKEN may push to this repository's packages. They are private until you make
-# them public (repository → Packages → package settings) or `docker login ghcr.io` on the server.
+# On every push to `main` and every `v*` tag this builds the five images behind infra/compose.yml,
+# plus demo-static when DEMO_PATH enables the public demo, and pushes them to GitHub Container
+# Registry as ghcr.io/<owner>/<repo>/<name>:<tag>, tagged with the commit (`sha-abc1234`), the branch
+# or version (`main`, `1.2.0`) and `latest` on main. Nothing to configure: GITHUB_TOKEN may push to
+# this repository's packages. They are private until you make them public (repository → Packages →
+# package settings) or `docker login ghcr.io` on the server.
 #
 # Then, when the repository *variable* DEPLOY_HOST is set, it deploys over SSH by running
 # infra/scripts/deploy.sh on the server (checkout of this commit, `docker compose pull`, `up -d`,
@@ -16,6 +17,10 @@
 #                         public demo"). Set it and every deploy also moves the demo onto the build
 #                         it just deployed, so what visitors try is what you ship; unset, the demo
 #                         is never touched.
+#   DEMO_DOMAIN           required with DEMO_PATH: the demo's base host, such as demo.example.com.
+#   DEMO_SITE_URL DEMO_DOCS_URL DEMO_WEB_URL DEMO_API_URL
+#                         optional overrides for the URLs baked into demo-static; each defaults from
+#                         DEMO_DOMAIN using the standard demo topology documented in infra/README.md.
 #   DEPLOY_VIA_TAILSCALE  'true' when the server is reachable only over your tailnet
 #   IMAGE_PLATFORMS       default linux/amd64; add linux/arm64 for an ARM VPS (slower builds via QEMU)
 #   SITE_URL DOCS_URL WEB_URL API_URL   REQUIRED: baked into the static sites (caddy image) at build
@@ -65,7 +70,7 @@ concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: false
 
-# Per job below: only `images` may write packages.
+# Per job below: only the two image-building jobs may write packages.
 permissions:
   contents: read
 
@@ -160,13 +165,66 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
           build-args: ${{ matrix.build_args }}
 
+  demo-image:
+    name: Image (demo-static)
+    if: |
+      (github.event_name != 'workflow_dispatch' || inputs.tag == '') &&
+      vars.DEMO_PATH != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: The public demo image needs its canonical domain
+        env:
+          DEMO_DOMAIN: ${{ vars.DEMO_DOMAIN }}
+        run: |
+          if [ -z "$DEMO_DOMAIN" ]; then
+            echo "::error title=Missing repository variable::Set DEMO_DOMAIN under Settings → Secrets and variables → Actions → Variables. It is required when DEMO_PATH enables the public demo and supplies the defaults for the URLs compiled into demo-static."
+            exit 1
+          fi
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+        if: vars.IMAGE_PLATFORMS != '' && vars.IMAGE_PLATFORMS != 'linux/amd64'
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ${{ env.REGISTRY }}/demo-static
+          tags: |
+            type=sha,prefix=sha-
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable={{is_default_branch}}
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: infra/docker/Dockerfile.static
+          platforms: ${{ vars.IMAGE_PLATFORMS || 'linux/amd64' }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=demo-static
+          cache-to: type=gha,mode=max,scope=demo-static
+          build-args: |
+            SITE_URL=${{ vars.DEMO_SITE_URL || format('https://{0}', vars.DEMO_DOMAIN) }}
+            DOCS_URL=${{ vars.DEMO_DOCS_URL || format('https://{0}/docs', vars.DEMO_DOMAIN) }}
+            PUBLIC_APP_URL=${{ vars.DEMO_WEB_URL || format('https://app.{0}', vars.DEMO_DOMAIN) }}
+            PUBLIC_API_URL=${{ vars.DEMO_API_URL || format('https://app.{0}', vars.DEMO_DOMAIN) }}
+
   deploy:
     name: Deploy to ${{ vars.DEPLOY_HOST }}
-    needs: [images]
+    needs: [images, demo-image]
     # Runs after a successful build, or straight away when an existing tag was requested.
     if: |
       always() && vars.DEPLOY_HOST != '' &&
-      (needs.images.result == 'success' || needs.images.result == 'skipped')
+      (needs.images.result == 'success' || needs.images.result == 'skipped') &&
+      (needs.demo-image.result == 'success' || needs.demo-image.result == 'skipped')
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -216,6 +274,24 @@ jobs:
             echo "value=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
             echo "ref=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
           fi
+      - name: Log the runner into GHCR for demo rollback validation
+        if: vars.DEMO_PATH != '' && github.event_name == 'workflow_dispatch' && inputs.tag != ''
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify an existing tag includes the public demo image
+        if: vars.DEMO_PATH != '' && github.event_name == 'workflow_dispatch' && inputs.tag != ''
+        env:
+          IMAGE_TAG: ${{ steps.tag.outputs.value }}
+        run: |
+          IMAGE_REGISTRY="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          image="$IMAGE_REGISTRY/demo-static:$IMAGE_TAG"
+          if ! docker manifest inspect "$image" >/dev/null; then
+            echo "::error title=The requested tag has no public demo image::$image is unavailable. Production has not been touched. Publish a demo-static image for this tag, unset DEMO_PATH for a production-only rollback, or follow infra/README.md's explicit BUILD_DEMO_STATIC=1 self-host fallback outside this workflow."
+            exit 1
+          fi
       - uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3.3.0
         if: vars.DEPLOY_VIA_TAILSCALE == 'true'
         with:
@@ -231,7 +307,7 @@ jobs:
           # StrictHostKeyChecking=accept-new: trust the host key on first use, refuse it if it ever
           # changes. Pinning it would mean a repository variable to update every time the box is
           # rebuilt, and the runner reaches the host over the tailnet or a known IP.
-          printf 'Host target\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/deploy\n  StrictHostKeyChecking accept-new\n' \
+          printf 'Host target\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/deploy\n  BatchMode yes\n  IdentitiesOnly yes\n  ConnectTimeout 15\n  ServerAliveInterval 15\n  ServerAliveCountMax 6\n  StrictHostKeyChecking accept-new\n' \
             "$DEPLOY_HOST" "$DEPLOY_USER" > ~/.ssh/config
       - name: Ship the environment file (only when SOPS_AGE_KEY is set)
         env:
