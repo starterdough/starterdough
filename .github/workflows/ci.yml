@@ -146,6 +146,8 @@ jobs:
           cat > "$root/bin/docker" <<'EOF'
           #!/usr/bin/env bash
           printf '%s\n' "$*" >> "$DOCKER_LOG"
+          candidate_id="$(printf '%064d' 2)"
+          candidate_image_id="sha256:$(printf '%064d' 1)"
           case "$*" in
             'compose config') echo 'name: starterdough-demo' ;;
             'compose config --format json')
@@ -171,10 +173,11 @@ jobs:
             'image inspect ghcr.io/example/starterdough/demo-static:sha-test')
               [ "${MISSING_DEMO:-0}" != 1 ]
               ;;
-            'image inspect --format {{.Id}} '*) printf 'sha256:%064d\n' 1 ;;
-            'compose ps --quiet demo-api') printf '%064d\n' 2 ;;
-            'inspect 0000000000000000000000000000000000000000000000000000000002')
-              echo '[{"Id":"0000000000000000000000000000000000000000000000000000000000000002","Image":"sha256:0000000000000000000000000000000000000000000000000000000000000001","Config":{"Image":"ghcr.io/example/starterdough/api:sha-test","Labels":{"com.docker.compose.project":"starterdough-demo","com.docker.compose.service":"demo-api"}},"State":{"Running":true}}]'
+            'image inspect --format {{.Id}} '*) printf '%s\n' "$candidate_image_id" ;;
+            'compose ps --quiet demo-api') printf '%s\n' "$candidate_id" ;;
+            "inspect $candidate_id")
+              printf '[{"Id":"%s","Image":"%s","Config":{"Image":"ghcr.io/example/starterdough/api:sha-test","Labels":{"com.docker.compose.project":"starterdough-demo","com.docker.compose.service":"demo-api"}},"State":{"Running":true}}]\n' \
+                "$candidate_id" "$candidate_image_id"
               ;;
           esac
           EOF
