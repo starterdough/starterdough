@@ -15,6 +15,11 @@
 # The demo answers 502 through the production Caddy for the ~30 s demo-api is down.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+source infra/scripts/operation-lock.sh
+source infra/scripts/deployment-recovery.sh
+STARTERDOUGH_OPERATION_LOCK_WAIT_SECONDS=0
+acquire_operation_lock || { echo 'demo reset: another production operation is running' >&2; exit 1; }
+deployment_refuse_pending || exit 1
 
 refuse() {
 	echo "demo reset: $*" >&2
@@ -28,13 +33,44 @@ refuse() {
 # does not even interpolate (production's, say) leaves the name empty, which refuses below.
 project="$( (docker compose config 2>/dev/null || true) | sed -n 's/^name: //p' | head -n 1)"
 [ "$project" = starterdough-demo ] || refuse "the compose project here is '${project:-none}', not starterdough-demo"
-docker compose config --services | grep -qx demo-api || refuse "no demo-api service in this compose project"
+# Drain inspected streams so pipefail still reports only real producer errors.
+docker compose config --services | grep -x demo-api >/dev/null || refuse "no demo-api service in this compose project"
 
 # And the container that owns the database must be a demo, which its own environment says.
 container="$(docker compose ps -a -q demo-api)"
 [ -n "$container" ] || refuse "demo-api has no container; is the stack up? (docker compose up -d)"
-docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$container" | grep -qx 'PUBLIC_DEMO_MODE=true' ||
+docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$container" | grep -x 'PUBLIC_DEMO_MODE=true' >/dev/null ||
 	refuse "the demo-api container does not run with PUBLIC_DEMO_MODE=true"
+
+# The reset timer must only destroy the database belonging to the revision checked out here.
+# A failed demo update can leave this checkout ahead of its running API; never reset across that
+# boundary. Managed hosts require the CI OCI revision label; local builds retain the immutable image
+# identity check and may omit that CI-only label.
+target_image="$(docker compose config --format json | python3 -c '
+import json
+import sys
+
+config = json.load(sys.stdin)
+try:
+    image = config["services"]["demo-api"]["image"]
+except (KeyError, TypeError):
+    raise SystemExit(1)
+if not isinstance(image, str) or not image or any(character in image for character in "\x00\r\n\t"):
+    raise SystemExit(1)
+print(image)
+')" || refuse "cannot resolve the demo-api target image"
+target_image_id="$(docker image inspect --format '{{.Id}}' "$target_image" 2>/dev/null)" ||
+	refuse "the demo-api target image is not present locally"
+running_image_id="$(docker inspect --format '{{.Image}}' "$container")" ||
+	refuse "cannot inspect the running demo-api image"
+[ "$running_image_id" = "$target_image_id" ] ||
+	refuse "the running demo-api image does not match this checkout"
+expected_revision="$(git rev-parse HEAD)" || refuse "cannot resolve this checkout revision"
+image_revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$target_image" 2>/dev/null)" ||
+	refuse "cannot inspect the demo-api image revision"
+if [ -n "$image_revision" ] && [ "$image_revision" != "$expected_revision" ]; then
+	refuse "the demo-api image revision does not match this checkout"
+fi
 
 echo "▸ stopping demo-web and demo-api"
 docker compose stop demo-web demo-api

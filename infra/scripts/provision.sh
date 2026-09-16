@@ -57,8 +57,9 @@ fi
 
 echo "▸ base packages"
 apt-get update -qq
-# unzip: the Bun installer below needs it.
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates curl git ufw unattended-upgrades openssl unzip >/dev/null
+# unzip: the Bun installer below needs it. python3 runs the recovery journal and util-linux supplies
+# flock, which serializes deploys, resets, and explicit recovery on the host.
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates curl git ufw unattended-upgrades openssl python3 unzip util-linux >/dev/null
 
 echo "▸ docker"
 if ! command -v docker >/dev/null 2>&1; then

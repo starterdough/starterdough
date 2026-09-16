@@ -130,7 +130,7 @@ jobs:
           docker compose --env-file .env.demo -f infra/demo/compose.yml config --quiet
           IMAGE_REGISTRY=ghcr.io/example/starterdough IMAGE_TAG=sha-test \
             docker compose --env-file .env.demo -f infra/demo/compose.yml config --images \
-            | grep -qx 'ghcr.io/example/starterdough/demo-static:sha-test'
+            | grep -x 'ghcr.io/example/starterdough/demo-static:sha-test' >/dev/null
       - name: Demo updates pull before replacing containers
         run: |
           set -euo pipefail
@@ -138,6 +138,7 @@ jobs:
           trap 'rm -rf "$root"' EXIT
           mkdir -p "$root/case/infra/demo" "$root/case/infra/scripts" "$root/bin"
           cp infra/demo/update.sh "$root/case/infra/demo/"
+          cp infra/scripts/{operation-lock.sh,deployment-recovery.sh,deployment-recovery.py} "$root/case/infra/scripts/"
           cat > "$root/case/.env" <<'EOF'
           IMAGE_REGISTRY=ghcr.io/example/starterdough
           IMAGE_TAG=sha-test
@@ -145,9 +146,22 @@ jobs:
           cat > "$root/bin/docker" <<'EOF'
           #!/usr/bin/env bash
           printf '%s\n' "$*" >> "$DOCKER_LOG"
+          candidate_id="$(printf '%064d' 2)"
+          candidate_image_id="sha256:$(printf '%064d' 1)"
           case "$*" in
             'compose config') echo 'name: starterdough-demo' ;;
-            'compose config --services') printf '%s\n' postgres migrate demo-api demo-web demo-static ;;
+            'compose config --format json')
+              echo '{"name":"starterdough-demo","services":{"postgres":{"image":"postgres:17"},"migrate":{"image":"ghcr.io/example/starterdough/api:sha-test"},"demo-api":{"image":"ghcr.io/example/starterdough/api:sha-test"},"demo-web":{"image":"ghcr.io/example/starterdough/web:sha-test"},"demo-static":{"image":"ghcr.io/example/starterdough/demo-static:sha-test"}}}'
+              ;;
+            'compose config --services')
+              if [ "${STREAM_SERVICES:-0}" = 1 ]; then
+                printf '%s\n' demo-api
+                for suffix in {1..8192}; do printf 'fixture-service-%s\n' "$suffix"; done
+              else
+                printf '%s\n' postgres migrate demo-api demo-web demo-static
+              fi
+              [ "${SERVICES_FAIL:-0}" != 1 ]
+              ;;
             'compose config --images')
               printf '%s\n' postgres:17 ghcr.io/example/starterdough/api:sha-test \
                 ghcr.io/example/starterdough/web:sha-test \
@@ -159,9 +173,20 @@ jobs:
             'image inspect ghcr.io/example/starterdough/demo-static:sha-test')
               [ "${MISSING_DEMO:-0}" != 1 ]
               ;;
+            'image inspect --format {{.Id}} '*) printf '%s\n' "$candidate_image_id" ;;
+            'compose ps --quiet demo-api') printf '%s\n' "$candidate_id" ;;
+            "inspect $candidate_id")
+              printf '[{"Id":"%s","Image":"%s","Config":{"Image":"ghcr.io/example/starterdough/api:sha-test","Labels":{"com.docker.compose.project":"starterdough-demo","com.docker.compose.service":"demo-api"}},"State":{"Running":true}}]\n' \
+                "$candidate_id" "$candidate_image_id"
+              ;;
           esac
           EOF
           chmod +x "$root/bin/docker"
+          cat > "$root/bin/git" <<'EOF'
+          #!/usr/bin/env bash
+          if [ "$*" = 'rev-parse HEAD' ]; then printf '%040d\n' 1; fi
+          EOF
+          chmod +x "$root/bin/git"
 
           run_update() {
             : > "$DOCKER_LOG"
@@ -173,23 +198,35 @@ jobs:
           }
 
           export DOCKER_LOG="$root/docker.log"
+          export STARTERDOUGH_STATE_DIR="$root/state"
           run_update
           ! grep -qF 'compose build' "$DOCKER_LOG"
           grep -qxF 'compose pull --quiet' "$DOCKER_LOG"
-          grep -qxF 'compose up -d --remove-orphans --wait --wait-timeout 300 --no-build' "$DOCKER_LOG"
-          before 'compose pull --quiet' 'compose up -d --remove-orphans --wait --wait-timeout 300 --no-build'
+          grep -qxF 'compose up -d --remove-orphans --wait --wait-timeout 300 --no-build --pull never' "$DOCKER_LOG"
+          before 'compose pull --quiet' 'compose up -d --remove-orphans --wait --wait-timeout 300 --no-build --pull never'
+          before 'compose pull --quiet' 'compose ps --status running --quiet'
 
           if PULL_FAIL=1 MISSING_DEMO=1 run_update; then
             echo 'update unexpectedly accepted a missing demo-static image' >&2
             exit 1
           fi
+          ! grep -qF 'compose ps --status running --quiet' "$DOCKER_LOG"
           ! grep -qF 'compose up ' "$DOCKER_LOG"
 
           PULL_FAIL=1 MISSING_DEMO=1 BUILD_DEMO_STATIC=1 run_update
           grep -qxF 'compose pull --quiet postgres migrate demo-api demo-web' "$DOCKER_LOG"
           grep -qxF 'compose build demo-static' "$DOCKER_LOG"
           before 'compose pull --quiet postgres migrate demo-api demo-web' 'compose build demo-static'
-          before 'compose build demo-static' 'compose up -d --remove-orphans --wait --wait-timeout 300 --no-build'
+          before 'compose build demo-static' 'compose up -d --remove-orphans --wait --wait-timeout 300 --no-build --pull never'
+          before 'compose build demo-static' 'compose ps --status running --quiet'
+
+          STREAM_SERVICES=1 run_update
+
+          if STREAM_SERVICES=1 SERVICES_FAIL=1 run_update; then
+            echo 'update accepted a failed service inventory producer' >&2
+            exit 1
+          fi
+          ! grep -qF 'compose pull' "$DOCKER_LOG"
       - name: Validate the Caddyfiles
         run: |
           for mode in subdomains single-origin; do

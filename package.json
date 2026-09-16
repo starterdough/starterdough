@@ -78,7 +78,7 @@
 		"build:desktop": "bun run --filter @repo/native build:desktop",
 		"build": "turbo build",
 		"check": "turbo check",
-		"test": "turbo test",
+		"test": "bun test infra/scripts/deployment-recovery.test.ts infra/scripts/recover-deployment-transport.test.ts infra/demo/reset.test.ts && turbo test",
 		"test:e2e": "turbo test:e2e",
 		"verify": "bun run lint && bun run check && bun run test",
 		"lint": "biome check .",

@@ -19,9 +19,33 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
+# A deployment and its recovery must share one host-wide lock. The Actions workflow may hand
+# the descriptor down as FD 8; acquire_operation_lock validates that it is the real lock.
+source infra/scripts/operation-lock.sh
+STARTERDOUGH_OPERATION_LOCK_WAIT_SECONDS="${STARTERDOUGH_OPERATION_LOCK_WAIT_SECONDS:-1800}"
+export STARTERDOUGH_OPERATION_LOCK_WAIT_SECONDS
+acquire_operation_lock || {
+	echo "another production operation is already running" >&2
+	exit 1
+}
+source infra/scripts/deployment-recovery.sh
+deployment_refuse_pending || exit 1
+
 if [ -n "${GIT_REF:-}" ]; then
 	echo "▸ checking out $GIT_REF"
 	git fetch --quiet origin
+	for path in infra/scripts/operation-lock.sh infra/scripts/deployment-recovery.py infra/scripts/deployment-recovery.sh infra/scripts/recover-deployment.sh; do
+		git cat-file -e "$GIT_REF:$path" || {
+			echo "ref $GIT_REF predates deployment recovery safeguards" >&2
+			exit 1
+		}
+	done
+	# Consume the full source: grep -q may close early and turn a healthy git stream into SIGPIPE
+	# under pipefail. These checks keep a rollback from replacing the loaded helper files.
+	git show "$GIT_REF:infra/scripts/deploy.sh" | grep -F 'deployment-recovery.sh' >/dev/null || {
+		echo "ref $GIT_REF predates deployment recovery safeguards" >&2
+		exit 1
+	}
 	git checkout --quiet --detach "$GIT_REF"
 fi
 
@@ -73,11 +97,17 @@ else
 	docker compose pull --quiet
 fi
 
+# Capture the old API before stopping it. The forward-only boundary is durable before Compose can
+# run a migration, so recovery never revives code that may no longer match the database schema.
+writers=(api)
+deployment_begin starterdough "${writers[@]}"
+deployment_stop_recorded
+deployment_mark_forward_only
 
 # --wait returns once every service is running and healthy (and one-shots like `migrate` have
 # completed) or fails after the timeout, so a broken deploy fails here.
 echo "▸ starting"
-docker compose up -d --remove-orphans --wait --wait-timeout 180
+docker compose up -d --remove-orphans --wait --wait-timeout 180 --no-build --pull never
 
 echo "▸ readiness (database reachable through the API)"
 docker compose exec -T api bun -e \
@@ -87,4 +117,5 @@ docker compose exec -T api bun -e \
 docker image prune -f >/dev/null
 
 docker compose ps
+deployment_complete api
 echo "✓ deployed $IMAGE_TAG"
