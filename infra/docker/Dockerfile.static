@@ -8,6 +8,7 @@ COPY apps/site/package.json apps/site/
 COPY apps/docs/package.json apps/docs/
 COPY packages/ packages/
 RUN bun install --frozen-lockfile
+COPY scripts/load-site-env.mjs scripts/
 COPY apps/site/ apps/site/
 COPY apps/docs/ apps/docs/
 # Canonical URLs (sitemap, RSS, OG tags). No defaults: both Astro builds refuse an unset or

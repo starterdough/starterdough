@@ -1,23 +1,16 @@
 // @ts-check
-import { fileURLToPath } from 'node:url';
 import { satteri } from '@astrojs/markdown-satteri';
 import starlight from '@astrojs/starlight';
 import { defineConfig } from 'astro/config';
+import { loadSiteEnv } from '../../scripts/load-site-env.mjs';
 
 /**
  * Astro loads `.env` into `import.meta.env` for source files, never into `process.env` for this
  * config, so `SITE_URL` and `DOCS_REPO_URL` must be loaded here, anchored to this file.
- * `process.loadEnvFile` never overwrites a variable that is already set: an explicit environment
- * value (CI, `Dockerfile.static`, the deploy workflow) wins, and `.env.local` (loaded first) wins
- * over `.env`, matching Vite's precedence.
+ * A nonempty explicit environment value (CI, `Dockerfile.static`, the deploy workflow) wins,
+ * `.env.local` wins over `.env`, and a blank `SITE_URL` is treated as absent at every layer.
  */
-for (const name of ['.env.local', '.env']) {
-	try {
-		process.loadEnvFile(fileURLToPath(new URL(name, import.meta.url)));
-	} catch {
-		// Absent (or an old runtime without `loadEnvFile`): the environment is the only source.
-	}
-}
+loadSiteEnv(import.meta.url);
 
 /** What `astro dev` / `astro check` use when `SITE_URL` is unset; a build refuses to guess. */
 const DEV_SITE_URL = 'http://localhost:4322';
@@ -114,6 +107,7 @@ const starlightOptions = {
 			items: [
 				{ label: 'Authentication', slug: 'guides/authentication' },
 				{ label: 'Admin', slug: 'guides/admin' },
+				{ label: 'Worked feature example', slug: 'guides/feature-example' },
 				{ label: 'Frontend platform', slug: 'guides/frontend' },
 				{ label: 'Serve anywhere', slug: 'guides/serve-anywhere' },
 				{ label: 'Operations', slug: 'guides/operations' },

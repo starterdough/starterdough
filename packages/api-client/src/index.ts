@@ -12,7 +12,10 @@ export type {
 	SystemStatus,
 	User,
 } from '@repo/api-contract';
-export { FlagKeySchema } from '@repo/api-contract';
+export {
+	FeatureFlagUpsertInputSchema,
+	FlagKeySchema,
+} from '@repo/api-contract';
 
 /** Fully typed client: `await api.account.me()`. */
 export type ApiClient = ContractRouterClient<Contract>;

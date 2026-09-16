@@ -1,15 +1,17 @@
 <script lang="ts">
 	import {
 		type FeatureFlag,
-		FlagKeySchema,
+		FeatureFlagUpsertInputSchema,
 		isDefinedError,
 		type ORPCError,
 		safe,
 	} from '@repo/api-client';
-	import { Alert, Button, cn, Input, Label } from '@repo/ui';
+	import { Alert, Button, cn, FormField, Input } from '@repo/ui';
 	import { onMount, untrack } from 'svelte';
+	import { defaults, setError, superForm } from 'sveltekit-superforms';
+	import { browser } from '$app/environment';
 	import { api } from '$lib/api';
-	import { issueMessage, messageOf } from '$lib/forms';
+	import { messageOf, spaForm, zodForm } from '$lib/forms';
 	import { m } from '$lib/paraglide/messages';
 	import type { PageProps } from './$types';
 
@@ -52,48 +54,52 @@
 	}
 
 	// ---- New flag --------------------------------------------------------------
-	let newKey = $state('');
-	let newDescription = $state('');
-	let newEnabled = $state(false);
-	let createBusy = $state(false);
 	let createNotice = $state<Notice>(null);
+	let resetAfterCreate = $state(false);
 
-	const keyCheck = $derived(FlagKeySchema.safeParse(newKey));
-	const keyError = $derived.by(() => {
-		if (newKey.length === 0 || keyCheck.success) return null;
-		const issue = keyCheck.error.issues[0];
-		if (!issue) return m.admin_flags_key_invalid();
-		// The schema is a bare string, so `issueMessage` cannot tell it is a flag key; name the
-		// format here and leave the length rules to it.
-		if (issue.code === 'invalid_format') return m.validation_flag_key();
-		return issueMessage(issue) ?? m.admin_flags_key_invalid();
-	});
-
-	async function createFlag(event: SubmitEvent) {
-		event.preventDefault();
-		if (!keyCheck.success) return;
-		const key = keyCheck.data;
-		// `upsert` would silently overwrite an existing flag's description and default.
-		if (flags?.some((f) => f.key === key)) {
-			createNotice = { variant: 'error', text: m.admin_flags_create_exists({ key }) };
-			return;
-		}
-		createBusy = true;
-		createNotice = null;
-		const { error, data: flag } = await safe(
-			api.admin.flags.upsert({ key, description: newDescription.trim(), enabled: newEnabled }),
-		);
-		createBusy = false;
-		if (error) {
-			createNotice = { variant: 'error', text: messageOf(error) };
-			return;
-		}
-		put(flag);
-		newKey = '';
-		newDescription = '';
-		newEnabled = false;
-		createNotice = { variant: 'success', text: m.admin_flags_create_success({ key: flag.key }) };
-	}
+	const create = superForm(
+		defaults({ key: '', description: '', enabled: false }, zodForm(FeatureFlagUpsertInputSchema)),
+		{
+			...spaForm,
+			validators: zodForm(FeatureFlagUpsertInputSchema),
+			async onUpdate({ form }) {
+				if (!form.valid) return;
+				const { key, description, enabled } = form.data;
+				// `upsert` would silently overwrite an existing flag's description and default.
+				if (flags?.some((flag) => flag.key === key)) {
+					setError(form, 'key', m.admin_flags_create_exists({ key }));
+					return;
+				}
+				createNotice = null;
+				const { error, data: flag } = await safe(
+					api.admin.flags.upsert({ key, description: description?.trim(), enabled }),
+				);
+				if (error) {
+					setError(form, messageOf(error));
+					return;
+				}
+				put(flag);
+				resetAfterCreate = true;
+				createNotice = {
+					variant: 'success',
+					text: m.admin_flags_create_success({ key: flag.key }),
+				};
+			},
+			onUpdated() {
+				// Superforms replaces its stores with the validated submission after `onUpdate` returns.
+				// Reset after that replacement so a successful create clears the visible fields.
+				if (!resetAfterCreate) return;
+				resetAfterCreate = false;
+				create.reset({ newState: { key: '', description: '', enabled: false } });
+			},
+		},
+	);
+	const {
+		form: createForm,
+		errors: createErrors,
+		enhance: createEnhance,
+		submitting: createSubmitting,
+	} = create;
 
 	// ---- Per-flag actions ------------------------------------------------------
 	let busy = $state<{ key: string; action: Action } | null>(null);
@@ -195,56 +201,61 @@
 	<section class="border-border rounded-lg border p-6">
 		<h2 class="text-lg font-semibold">{m.admin_flags_create_title()}</h2>
 		<p class="text-muted-foreground mb-4 text-sm">{m.admin_flags_create_description()}</p>
-		<form class="flex flex-col gap-4" onsubmit={createFlag}>
+		<form class="flex flex-col gap-4" method="POST" novalidate use:createEnhance>
 			<div class="grid gap-4 sm:grid-cols-[14rem_1fr]">
-				<Label>
-					{m.admin_flags_key()}
-					<Input
-						bind:value={newKey}
-						name="key"
-						autocomplete="off"
-						spellcheck={false}
-						placeholder={m.admin_flags_key_placeholder()}
-						maxlength={64}
-						invalid={keyError !== null}
-						required
-						disabled={createBusy}
-					/>
-					{#if keyError}
-						<span class="text-destructive font-normal">{keyError}</span>
-					{/if}
-				</Label>
-				<Label>
-					<!-- `Label` stacks its children, so the hint shares a row with the field name: as a
-					     third child it became a line of its own and pushed this `Input` a row below the
-					     key field's in the grid. -->
-					<span class="flex items-baseline gap-1">
-						{m.admin_flags_field_description()}
-						<span class="text-muted-foreground font-normal">{m.admin_optional_hint()}</span>
-					</span>
-					<Input
-						bind:value={newDescription}
-						name="description"
-						autocomplete="off"
-						placeholder={m.admin_flags_description_placeholder()}
-						maxlength={200}
-						disabled={createBusy}
-					/>
-				</Label>
+				<FormField label={m.admin_flags_key()} name="key" errors={$createErrors.key}>
+					{#snippet children({ id, describedBy, invalid })}
+						<Input
+							{id}
+							name="key"
+							bind:value={$createForm.key}
+							{invalid}
+							aria-describedby={describedBy}
+							autocomplete="off"
+							spellcheck={false}
+							placeholder={m.admin_flags_key_placeholder()}
+							maxlength={64}
+							disabled={$createSubmitting}
+						/>
+					{/snippet}
+				</FormField>
+				<FormField
+					label={m.admin_flags_field_description()}
+					name="description"
+					errors={$createErrors.description}
+					hint={m.admin_optional_hint()}
+				>
+					{#snippet children({ id, describedBy, invalid })}
+						<Input
+							{id}
+							name="description"
+							bind:value={$createForm.description}
+							{invalid}
+							aria-describedby={describedBy}
+							autocomplete="off"
+							placeholder={m.admin_flags_description_placeholder()}
+							maxlength={200}
+							disabled={$createSubmitting}
+						/>
+					{/snippet}
+				</FormField>
 			</div>
 			<label class="flex items-center gap-2 text-sm">
 				<input
 					type="checkbox"
 					class="border-border rounded"
-					bind:checked={newEnabled}
-					disabled={createBusy}
+					bind:checked={$createForm.enabled}
+					disabled={$createSubmitting}
 				>
 				{m.admin_flags_enabled_by_default()}
 			</label>
+			{#if $createErrors._errors?.length}
+				<Alert variant="error">{$createErrors._errors[0]}</Alert>
+			{/if}
 			{@render notice(createNotice)}
 			<div>
-				<Button type="submit" disabled={createBusy || !keyCheck.success}>
-					{createBusy ? m.common_creating() : m.admin_flags_create_submit()}
+				<Button type="submit" disabled={!browser || $createSubmitting}>
+					{$createSubmitting ? m.common_creating() : m.admin_flags_create_submit()}
 				</Button>
 			</div>
 		</form>

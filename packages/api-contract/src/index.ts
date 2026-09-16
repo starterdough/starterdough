@@ -81,6 +81,14 @@ export const FeatureFlagSchema = z.object({
 });
 export type FeatureFlag = z.infer<typeof FeatureFlagSchema>;
 
+/** Input shared by the admin form and `admin.flags.upsert`. */
+export const FeatureFlagUpsertInputSchema = z.object({
+	key: FlagKeySchema,
+	description: z.string().max(200).refine(isSingleLine, controlCharacterRule).optional(),
+	enabled: z.boolean().optional(),
+});
+export type FeatureFlagUpsertInput = z.infer<typeof FeatureFlagUpsertInputSchema>;
+
 const ProbeSchema = z.object({
 	ok: z.boolean(),
 	latencyMs: z.number().nullable(),
@@ -203,13 +211,7 @@ export const contract = {
 					tags: ['admin'],
 					summary: 'Create a feature flag or change its description / global default',
 				})
-				.input(
-					z.object({
-						key: FlagKeySchema,
-						description: z.string().max(200).refine(isSingleLine, controlCharacterRule).optional(),
-						enabled: z.boolean().optional(),
-					}),
-				)
+				.input(FeatureFlagUpsertInputSchema)
 				.output(FeatureFlagSchema),
 
 			delete: adminProcedure

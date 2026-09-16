@@ -1,6 +1,6 @@
 # Starterdough Quickstart
 
-> This guide gets the app running in about 10 minutes. It then splits the remaining work into two
+> This guide gets the app running locally. It then splits the remaining work into two
 > tracks: **what you do** (accounts, keys, decisions) and **what your coding agent does** (rename,
 > rebrand, build features).
 
@@ -33,7 +33,7 @@ Then work through the 🔵 checklist while it builds.
 | Need | Why | Install |
 | --- | --- | --- |
 | **Bun ≥ 1.4** | Runtime, package manager, test runner | [bun.sh](https://bun.sh): `powershell -c "irm bun.sh/install.ps1\|iex"` (Windows) or `curl -fsSL https://bun.sh/install \| bash` |
-| **Docker** | Local Postgres | [docker.com](https://www.docker.com/products/docker-desktop/) |
+| **Docker with Compose and a running daemon** | Local Postgres | [docker.com](https://www.docker.com/products/docker-desktop/) |
 | **Git** | Version control | [git-scm.com](https://git-scm.com) |
 | **Rust** (desktop apps only) | Tauri shell | [rustup.rs](https://rustup.rs) |
 
@@ -42,8 +42,14 @@ Check:
 ```sh
 bun --version     # want v1.4.x
 docker --version
+docker compose version
+docker info --format "{{.ServerVersion}}"
 git --version
 ```
+
+The Docker executable alone is not enough: Compose must be installed and the Docker service must
+be running. After configuring the files below, `bun run doctor` checks these prerequisites and
+reports the next action for each failure.
 
 > Windows: use PowerShell. The local setup commands use the same syntax. Platform-specific
 > deployment commands are labelled. If a port is taken, see [troubleshooting](#troubleshooting).
@@ -91,13 +97,24 @@ bun -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 The same line generates `POSTGRES_PASSWORD` and `SERVICE_TOKEN` later (`randomBytes(16)` and
 `randomBytes(24)`).
 
-**5. Start Postgres and run the migrations.** `db:migrate` exits 1 if a migration is still pending
+**5. Check setup, start Postgres and run the migrations.** `db:migrate` exits 1 if a migration is still pending
 after the run.
 
 ```sh
+bun run doctor
 bun run db:up
 bun run db:migrate
 ```
+
+`doctor` is read-only: it checks local prerequisites and configuration without printing values
+from your environment files. It checks development/test settings; the API remains responsible for
+full validation, including production settings, when it starts. It does not connect to the database,
+check migrations or prove that signup works. Complete the checkpoint below after migrations.
+
+Already have PostgreSQL? Point `DATABASE_URL` at a dedicated development database and run
+`bun run doctor -- --database=external`. Then omit `db:up` and run `db:migrate` against that
+database. This option deliberately skips Docker checks; it does not install or configure Postgres.
+Use Postgres 17 for the free edition; it does not require the vector extension.
 
 **6. Start the API and the web app.**
 
@@ -131,8 +148,10 @@ Open **http://localhost:5173**. Then:
 | Docs | http://localhost:4322 | Your product docs, with a live API reference |
 | Postgres | `localhost:5433` | Docker, `pgvector/pgvector:pg17` (`starterdough`/`starterdough`). A host Postgres on 5432 is left alone |
 
-✅ **Checkpoint:** you can sign up, sign in, create an org, and open `/admin` as your admin user.
-Now hand off to your agent (next section) and keep going below in parallel.
+✅ **Checkpoint:** you can sign up, sign in and open `/admin` as your admin user.
+Now hand off to your agent (next section) and keep going below in parallel. The
+[worked feature example](apps/docs/src/content/docs/guides/feature-example.md) shows the expected
+database, contract, permission, translation, form and test path using the shipped feature flags.
 
 ---
 
@@ -266,6 +285,23 @@ so their origins must be allowed:
   placeholder. The other variables (`PUBLIC_APP_URL`, `PUBLIC_DOCS_URL`, `PUBLIC_API_URL`, and the
   optional `PUBLIC_REPO_URL`, `PUBLIC_CONTACT_EMAIL`, `DOCS_REPO_URL`) are in the two
   `.env.example` files.
+For a complete **local** build, copy the site and docs templates if you have not already, then set:
+
+| File | Local build setting |
+| --- | --- |
+| `apps/site/.env` | `SITE_URL=http://localhost:4321` |
+| `apps/docs/.env` | `SITE_URL=http://localhost:4322` |
+
+Keep the public app/API targets in those files aligned with your running app. Run
+`bun run doctor -- --build` before `bun run build` (add `--database=external` if applicable).
+A nonempty `SITE_URL` exported by your shell overrides both per-app files. Leave that export unset
+when the sites have different origins. The root `.env` rows `SITE_URL` and `DOCS_URL` configure
+container builds; the docs app reads its own `SITE_URL` when built locally. Blank inherited
+`SITE_URL` values allow each app's file to supply its origin.
+
+Replace these localhost values with your public addresses for deployment. The build continues to
+reject missing canonical URLs and reserved `example.com`, `example.org` or `example.net` placeholders.
+
 - **Production:** add your real origins to the root `.env`:
   ```sh
   TRUSTED_ORIGINS=https://example.com,https://docs.example.com
@@ -356,6 +392,7 @@ ADMIN_PASSWORD='Something-Strong-123' bun run admin:create -- --email you@exampl
 
 | Command | What it does |
 | --- | --- |
+| `bun run doctor` | Read-only local prerequisite and app configuration check; `-- --build` includes site/docs configuration, `-- --database=external` skips Docker for an existing database |
 | `bun run dev:app` | API (:3000) + web app (:5173). The daily driver |
 | `bun run dev` | Everything with a dev script (adds site :4321, docs :4322) |
 | `bun run dev:site` / `dev:docs` | Only the marketing site / docs |
@@ -378,6 +415,7 @@ ADMIN_PASSWORD='Something-Strong-123' bun run admin:create -- --email you@exampl
 | Symptom | Fix |
 | --- | --- |
 | Port taken (`3000`/`5173`) after closing a terminal | The old `bun`/`vite` process is still running. Kill it (Windows: end `bun.exe` / `node.exe` in Task Manager), then `bun run dev:app` again |
+| Docker exists but `db:up` fails before starting Postgres | Run `bun run doctor`. Install the Compose plugin if missing; start Docker Desktop or the Docker daemon if unreachable. Do not treat `docker --version` as readiness |
 | `db:up` fails / port `5433` busy | Set `POSTGRES_PORT=5434` in the root `.env` (and in `DATABASE_URL`), then `bun run db:up` again |
 | `/api/auth/*` returns 500 after editing auth | `bun run auth:schema && bun run db:generate && bun run db:migrate`, restart `dev:app` |
 | Changed a `packages/*` file, API did not pick it up | Restart `dev:app`. `--hot` watches `apps/api` only, and `--env-file` is read at start |
@@ -385,7 +423,7 @@ ADMIN_PASSWORD='Something-Strong-123' bun run admin:create -- --email you@exampl
 | Emails do not arrive | Empty `RESEND_API_KEY` = console only (check the API terminal). With Resend set, verify the domain and `EMAIL_FROM` |
 | Social button missing | Both `*_CLIENT_ID` and `*_SECRET` must be set, and the callback URL registered with the provider |
 | Astro build needs network | The `apps/site` build fetches the OG-image font. Expected |
-| `astro build` fails with "SITE_URL is not set" (or "still the placeholder") | Set that site's own canonical origin in `apps/site/.env` / `apps/docs/.env` or in the build environment. `example.com` is refused |
+| `astro build` fails with "SITE_URL is not set" (or "still the placeholder") | Run `bun run doctor -- --build`. Set each site's own `SITE_URL` in its `.env`; for local builds use `http://localhost:4321` and `http://localhost:4322`. A nonempty shell export wins over those files. Deployment needs real public origins |
 | `db:migrate` exits 1 with "still pending after the run" | A merge interleaved migration timestamps and Drizzle skipped a file older than the newest applied one. Regenerate those so they sort last, or apply them by hand |
 | `0007_audit_constraints` fails on a live database | The migration adds constraints and refuses to delete rows to make them fit. Postgres names the offending key, and the migration's header comment carries the query that finds each duplicate. De-duplicate, then re-run |
 | Sign-in succeeds but the session never sticks | `COOKIE_DOMAIN` must be a bare hostname (`.example.com`, not a URL) covering both `WEB_URL` and `API_URL`. The API refuses to start on any other value |

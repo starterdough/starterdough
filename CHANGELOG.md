@@ -14,6 +14,13 @@ release into a renamed fork.
 
 ### Added
 
+- **Setup doctor.** `bun run doctor` checks local prerequisites and app configuration, including
+  separate Docker CLI, Compose and daemon checks. `-- --database=external` selects an existing
+  database; `-- --build` also checks site/docs configuration. It never migrates or connects to
+  the database.
+- **Worked feature example.** The guide follows the shared feature-flags screen through its
+  database, contract, access rules, translated form and regression checks.
+
 - **Documents and jobs.** Presigned uploads through `@repo/storage` (local disk with HMAC URLs, or
   S3/R2/MinIO), a Postgres job queue claimed with `FOR UPDATE SKIP LOCKED` that runs inline or as a
   separate `bun run worker`, an AI-credit ledger with per-kind pricing, and `jobs.stream` as SSE.
@@ -134,6 +141,12 @@ release into a renamed fork.
   wrappers over the shadcn components.
 
 ### Fixed
+
+- **Per-site local build origins.** A blank inherited `SITE_URL` no longer hides the canonical
+  setting in each Astro app's environment file. Nonempty explicit overrides still win and
+  missing/placeholder canonical URLs still fail the build.
+- **Flag creation validation.** The admin form uses the API contract's schema through the shared
+  localized form adapter. No migration or new required environment variable is needed.
 
 - **Billing and data recovery.** Retryable Stripe entitlement writes and incomplete-checkout
   reconciliation, atomic terminal-job refunds, serialized invitation/member mutations, and durable
