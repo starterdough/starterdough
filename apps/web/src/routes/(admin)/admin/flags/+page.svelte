@@ -293,10 +293,10 @@
 				<ul class="flex flex-col gap-2">
 					{#each flags as flag (flag.key)}
 						<li class="border-border rounded-md border">
-							<div class="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
-								<div class="flex min-w-0 flex-1 flex-col gap-1">
+							<div class="flex flex-col items-start gap-3 px-4 py-3 sm:flex-row sm:justify-between">
+								<div class="flex w-full min-w-0 flex-1 flex-col gap-1 sm:w-auto">
 									<div class="flex flex-wrap items-center gap-2">
-										<span class="font-mono text-sm font-medium">{flag.key}</span>
+										<span class="break-all font-mono text-sm font-medium">{flag.key}</span>
 										<span
 											class={cn(
 												'rounded-full border px-2 py-0.5 text-xs',
@@ -347,7 +347,7 @@
 										</p>
 									{/if}
 								</div>
-								<div class="flex items-center gap-1">
+								<div class="flex flex-wrap items-center gap-1">
 									<Button
 										variant="secondary"
 										size="sm"

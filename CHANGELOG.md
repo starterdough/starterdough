@@ -142,6 +142,12 @@ release into a renamed fork.
 
 ### Fixed
 
+- **Flags on narrow screens.** Row actions stack below flag details so longer keys and the paid
+  override controls remain readable on mobile.
+
+- **Free-edition flag copy.** List and deletion messages describe global flags without referring
+  to the paid organization overrides.
+
 - **Per-site local build origins.** A blank inherited `SITE_URL` no longer hides the canonical
   setting in each Astro app's environment file. Nonempty explicit overrides still win and
   missing/placeholder canonical URLs still fail the build.
