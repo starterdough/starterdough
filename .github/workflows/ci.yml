@@ -118,7 +118,9 @@ jobs:
           docker compose config --quiet
           # Every optional service too: a profile is the easiest place for a YAML mistake to hide.
           COMPOSE_PROFILES=worker,backup,monitoring,observability docker compose config --quiet
-          docker compose -f infra/compose.dev.yml config --quiet
+          # Exercise the actual db:up/db:down options in an isolated fixture. This catches either
+          # script dropping the root env file or selecting production's Compose project/volumes.
+          python3 infra/scripts/dev-compose.test.py
           # The public demo (infra/demo) is a second project with a second .env, built the way its
           # runbook builds it. It reads the root .env too (env_file), which the step above created.
           cp infra/demo/.env.example .env.demo
@@ -273,6 +275,7 @@ jobs:
           fi
           docker run --rm -v "$PWD/infra/demo/caddy:/work:ro" -w /work caddy:2-alpine \
             caddy fmt --diff demo.caddy
+          bash infra/caddy/static-routing.test.sh
 
   # Production's five images plus demo-static, built but never pushed: a Dockerfile that stops
   # building must fail on the pull request, not on the push to `main` that deploys. Keep the matrix

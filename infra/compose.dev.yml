@@ -1,5 +1,5 @@
 # Local development dependencies only. Apps run on the host with `bun run dev`.
-#   bun run db:up      (docker compose -f infra/compose.dev.yml up -d)
+#   bun run db:up      (docker compose --env-file .env --project-name starterdough-dev -f infra/compose.dev.yml up -d)
 name: starterdough-dev
 
 services:
