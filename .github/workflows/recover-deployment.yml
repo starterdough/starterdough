@@ -27,7 +27,7 @@ jobs:
     environment: production
     timeout-minutes: 15
     steps:
-      - uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3.3.0
+      - uses: tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888 # v4.1.3
         if: vars.DEPLOY_VIA_TAILSCALE == 'true'
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
