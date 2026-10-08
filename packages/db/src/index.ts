@@ -21,6 +21,7 @@ export {
 export * from './admin';
 export * from './client';
 export * from './cursor';
+export * from './errors';
 export * from './flags';
 export * from './migrations';
 export * from './schema';

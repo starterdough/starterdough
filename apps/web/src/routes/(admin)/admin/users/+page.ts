@@ -1,4 +1,4 @@
-import { authFor } from '$lib/auth';
+import { authFor } from '#lib/auth.js';
 import type { PageLoad } from './$types';
 
 /**

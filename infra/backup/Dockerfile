@@ -3,9 +3,9 @@
 #
 # Bun's own Alpine image plus Alpine's PostgreSQL 17 client package: pg_dump/pg_restore match the
 # postgres:17-alpine server major (pg_dump must not be older than the server), GNU tar and gzip
-# from apk, and the image keeps the `bun` user (uid 1000, the same as the api image, so files on the
-# shared uploads volume are readable). Building on postgres:17-alpine instead would drag in its data
-# VOLUME and an entrypoint that starts a server when the first argument looks like a flag.
+# from apk, and the image keeps the `bun` user (uid 1000, the same as the api image, so files the API
+# writes to a volume they share stay readable). Building on postgres:17-alpine instead would drag in
+# its data VOLUME and an entrypoint that starts a server when the first argument looks like a flag.
 FROM oven/bun:1.4-alpine
 # Unpinned on purpose (Alpine only keeps one build of each package), but the major must match the
 # `postgres` service image: bump `postgresql17-client` here in the same commit as a Postgres upgrade.
@@ -17,9 +17,8 @@ WORKDIR /repo/infra/backup
 COPY infra/backup/package.json infra/backup/tsconfig.json ./
 COPY infra/backup/src ./src
 
-# Compose mounts the backups volume at /backups and the uploads volume read-only at /data/uploads
-# (a restore with --uploads is a one-shot `run` with a writable mount, see README.md).
-# Both directories exist and belong to `bun`, so a fresh (empty) volume is writable right away.
+# Compose mounts the backups volume at /backups.
+# The mount points exist and belong to `bun`, so a fresh (empty) volume is writable right away.
 RUN mkdir -p /backups /data/uploads && chown -R bun:bun /backups /data /repo
 USER bun
 

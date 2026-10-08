@@ -1,5 +1,5 @@
 import type { FetchLike } from '@repo/api-client';
-import { authFor } from '$lib/auth';
+import { authFor } from '#lib/auth.js';
 
 /**
  * The session as page data: only the fields the shell and the guards render. Better Auth's own

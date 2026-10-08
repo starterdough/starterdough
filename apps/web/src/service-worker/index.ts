@@ -1,26 +1,29 @@
-/// <reference types="@sveltejs/kit" />
-/// <reference no-default-lib="true"/>
-/// <reference lib="esnext" />
-/// <reference lib="webworker" />
-import { build, files, prerendered, version } from '$service-worker';
+import { version } from '$app/env';
+import { assets, immutable, prerendered } from '$app/manifest';
+import { resolve } from '$app/paths';
+import { self as sw } from '$app/service-worker';
 
 /**
- * Offline shell. Precaches the immutable build (`build`), the static folder (`files`) and the
+ * Offline shell. Precaches the immutable build (`immutable`), the static folder (`assets`) and the
  * prerendered public pages (`/offline` among them) and serves exactly those from the cache.
  *
  * Nothing else is ever written to a cache. A navigation to `/app` or `/admin` returns the
- * signed-in user's HTML, and on a single-origin deployment `/api/*` and `/uploads/:org/:doc` are
- * same-origin GETs as well; a cached copy would hand the next person at the machine another
- * user's page, or a session credential out of DevTools. A navigation that fails offline is
- * answered with `/offline`; everything else reaches the network untouched. A new deploy (new
- * `version`) replaces the cache on activation, and signing out clears it ($lib/pwa.svelte.ts).
+ * signed-in user's HTML, and on a single-origin deployment `/api/*` is a same-origin GET as well.
+ * A cached copy would hand the next person at the machine another user's page, or a session
+ * credential out of DevTools. A navigation that fails offline is answered with `/offline`;
+ * everything else reaches the network untouched. A new deploy (new `version`) replaces the cache on
+ * activation, and signing out clears it (#lib/pwa.svelte.ts).
  */
-const sw = self as unknown as ServiceWorkerGlobalScope;
-
 const CACHE = `starterdough-${version}`;
-/** The only paths this worker may cache: the build manifest, which also bounds its size. */
-const ASSETS = new Set([...build, ...files, ...prerendered]);
-const OFFLINE = '/offline';
+/**
+ * The only paths this worker may cache: the build manifest, which also bounds its size. The
+ * manifest's paths are relative to the base path; `resolve` makes them the absolute pathnames a
+ * request's `url.pathname` is compared against. Its parameter is typed as one of this app's own
+ * routes, which a build file name is not, so it is called through its plain run-time signature.
+ */
+const absolute = resolve as (pathname: string) => string;
+const ASSETS = new Set([...immutable, ...assets, ...prerendered].map(({ path }) => absolute(path)));
+const OFFLINE = resolve('offline');
 
 sw.addEventListener('install', (event) => {
 	event.waitUntil(

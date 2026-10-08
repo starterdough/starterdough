@@ -33,10 +33,16 @@ const me = await api.account.me();
   pass SvelteKit's `fetch` so server-side rendering forwards the browser's cookies.
 - **Cookie-less clients** (Tauri shells, CLIs) pass `getToken`, and the client adds
   `Authorization: Bearer …`.
+- **Every call carries `x-csrf-token: orpc`** (oRPC's `SimpleCsrfProtectionLinkPlugin`), and the
+  API refuses an `/rpc` request without it: `403` with the code `CSRF_TOKEN_MISMATCH`. The value is
+  not a secret. An HTML form cannot send a header at all, and a page on another origin can send one
+  only after a CORS preflight that `WEB_URL` and `TRUSTED_ORIGINS` decide, so the session cookie
+  alone never calls a procedure. A client that talks to `/rpc` without `createApiClient` must send the header
+  itself.
  - Errors are typed: `safe()` and `isDefinedError()` from `@repo/api-client` narrow to the codes a
    procedure declares (`UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `PRECONDITION_FAILED`, …).
 
-In the app, `$lib/api.ts` exports a ready client (`api`, `apiFor(fetch)`), and `$lib/query.ts`
+In the app, `#lib/api.js` exports a ready client (`api`, `apiFor(fetch)`), and `#lib/query.js`
 derives TanStack Query options from the same contract.
 
 ## REST: the same procedures over HTTP
@@ -50,7 +56,14 @@ curl -H "Authorization: Bearer $TOKEN" "$API_URL/api/v1/me"
 curl -H "Authorization: Bearer $TOKEN" "$API_URL/api/v1/flags"
 ```
 
-Authenticate with the session cookie or with `Authorization: Bearer <token>`.
+Authenticate with the session cookie or with `Authorization: Bearer <token>`. REST asks for no
+extra header, but a write (`POST`, `PUT`, `PATCH`, `DELETE`) that carries a cookie answers
+`403 { "error": "forbidden_origin" }` when a browser sent it from a page outside `WEB_URL` and
+`TRUSTED_ORIGINS`: its `Origin` is not one of them, or it has no `Origin` and `Sec-Fetch-Site` says
+`cross-site` or `same-site`. The session cookie is `SameSite=Lax`, which already keeps it off
+requests from other sites; this also covers pages on a sibling subdomain. A request without a cookie
+(a bearer token, a service) is never affected, and neither is a server-side caller that forwards a
+cookie without an `Origin`.
 
 `bun run api:openapi` writes `apps/api/openapi.json` for generating clients in other languages. Its
 `info.version`, `GET /api/v1/health`, `/admin/system` and the telemetry resource all read the
@@ -109,7 +122,9 @@ Every procedure can answer the two codes its base builder declares (`UNAUTHORIZE
 ## Adding a procedure
 
 1. Declare it in `packages/api-contract/src/index.ts` with an explicit `route` (so it is also REST)
-   and its `errors`. Export the input schema if a form will use it.
+   and its `errors`. Export the input schema if a form will use it. A feature's procedures can also
+   live in a file of their own next to it, built from the builders in `./procedures` and spread into
+   `contract`, which keeps them out of the file kit releases change.
  2. Implement it in `apps/api/src/rpc/` with `requireAuth` or `requireAdmin` from `rpc/base.ts` as
     appropriate.
 3. Call it from any client: `api.<group>.<name>(input)`. The typed client, the REST endpoint and the
@@ -125,7 +140,8 @@ Better Auth rate-limits `/api/auth/*` itself in production. An in-process limite
 and `/api/v1/*` (300 requests per minute per IP by default). It is a guardrail against runaway
 clients, not a defence against determined abuse. Put that at the edge. Both trust `x-forwarded-for`
 only as a single value, which is what Caddy produces. CORS allows the origins in `TRUSTED_ORIGINS`
-(plus `WEB_URL`) with credentials, and exposes the `set-auth-token` header for bearer clients. Every
+(plus `WEB_URL`) with credentials and the `X-CSRF-Token` header, and exposes the `set-auth-token`
+header for bearer clients. Every
 response carries `X-Request-Id` (the client's own if it sent a well-formed one, else a fresh UUID),
 and the same id is on the access-log line and on any error line.
 

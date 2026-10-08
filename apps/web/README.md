@@ -1,6 +1,6 @@
 # @repo/web
 
-The application: auth, the account area and the platform admin. SvelteKit + Svelte 5 + Tailwind v4.
+The application: auth, the account area and the platform admin. SvelteKit 3 + Svelte 5 + Tailwind v4.
 
 It is a **thin client** of `@repo/api`: no database access, no server-only business logic.
 `load` functions and components call the API through `@repo/api-client`. Auth goes through
@@ -21,7 +21,7 @@ The Tauri shell's `dev:desktop` runs it.
 ## Develop
 
 ```sh
-cp .env.example .env
+cp .env.example .env   # `bun run setup` at the repository root writes this and every other .env
 bun run dev            # http://localhost:5173; expects the API on :3000 (`bun run dev:app` at the root starts both)
 bun run check          # compiles messages, then svelte-check
 bun run test           # Vitest: unit (node) + component (Chromium via Playwright)
@@ -36,13 +36,13 @@ Text lives in `messages/{en,de}/<area>.json` (`common`, `public`, `auth`, `shell
 them into `src/lib/paraglide/` (gitignored). Options: `project.inlang/paraglide.config.ts`.
 Locales: `project.inlang/settings.json`.
 
-In components: `import { m } from '$lib/paraglide/messages'` and `{m.auth_login_title()}`.
+In components: `import { m } from '#lib/paraglide/messages.js'` and `{m.auth_login_title()}`.
 
 The locale is resolved from the `PARAGLIDE_LOCALE` cookie, then `Accept-Language`, then `en`.
 `LocaleSwitcher` (Settings, public pages) sets the cookie and reloads.
 
 To add a language: add it to `locales`, add `messages/<locale>/*.json` and a `zod/locales` entry in
-`$lib/i18n.ts`.
+`src/lib/i18n.ts`.
 
 ## Platform modules (`src/lib`)
 
@@ -60,8 +60,14 @@ To add a language: add it to `locales`, add `messages/<locale>/*.json` and a `zo
 `src/hooks.client.ts` and `src/hooks.server.ts` load Sentry only when `PUBLIC_SENTRY_DSN` /
 `SENTRY_DSN` is set and attach a reference id to unexpected errors. `hooks.server.ts` also resolves
 the request's locale (`paraglideMiddleware`) and fills `%lang%`/`%dir%` in `app.html`.
-`src/service-worker.ts` is the offline shell (`/offline` is prerendered). `e2e/a11y.e2e.ts` runs
-axe on the public pages; `e2e/i18n.e2e.ts` checks locale resolution and the switcher.
+`src/service-worker/index.ts` is the offline shell (`/offline` is prerendered), a TypeScript project
+of its own because a worker has different globals. `e2e/a11y.e2e.ts` runs axe on the public pages;
+`e2e/i18n.e2e.ts` checks locale resolution and the switcher.
+
+`src/env.ts` declares every environment variable the app reads (SvelteKit 3's explicit variables):
+`PUBLIC_*` ones come from `$app/env/public`, the rest from `$app/env/private`, and anything not
+declared there never reaches the app. Imports from `src/lib` use the `#lib/*` subpath import in
+`package.json`, with the file extension (`#lib/api.js`).
 
 ## Routes
 

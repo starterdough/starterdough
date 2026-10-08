@@ -6,8 +6,8 @@ The single HTTP API every frontend uses. Hono on Bun.
 | --- | --- |
 | `GET /healthz` | Liveness probe. Always `200 { "status": "ok" }` |
 | `GET /readyz` | Readiness probe: the database must answer `select 1` within 2 s. `200 { "status": "ok", "checks": { "database": "ok" } }` or `503 { "status": "unavailable", "checks": { "database": "timeout" \| "unreachable" } }` |
-| `POST /rpc/*` | oRPC transport used by the TypeScript clients (`@repo/api-client`) |
-| `/api/v1/*` | The same procedures as plain REST |
+| `POST /rpc/*` | oRPC transport used by the TypeScript clients (`@repo/api-client`). Refuses a call without the `x-csrf-token` header the client sends (403) |
+| `/api/v1/*` | The same procedures as plain REST. Refuses a cookie-carrying write from a page outside `WEB_URL` and `TRUSTED_ORIGINS` (403 `forbidden_origin`) |
 | `GET /api/v1/openapi.json` | OpenAPI 3.1 document generated from `@repo/api-contract` |
 | `/api/auth/*` | Better Auth: sessions, passkeys, two-factor and the platform admin |
 
@@ -22,7 +22,7 @@ the access log.
 ## Develop
 
 ```sh
-cp ../../.env.example ../../.env      # once
+bun run --cwd ../.. setup              # once: every .env, with generated secrets
 bun run dev                            # http://localhost:3000, hot reload
 bun test
 bun run openapi                        # writes ./openapi.json
@@ -54,7 +54,7 @@ never `console.*`. `LOG_FORMAT` picks the format (`json` in production, `pretty`
 - Every response carries `X-Request-Id`. A well-formed incoming id is kept, so Caddy's id follows
   the request through.
 - Every line written while a request is handled carries that `requestId` (`withLogContext` in the
-  middleware). Procedure lines also carry `procedure`, for example `documents.list`.
+  middleware). Procedure lines also carry `procedure`, for example `account.me`.
 - A 500 body repeats the id: `{ "error": "internal_error", "requestId": … }`.
 - Access-log lines use `warn` for 4xx and `error` for 5xx.
 - `Error` fields serialise as `{ name, message, stack, …own fields }`. With a trace active, the line

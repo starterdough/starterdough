@@ -11,16 +11,16 @@
 	import { Alert, Button, cn, Sheet } from '@repo/ui';
 	import { onMount, untrack } from 'svelte';
 	import { toast } from 'svelte-sonner';
-	import { afterNavigate, goto, invalidateAll } from '$app/navigation';
+	import { analytics } from '#lib/analytics.svelte.js';
+	import { DEMO_MODE, IMPERSONATION_AVAILABLE, returnUrl } from '#lib/api.js';
+	import { authClient } from '#lib/auth.js';
+	import CommandPalette from '#lib/components/CommandPalette.svelte';
+	import ThemeToggle from '#lib/components/ThemeToggle.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import { pwa } from '#lib/pwa.svelte.js';
+	import { tokenStore } from '#lib/token-store.js';
+	import { afterNavigate, goto, refreshAll } from '$app/navigation';
 	import { page } from '$app/state';
-	import { analytics } from '$lib/analytics.svelte';
-	import { DEMO_MODE } from '$lib/api';
-	import { authClient } from '$lib/auth';
-	import CommandPalette from '$lib/components/CommandPalette.svelte';
-	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
-	import { m } from '$lib/paraglide/messages';
-	import { pwa } from '$lib/pwa.svelte';
-	import { tokenStore } from '$lib/token-store';
 	import type { LayoutProps } from './$types';
 
 	let { data, children }: LayoutProps = $props();
@@ -55,10 +55,18 @@
 		const result = await authClient.admin.stopImpersonating();
 		stoppingImpersonation = false;
 		if (result.error) {
+			// A shell never gets the `admin_session` cookie back (`IMPERSONATION_AVAILABLE`), so a
+			// retry cannot help, and staying would leave the admin acting as someone else. Ending this
+			// session is the only way back; the admin signs in again as themselves.
+			if (!IMPERSONATION_AVAILABLE) {
+				toast.error(m.shell_impersonation_signed_out());
+				await signOut();
+				return;
+			}
 			toast.error(result.error.message ?? m.shell_impersonation_stop_error());
 			return;
 		}
-		await invalidateAll();
+		await refreshAll();
 		await goto('/admin/users');
 	}
 
@@ -131,7 +139,8 @@
 		resend = 'sending';
 		const result = await authClient.sendVerificationEmail({
 			email: user.email,
-			callbackURL: `${location.origin}/verify-email`,
+			// The link is opened in a mail client's browser, never inside a shell: see `returnUrl()`.
+			callbackURL: returnUrl('/verify-email'),
 		});
 		if (result.error) {
 			resend = 'idle';
@@ -279,7 +288,9 @@
 		{#if DEMO_MODE}
 			<Alert class="mb-6">
 				{m.shell_banner_demo_text()}
-				<a class="font-medium underline" href="https://starterdough.dev"
+				<a
+					class="font-medium underline"
+					href="https://starterdough.dev/?utm_source=demo&utm_medium=banner"
 					>{m.shell_banner_demo_link()}</a
 				>
 			</Alert>

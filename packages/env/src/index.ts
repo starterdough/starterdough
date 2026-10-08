@@ -210,12 +210,12 @@ function runtimeEnvironment(): Record<string, string | undefined> {
 }
 
 /**
- * Server-side environment for the API, workers and CLI tooling.
+ * Server-side environment for the API, the services built from its image, and CLI tooling.
  *
  * - Validated once at import time; a missing/invalid variable fails fast with a readable error.
  * - `SKIP_ENV_VALIDATION=1` relaxes it for steps that never boot the app (see above); the values
  *   are still parsed, so they keep their real types.
- * - The SvelteKit app does NOT use this module; it reads `PUBLIC_*` via `$env/dynamic/public`.
+ * - The SvelteKit app does NOT use this module; it declares its own in apps/web/src/env.ts.
  */
 export const env = createEnv({
 	server: {
@@ -226,7 +226,11 @@ export const env = createEnv({
 		API_URL: z.url().default('http://localhost:3000'),
 		/** Public origin of the web app. */
 		WEB_URL: z.url().default('http://localhost:5173'),
-		/** Comma-separated extra origins (Tauri shells, LAN devices, tailnet hosts). */
+		/**
+		 * Comma-separated extra origins (Tauri shells, LAN devices, tailnet hosts). Better Auth also
+		 * takes patterns (`https://*.example.com`) and app origins (`android:apk-key-hash:<hash>`); see
+		 * `normalizeOrigin` for which checks match those.
+		 */
 		TRUSTED_ORIGINS: z.string().default(''),
 		/**
 		 * Parent domain for cross-subdomain session cookies, e.g. `.example.com`. A bare hostname
@@ -263,8 +267,8 @@ export const env = createEnv({
 
 		DATABASE_URL: z.url(),
 		/**
-		 * Connections one process may hold open to Postgres. Every API replica and every worker has
-		 * its own pool, and Postgres refuses connections past `max_connections` (100 by default).
+		 * Connections one process may hold open to Postgres. Every process that talks to Postgres
+		 * has its own pool, and Postgres refuses connections past `max_connections` (100 by default).
 		 * See the sizing note in `packages/db/src/client.ts`.
 		 */
 		DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(200).default(10),
@@ -279,7 +283,7 @@ export const env = createEnv({
 		 * SDK is never loaded. `OTEL_EXPORTER_OTLP_HEADERS` works too (auth for hosted backends).
 		 */
 		OTEL_EXPORTER_OTLP_ENDPOINT: z.url().optional(),
-		/** `service.name` on exported spans. Unset → `starterdough-api` / `starterdough-worker` / `starterdough-ai`. */
+		/** `service.name` on exported spans. Unset → the service's own name, e.g. `starterdough-api`. */
 		OTEL_SERVICE_NAME: z.string().optional(),
 
 		BETTER_AUTH_SECRET: z.string().min(32, 'BETTER_AUTH_SECRET must be at least 32 characters'),
@@ -365,9 +369,47 @@ const developmentOrigins = isProduction
 			'tauri://localhost',
 		];
 
-/** Every origin allowed to call the API and to be redirected to after auth. */
+/**
+ * An origin spelled the way a browser sends it in `Origin`, since every check of a request's origin
+ * (CORS, the forged-request check, the demo route) compares with this list exactly. For http(s)
+ * that is `new URL(value).origin`: no path or trailing slash, a lower-case host and no default port,
+ * so `https://App.example.com:443/` in `WEB_URL` still matches. Any other scheme with an authority
+ * (`tauri://localhost`) gets its scheme and authority lower-cased and the rest kept as written:
+ * Better Auth compares such an entry's path case-sensitively (`myapp://auth/Callback`), and `URL`
+ * gives the scheme no origin, answering the string `null`, which a sandboxed frame or a `data:`
+ * page sends, so trusting that would trust every such page.
+ *
+ * Two kinds of entry are kept exactly as written, as they were before this function existed:
+ * - A Better Auth pattern, any entry with `*` or `?` (`https://*.example.com`): Better Auth matches
+ *   it against a callback or redirect URL itself, and `URL` would read `?` as a query. The exact
+ *   comparisons above take it as a literal string, so there it matches no browser's `Origin`: list
+ *   every origin whose pages call the API from a browser.
+ * - A value with no `//` authority, such as an Android app's passkey origin,
+ *   `android:apk-key-hash:<base64url hash>`, which is case-sensitive.
+ */
+export function normalizeOrigin(value: string): string {
+	if (value.includes('*') || value.includes('?')) return value;
+	if (/^https?:\/\//i.test(value)) {
+		try {
+			return new URL(value).origin;
+		} catch {
+			// Not a URL at all; it matches nothing either way, so it falls through.
+		}
+	}
+	// The scheme is everything before the first `:` and the authority runs to the first `/`, `?` or
+	// `#`, as Better Auth splits a custom-scheme origin.
+	const schemeAndAuthority = /^[^:]+:\/\/[^/?#]*/.exec(value)?.[0];
+	if (!schemeAndAuthority) return value;
+	return schemeAndAuthority.toLowerCase() + value.slice(schemeAndAuthority.length);
+}
+
+/** Every origin allowed to call the API and to be redirected to after auth, normalised. */
 export function trustedOrigins(): string[] {
 	return [
-		...new Set([env.WEB_URL, ...parseList(env.TRUSTED_ORIGINS), ...developmentOrigins]),
-	].filter(Boolean);
+		...new Set(
+			[env.WEB_URL, ...parseList(env.TRUSTED_ORIGINS), ...developmentOrigins]
+				.filter(Boolean)
+				.map(normalizeOrigin),
+		),
+	];
 }

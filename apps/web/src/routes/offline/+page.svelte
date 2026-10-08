@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Button } from '@repo/ui';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 </script>
 
 <svelte:head><title>{m.public_offline_title()} · {m.common_app_name()}</title></svelte:head>

@@ -3,7 +3,7 @@ import { type SuperValidated, setError } from 'sveltekit-superforms';
 import { type ZodValidationSchema, zod4 } from 'sveltekit-superforms/adapters';
 import type * as z from 'zod';
 import { safeParseAsync } from 'zod/v4/core';
-import { m } from '$lib/paraglide/messages';
+import { m } from '#lib/paraglide/messages.js';
 
 /**
  * Options every form shares. Forms run `sveltekit-superforms` in SPA mode: the schema (shared with
@@ -33,7 +33,7 @@ export const spaForm = {
  * Contract schemas (`WorkspaceCreateInputSchema`, `SlugSchema`, …) carry the rules and English
  * messages meant for API consumers; a schema-level message always wins over Zod error maps, so
  * the UI phrases each issue itself from its `code`/`format`/`params` after validating. Anything
- * this map does not know keeps Zod's own text, which `applyZodLocale` ($lib/i18n) localises.
+ * this map does not know keeps Zod's own text, which `applyZodLocale` (#lib/i18n) localises.
  */
 export function zodForm<T extends ZodValidationSchema>(schema: T) {
 	const adapter = zod4(schema);

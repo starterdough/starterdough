@@ -4,7 +4,7 @@
 Tauri desktop and mobile shells, and a self-hosting stack. Rename it and ship.**
 
 ![Bun](https://img.shields.io/badge/Bun-%3E%3D1.4-black?logo=bun)
-![SvelteKit](https://img.shields.io/badge/SvelteKit-2-orange?logo=svelte)
+![SvelteKit](https://img.shields.io/badge/SvelteKit-3-orange?logo=svelte)
 ![Astro](https://img.shields.io/badge/Astro-7-purple?logo=astro)
 ![Tauri](https://img.shields.io/badge/Tauri-2-blue?logo=tauri)
 ![Postgres](https://img.shields.io/badge/Postgres-17-blue?logo=postgresql)
@@ -14,7 +14,7 @@ Tauri desktop and mobile shells, and a self-hosting stack. Rename it and ship.**
 
 > **This is the free edition.** It is generated from the full kit by removing the paid features.
 > Nothing in it is time-limited or crippled. See what the full edition adds at
-> **[starterdough.dev](https://starterdough.dev)**, and [`UPGRADING.md`](./UPGRADING.md) for how
+> **[starterdough.dev](https://starterdough.dev/?utm_source=github&utm_medium=readme&utm_campaign=free-edition)**, and [`UPGRADING.md`](./UPGRADING.md) for how
 > to move across later.
 
 ## Why Starterdough
@@ -23,7 +23,7 @@ Most SaaS starters are built on Next.js and Node. Starterdough uses a different 
 
 | | Starterdough | Typical Next.js starter |
 | --- | --- | --- |
-| UI | **SvelteKit 2 + Svelte 5** | Next.js / React |
+| UI | **SvelteKit 3 + Svelte 5** | Next.js / React |
 | Runtime | **Bun** for runtime, packages and tests | Node + npm/pnpm |
 | API | **Hono + oRPC, contract-first**: one typed contract gives you RPC, REST and OpenAPI | tRPC or REST |
 | Native | **Tauri desktop + mobile shells** around the same web build, no IPC layer | Usually not included |
@@ -49,14 +49,14 @@ flowchart LR
 | Layer | Choice |
 | --- | --- |
 | Runtime / tooling | **Bun 1.4** · Turborepo · Biome |
-| App | **SvelteKit 2 + Svelte 5** · Tailwind v4 · shadcn-svelte · superforms + Zod 4 · TanStack Query · Paraglide i18n (en/de) |
+| App | **SvelteKit 3 + Svelte 5** · Tailwind v4 · shadcn-svelte · superforms + Zod 4 · TanStack Query · Paraglide i18n (en/de) |
 | Sites | **Astro 7** + Starlight |
 | API | **Hono + oRPC** · Better Auth · Postgres 17 + Drizzle · Resend |
 | Shells | **Tauri 2** (Windows/macOS/Linux, Android/iOS) · PWA |
 | Hosting | Cloudflare (edge/static) · Docker + Caddy (self-host) · Tailscale |
 
-The reasoning behind each choice is in [`docs/DECISIONS.md`](./docs/DECISIONS.md) (30 decision
-records).
+The reasoning behind each choice is in [`docs/DECISIONS.md`](./docs/DECISIONS.md), one record per
+decision.
 
 ## What's included
 
@@ -88,66 +88,14 @@ records).
 
 ## Quickstart
 
-**1. Rename the kit.** Do this before the first `db:up`: the slug becomes the Compose project
-name, and renaming later orphans the database volume. The first command is a dry run.
-
-```sh
-bun run rename --name Acme --slug acme --identifier com.acme.desktop --scope @acme
-bun run rename --name Acme --slug acme --identifier com.acme.desktop --scope @acme --write
-```
-
-**2. Install and copy the env templates.** Every command works in bash and PowerShell.
-
-```sh
-bun install
-cp .env.example .env
-cp apps/web/.env.example apps/web/.env
-```
-
-**3. Generate the auth secret.** Put the output in `.env` as `BETTER_AUTH_SECRET`. The API does not
-start without it.
-
-```sh
-bun -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-```
-
-**4. Check setup, start Postgres and apply the migrations.**
-
-```sh
-bun run doctor
-bun run db:up
-bun run db:migrate
-```
-
-`doctor` checks configuration and distinguishes Docker, Compose and daemon availability. It does
-not connect to Postgres or apply migrations. For an existing Postgres database, set `DATABASE_URL`,
-run `bun run doctor -- --database=external`, and omit `db:up`.
-
-**5. Run it.**
-
-```sh
-bun run dev:app
-```
-
-Open http://localhost:5173 and sign up. Then promote that account to platform administrator. The
-`--yes` flag confirms promotion of the existing account and leaves its password unchanged:
-
-```sh
-bun run admin:create -- --email you@example.com --name 'You' --yes
-```
-
-That is the whole local setup. Emails print to the API terminal and social sign-in stays off.
-**Next: [`QUICKSTART.md`](./QUICKSTART.md)** covers email, OAuth, analytics, deployment, the
-launch checklist and a brief for your coding agent.
-
-| Command | What it does |
-| --- | --- |
-| `bun run dev` | All apps (adds site `:4321`, docs `:4322`) |
-| `bun run dev:desktop` / `preview:desktop` / `build:desktop` | Tauri shell: dev server with HMR / the shipped build in a debug window / installers (needs Rust) |
-| `bun run doctor` / `doctor -- --build` | Check local prerequisites and app configuration / also check the site and docs build origins. See the quickstart before using an external database |
-| `bun run verify` | Lint, typecheck and tests in CI's order. Run before pushing |
-| `bun run check` / `test` / `lint` / `build` / `test:e2e` | The same steps one at a time. `test` installs Playwright's Chromium on first run |
-| `bun run licenses` / `rename` | Audit dependency licences (`--strict` is CI's gate) / rename the kit (dry run without `--write`) |
+Setup is written down once, in **[`QUICKSTART.md`](./QUICKSTART.md)**. With Bun and Docker
+installed, it takes a fresh clone of a release to a running app in about ten minutes:
+`bun install`, rename the kit on a branch later upgrades can follow, `bun run setup` (it writes
+every `.env` and generates the secrets, so you edit none), start Postgres, `bun run dev:app`, and
+promote your first admin.
+It then covers the accounts and keys you need next (email, OAuth, analytics), deployment, the
+launch checklist and a brief for your coding agent. Its
+[cheat sheet](./QUICKSTART.md#command-cheat-sheet) lists every command.
 
 ## Project structure
 
@@ -180,10 +128,16 @@ imports in frontends**, **no literal UI strings** (use Paraglide messages).
 | Self-hosted | `docker compose up -d --build` from the repo root, or CI's images with `IMAGE_REGISTRY` pointed at your fork. Caddy in subdomain or single-origin mode; backups, deploy and traces in `infra/README.md` |
 | Your phone, today | Tailscale `serve` or `funnel` on the host, no open ports (see `infra/README.md`) |
 
+Deploys from GitHub Actions are off until you switch them on, and then run only after CI passes,
+so your first push builds no images and deploys nothing. The one-time setup, in order (server,
+variables, secrets, and why there is no deploy key), is in
+[`infra/README.md`](./infra/README.md#deploy-update-roll-back).
+
 ## Docs
 
 - [`QUICKSTART.md`](./QUICKSTART.md): setup, accounts, deploy, launch checklist
-- [`docs/DECISIONS.md`](./docs/DECISIONS.md): architecture decisions D1 to D30
+- [`docs/DECISIONS.md`](./docs/DECISIONS.md): one record per architecture decision, with the
+  alternatives not taken
 - [Worked feature example](./apps/docs/src/content/docs/guides/feature-example.md): follow feature
   flags from database and contract to permissions, translated forms and regression checks
 - `apps/{web,site,docs,api,native}/README.md` and `infra/README.md`: per-app details and the ops

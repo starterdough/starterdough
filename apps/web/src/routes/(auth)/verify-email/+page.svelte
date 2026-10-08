@@ -1,12 +1,12 @@
 <script lang="ts">
 	import { Alert, Button, Input, Label } from '@repo/ui';
 	import { onMount } from 'svelte';
-	import { goto, replaceState } from '$app/navigation';
+	import { returnUrl } from '#lib/api.js';
+	import { authClient } from '#lib/auth.js';
+	import { m } from '#lib/paraglide/messages.js';
+	import { routable, safeNext, withoutSensitiveParams } from '#lib/utils/redirect.js';
+	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { returnUrl } from '$lib/api';
-	import { authClient } from '$lib/auth';
-	import { m } from '$lib/paraglide/messages';
-	import { safeNext, withoutSensitiveParams } from '$lib/utils/redirect';
 
 	// The emailed link redirects here: with a fresh session on success, `?error=<CODE>` otherwise.
 	// Read once, not derived: the address is taken out of the URL on mount so it does not reach
@@ -18,7 +18,7 @@
 
 	onMount(() => {
 		const stripped = withoutSensitiveParams(page.url);
-		if (stripped) replaceState(stripped, page.state);
+		if (stripped) void goto(stripped, { shallow: true, replace: true, state: page.state });
 	});
 
 	const messages: Record<string, string> = {
@@ -46,7 +46,7 @@
 			.getSession()
 			.then(({ data }) => {
 				if (cancelled) return;
-				if (data) void goto(next);
+				if (data) void routable(next).then((target) => goto(target));
 				else checking = false;
 			})
 			.catch(() => {

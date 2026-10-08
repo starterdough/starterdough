@@ -120,6 +120,7 @@
 	"admin_users_impersonate": "Identität übernehmen",
 	"admin_users_impersonate_confirm_description": "Du handelst als dieses Konto, bis du die Übernahme beendest.",
 	"admin_users_impersonate_confirm_title": "Als {email} anmelden?",
+	"admin_users_impersonate_web_only": "Die Identität eines Nutzers übernimmst du in der Web-App im Browser: Diese App könnte dich danach nicht zu deinem eigenen Konto zurückbringen.",
 	"admin_users_impersonating": "Wird übernommen…",
 	"admin_users_loading": "Nutzer werden geladen…",
 	"admin_users_range_empty": "Keine Nutzer",

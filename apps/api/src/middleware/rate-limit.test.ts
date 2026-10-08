@@ -102,6 +102,51 @@ describe('rateLimit', () => {
 		expect((await app.request('/limited/ping', from('203.0.113.9'))).status).toBe(429);
 	});
 
+	it('answers past the limit with what `refuse` returns, still with Retry-After', async () => {
+		const app = new Hono();
+		app.use(
+			'/limited/*',
+			rateLimit({
+				max: 1,
+				windowMs: 30_000,
+				keyFor: () => 'everyone',
+				now: () => 0,
+				refuse: (c, retryAfter) => c.json({ error: 'busy', retryAfter }, 503),
+			}),
+		);
+		app.get('/limited/ping', (c) => c.text('pong'));
+
+		expect((await app.request('/limited/ping', from('203.0.113.10'))).status).toBe(200);
+		const refused = await app.request('/limited/ping', from('203.0.113.11'));
+		expect(refused.status).toBe(503);
+		expect(refused.headers.get('Retry-After')).toBe('30');
+		expect(await refused.json()).toEqual({ error: 'busy', retryAfter: 30 });
+	});
+
+	it('gives the unit back when `refund` says a later check turned the request away', async () => {
+		const app = new Hono();
+		app.use(
+			'/limited/*',
+			rateLimit({
+				max: 1,
+				windowMs: 60_000,
+				now: () => 0,
+				trustProxy: true,
+				refund: (c) => c.res.status === 503,
+			}),
+		);
+		let busy = true;
+		app.get('/limited/ping', (c) => (busy ? c.json({ error: 'busy' }, 503) : c.text('pong')));
+
+		for (let i = 0; i < 3; i++) {
+			expect((await app.request('/limited/ping', from('203.0.113.12'))).status).toBe(503);
+		}
+		busy = false;
+		// Three refusals later the client's one request this window is still unspent.
+		expect((await app.request('/limited/ping', from('203.0.113.12'))).status).toBe(200);
+		expect((await app.request('/limited/ping', from('203.0.113.12'))).status).toBe(429);
+	});
+
 	it('leaves unmatched routes alone', async () => {
 		const clock = { t: 0 };
 		const app = build({ max: 1, windowMs: 10_000, clock });

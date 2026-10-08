@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { m } from '$lib/paraglide/messages';
+import { m } from '#lib/paraglide/messages.js';
 
 /**
  * Client-side form schemas for the flows Better Auth owns (no contract entry to share).

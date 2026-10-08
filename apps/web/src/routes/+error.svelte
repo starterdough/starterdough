@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Button } from '@repo/ui';
+	import { m } from '#lib/paraglide/messages.js';
 	import { page } from '$app/state';
-	import { m } from '$lib/paraglide/messages';
 
 	const title = $derived(
 		page.status === 404

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type DoctorDependencies, formatDoctorReport, runDoctor } from './doctor';
@@ -57,6 +57,9 @@ function dependencies(
 				return false;
 			}
 		},
+		async nodeVersion() {
+			return null;
+		},
 		async read(path) {
 			return Bun.file(path).text();
 		},
@@ -111,6 +114,15 @@ describe('Starterdough doctor', () => {
 		expect(report.checks.find((check) => check.name === 'Docker daemon')).toMatchObject({
 			ok: false,
 		});
+	});
+
+	it('names the way around Docker in every failed Docker check', async () => {
+		const report = await doctor({}, dependencies({}));
+		const docker = report.checks.filter((check) => check.name.startsWith('Docker'));
+		expect(docker.map((check) => check.ok)).toEqual([false, false, false]);
+		for (const check of docker) {
+			expect(check.detail).toContain('or rerun with `bun run doctor -- --database=external`');
+		}
 	});
 
 	it('skips every Docker command when an existing PostgreSQL is explicit', async () => {
@@ -170,6 +182,7 @@ describe('Starterdough doctor', () => {
 		expect(report.checks.find((check) => check.name === 'Web app environment')?.detail).toContain(
 			'missing apps/web/.env',
 		);
+		expect(formatDoctorReport(report)).toContain('run `bun run setup`');
 	});
 
 	it('catches local API and Docker database port drift', async () => {
@@ -196,10 +209,10 @@ describe('Starterdough doctor', () => {
 		const missing = await doctor({ build: true, database: 'external' });
 		expect(missing.ok).toBe(false);
 		expect(missing.checks.find((check) => check.name === 'Marketing site build')?.detail).toBe(
-			'SITE_URL is missing',
+			'SITE_URL is missing; `bun run setup` sets the local origin',
 		);
 		expect(missing.checks.find((check) => check.name === 'Documentation build')?.detail).toBe(
-			'SITE_URL is missing',
+			'SITE_URL is missing; `bun run setup` sets the local origin',
 		);
 
 		await Promise.all([
@@ -234,6 +247,72 @@ describe('Starterdough doctor', () => {
 		]);
 		expect((await doctor({ build: true, database: 'external' })).ok).toBe(true);
 	});
+
+	it('fails a Node on PATH that is older than SvelteKit 3 needs, and passes without one', async () => {
+		const nodeCheck = async (printed: string | null) => {
+			const deps = dependencies({});
+			deps.nodeVersion = async () => printed;
+			const report = await doctor({ database: 'external' }, deps);
+			return { ok: report.ok, check: report.checks.find((check) => check.name === 'Node.js') };
+		};
+
+		expect(await nodeCheck(null)).toEqual({
+			ok: true,
+			check: { name: 'Node.js', ok: true, detail: 'not on PATH; Bun runs Vite itself' },
+		});
+		expect((await nodeCheck('v22.17.0\n')).check?.ok).toBe(true);
+		expect((await nodeCheck('v26.1.0\n')).check?.ok).toBe(true);
+		expect(await nodeCheck('v22.16.0\n')).toEqual({
+			ok: false,
+			check: {
+				name: 'Node.js',
+				ok: false,
+				detail:
+					'Node 22.16.0 is on your PATH; SvelteKit 3 needs 22.17 or newer (bun run starts Vite with it). Upgrade Node or remove it from PATH',
+			},
+		});
+		expect((await nodeCheck('v20.19.5\n')).check?.ok).toBe(false);
+		// A `node` that will not run is no better than an old one; its output is never echoed.
+		const broken = await nodeCheck('');
+		expect(broken.check?.ok).toBe(false);
+		expect(broken.check?.detail).toContain('Node of an unreadable version is on your PATH');
+	});
+
+	it('asks the node that is first on PATH, and counts Bun standing in for it as none', async () => {
+		/** The doctor's own command line, with nothing on PATH but `bin`. */
+		const run = (bin: string) =>
+			Bun.spawnSync(
+				[
+					process.execPath,
+					'--no-env-file',
+					join(import.meta.dir, 'doctor.ts'),
+					'--database=external',
+				],
+				{ env: { PATH: bin }, stderr: 'pipe' },
+			)
+				.stdout.toString()
+				.split('\n')
+				.find((line) => line.includes('Node.js'));
+
+		const old = join(root, 'old-node');
+		await mkdir(old);
+		await writeFile(join(old, 'node'), '#!/bin/sh\necho v20.11.1\n');
+		await chmod(join(old, 'node'), 0o755);
+		expect(run(old)).toStartWith('✗ Node.js: Node 20.11.1 is on your PATH');
+
+		// What `bun run` does on a machine without Node: Bun itself, under the name `node`, in a
+		// `bun-node-*` directory. It fails `--version`, so it is recognised by name and by target.
+		const stub = join(root, 'bun-node-0123abc');
+		await mkdir(stub);
+		await writeFile(join(stub, 'node'), '#!/bin/sh\nexit 1\n');
+		await chmod(join(stub, 'node'), 0o755);
+		expect(run(stub)).toBe('✓ Node.js: not on PATH; Bun runs Vite itself');
+
+		const link = join(root, 'linked');
+		await mkdir(link);
+		await symlink(process.execPath, join(link, 'node'));
+		expect(run(link)).toBe('✓ Node.js: not on PATH; Bun runs Vite itself');
+	}, 20_000);
 
 	it('fails on an old Bun and incomplete dependency install', async () => {
 		await rm(join(root, 'node_modules/.bin/turbo'));

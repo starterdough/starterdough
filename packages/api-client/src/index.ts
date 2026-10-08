@@ -1,5 +1,6 @@
 import { createORPCClient } from '@orpc/client';
 import { RPCLink } from '@orpc/client/fetch';
+import { SimpleCsrfProtectionLinkPlugin } from '@orpc/client/plugins';
 import type { ContractRouterClient } from '@orpc/contract';
 import type { Contract } from '@repo/api-contract';
 
@@ -44,6 +45,10 @@ export interface ApiClientOptions {
  *
  * Transport: oRPC's RPC link over `POST {baseUrl}/rpc/...`. The same router is also
  * exposed as plain REST under `{baseUrl}/api/v1` for Python services, curl and third parties.
+ *
+ * Every request carries `x-csrf-token: orpc`. The API refuses an `/rpc` call without it, because a
+ * forged form cannot send a header (`apps/api/src/rpc/handler.ts`); a client of the RPC transport
+ * built without this function has to send it too.
  */
 export function createApiClient(options: ApiClientOptions): ApiClient {
 	const baseUrl = options.baseUrl.replace(/\/+$/, '');
@@ -60,6 +65,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
 		},
 		fetch: (request, init) =>
 			fetchImpl(request, { ...init, credentials: options.credentials ?? 'include' }),
+		plugins: [new SimpleCsrfProtectionLinkPlugin()],
 	});
 
 	return createORPCClient(link);

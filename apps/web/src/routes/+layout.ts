@@ -1,4 +1,4 @@
-import { getQueryClient } from '$lib/query';
+import { getQueryClient } from '#lib/query.js';
 import type { LayoutLoad } from './$types';
 
 /**

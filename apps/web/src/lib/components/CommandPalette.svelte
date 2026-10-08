@@ -8,8 +8,8 @@
 	import SunIcon from '@lucide/svelte/icons/sun';
 	import { Command } from '@repo/ui';
 	import { resetMode, setMode, userPrefersMode } from 'mode-watcher';
+	import { m } from '#lib/paraglide/messages.js';
 	import { goto } from '$app/navigation';
-	import { m } from '$lib/paraglide/messages';
 
 	interface Props {
 		/** Bound by the shell; the shell also toggles it from Ctrl/⌘+K. */

@@ -3,10 +3,11 @@
 	import { Alert, Button, Dialog, EmptyState, Input, Label, Skeleton } from '@repo/ui';
 	import { toast } from 'svelte-sonner';
 	import { renderSVG } from 'uqr';
-	import { authClient } from '$lib/auth';
-	import { messageOf } from '$lib/forms';
-	import { formatDate } from '$lib/i18n';
-	import { m } from '$lib/paraglide/messages';
+	import { PASSKEYS_AVAILABLE, TWO_FACTOR_SIGN_IN_AVAILABLE } from '#lib/api.js';
+	import { authClient } from '#lib/auth.js';
+	import { messageOf } from '#lib/forms.js';
+	import { formatDate } from '#lib/i18n.js';
+	import { m } from '#lib/paraglide/messages.js';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -337,6 +338,11 @@
 		</div>
 
 		<div class="flex flex-col gap-4">
+			<!-- Turning it on works in a shell, but signing back in to the shell then cannot finish
+			     (`TWO_FACTOR_SIGN_IN_AVAILABLE`); nobody should find that out at their next sign-in. -->
+			{#if !TWO_FACTOR_SIGN_IN_AVAILABLE}
+				<Alert>{m.account_security_2fa_web_only()}</Alert>
+			{/if}
 			{@render failure(twoFactorError)}
 
 			{#if setup}
@@ -445,7 +451,11 @@
 		<p class="text-muted-foreground mb-4 text-sm">{m.account_security_passkeys_description()}</p>
 
 		<div class="flex flex-col gap-4">
-			{#if passkeySupport === false}
+			<!-- A shell can list, rename and remove passkeys but never create one
+			     (`PASSKEYS_AVAILABLE`), so it says where to do that instead of an "Add" that can only fail. -->
+			{#if !PASSKEYS_AVAILABLE}
+				<Alert>{m.account_security_passkeys_web_only()}</Alert>
+			{:else if passkeySupport === false}
 				<Alert>{m.account_security_passkeys_unsupported()}</Alert>
 			{/if}
 			{@render failure(passkeyError)}
@@ -470,7 +480,9 @@
 				<EmptyState
 					class="py-8"
 					title={m.account_security_passkeys_empty_title()}
-					description={m.account_security_passkeys_empty_description()}
+					description={PASSKEYS_AVAILABLE
+						? m.account_security_passkeys_empty_description()
+						: m.account_security_passkeys_empty_description_web_only()}
 				>
 					{#snippet icon()}
 						<KeyRoundIcon />
@@ -539,24 +551,26 @@
 				</ul>
 			{/if}
 
-			<form class="flex flex-wrap items-end gap-2" onsubmit={addPasskey}>
-				<Label class="min-w-48 flex-1">
-					{m.account_security_passkey_name_optional()}
-					<Input
-						bind:value={newPasskeyName}
-						placeholder={m.account_security_passkey_name_placeholder()}
-						autocomplete="off"
-						disabled={addBusy || passkeySupport === false}
-					/>
-				</Label>
-				<Button
-					type="submit"
-					variant="secondary"
-					disabled={addBusy || passkeySupport !== true || !$session.data}
-				>
-					{addBusy ? m.account_security_passkey_waiting() : m.account_security_passkey_add()}
-				</Button>
-			</form>
+			{#if PASSKEYS_AVAILABLE}
+				<form class="flex flex-wrap items-end gap-2" onsubmit={addPasskey}>
+					<Label class="min-w-48 flex-1">
+						{m.account_security_passkey_name_optional()}
+						<Input
+							bind:value={newPasskeyName}
+							placeholder={m.account_security_passkey_name_placeholder()}
+							autocomplete="off"
+							disabled={addBusy || passkeySupport === false}
+						/>
+					</Label>
+					<Button
+						type="submit"
+						variant="secondary"
+						disabled={addBusy || passkeySupport !== true || !$session.data}
+					>
+						{addBusy ? m.account_security_passkey_waiting() : m.account_security_passkey_add()}
+					</Button>
+				</form>
+			{/if}
 		</div>
 	</section>
 </div>

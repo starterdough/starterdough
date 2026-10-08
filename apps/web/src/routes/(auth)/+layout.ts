@@ -1,5 +1,5 @@
 import type { AuthConfig } from '@repo/api-client';
-import { apiFor } from '$lib/api';
+import { apiFor } from '#lib/api.js';
 import type { LayoutLoad } from './$types';
 
 /** Shown when the API cannot be reached: no social buttons, no "check your inbox" gate. */

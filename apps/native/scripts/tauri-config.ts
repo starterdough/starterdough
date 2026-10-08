@@ -114,17 +114,17 @@ function requiredOrigin(key: string, developmentDefault: string): string {
 
 const apiOrigin = requiredOrigin('PUBLIC_API_URL', 'http://localhost:3000');
 
-// The deployed web origin. The shell hands OAuth and other return trips to the system browser, so
-// it is never fetched from inside the webview and stays out of `connect-src`. An installer
-// built without it dead-ends those flows, so a release build demands it.
+// The deployed web origin. Links that leave the device, in an email or as the return address of an
+// outside page, point there (`returnUrl()` in apps/web/src/lib/api.ts). The system browser opens
+// it; the webview never fetches it, so it stays out of `connect-src`. An installer built without it
+// would hand out `tauri://localhost` links that no browser can open, so a release build demands it.
 requiredOrigin('PUBLIC_WEB_URL', 'http://localhost:5173');
 
 const connect = new Set<string>(["'self'", apiOrigin]);
 const scripts = new Set<string>(["'self'"]);
 
-// The object store the browser PUTs presigned uploads to. Empty means the local disk driver, whose
-// URLs the API signs on its own origin (already allowed); with S3/R2 it is the bucket endpoint the
-// presigned URL points at, which is invisible to the browser build unless it is named here.
+// An object-storage origin the app talks to directly (an S3/R2 bucket endpoint), so the shipped
+// CSP allows it. Empty means none.
 const storageOrigin = get('PUBLIC_STORAGE_ORIGIN');
 if (storageOrigin) connect.add(originOf(storageOrigin, 'PUBLIC_STORAGE_ORIGIN'));
 

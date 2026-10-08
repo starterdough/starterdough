@@ -271,10 +271,7 @@ const steps = [
 			<pre
 				class="rounded-lg border border-border bg-card p-5 font-mono text-sm leading-7 whitespace-pre-wrap break-words"
 			><code>bun install
-cp .env.example .env
-cp apps/web/.env.example apps/web/.env
-# put a generated value in .env as BETTER_AUTH_SECRET:
-bun -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+bun run setup       # every .env, with generated secrets
 bun run db:up && bun run db:migrate
 bun run dev:app     # api on :3000 + web on :5173</code></pre>
 		</div>

@@ -30,6 +30,10 @@ Impersonation sessions last **one hour** and cannot target other admins. While o
 app shell shows a banner with **Stop impersonating**. Starting an impersonation and revoking a
 user's sessions both ask for confirmation first, because neither can be undone.
 
+Impersonate from the web app. The desktop and mobile shells hide the button: the admin's own
+session waits in a cookie that a shell never gets back, so it could start an impersonation but
+never stop it (see [Authentication](/guides/authentication/)).
+
 ## `/admin/flags`: feature flags
 
 Flags live in `feature_flag`, one row per flag with its global default. Admins manage them
@@ -37,7 +41,7 @@ Flags live in `feature_flag`, one row per flag with its global default. Admins m
 (`GET /api/v1/flags`).
 
 In the app, the `(app)` layout load fetches the flags once per session. Components read
-`flag('key')` from `$lib/flags`. An unreachable API means "nothing is on".
+`flag('key')` from `#lib/flags.js`. An unreachable API means "nothing is on".
 Keys are stable slugs used literally in code: lowercase letters, numbers, dots, dashes and
 underscores.
 

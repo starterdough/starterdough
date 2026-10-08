@@ -18,7 +18,7 @@ Three ways to run the same code. Pick per environment. Nothing in the apps chang
 | --- | --- | --- |
 | **Website** | `apps/site` + `apps/docs` → Cloudflare (or Caddy). `apps/web` → Cloudflare Workers (`ADAPTER=cloudflare`) or a container (`ADAPTER=node`) | The API runs on a container host (Bun.SQL, long-lived connections) |
 | **Mobile site / PWA** | Same `apps/web`: manifest, `theme-color`, service worker with a prerendered offline page | Registered in production browsers only |
-| **Desktop app** | `apps/native` → `bun run build:desktop` builds `apps/web` with `ADAPTER=static` and bundles installers | Auth switches to bearer tokens automatically. Needs `PUBLIC_API_URL` **and** `PUBLIC_WEB_URL`. Add `PUBLIC_STORAGE_ORIGIN` when uploads go to a bucket |
+| **Desktop app** | `apps/native` → `bun run build:desktop` builds `apps/web` with `ADAPTER=static` and bundles installers | Auth switches to bearer tokens automatically. Needs `PUBLIC_API_URL` **and** `PUBLIC_WEB_URL` (below) |
 | **Mobile app** | Same Tauri project: `android:init` / `ios:init`, then `android:build` / `ios:build` | Or point `frontendDist` at the hosted app URL for a thin client |
 | **Self-hosted (VPS / home server)** | `docker compose up -d --build` from the repository root (`COMPOSE_FILE` is in `.env`) | Caddy in `subdomains` (public TLS) or `single-origin` mode (path routing) |
 | **Anywhere access, incl. your phone** | Tailscale on the host: `tailscale serve --bg 80` (tailnet) or `tailscale funnel --bg 80` (public) | No open ports, HTTPS handled |
@@ -72,13 +72,13 @@ Prerequisites: the Rust toolchain (`rustup`), the platform dependencies listed b
 mobile Android Studio + NDK or Xcode (iOS, macOS only).
 
 `build:desktop` refuses to start unless `PUBLIC_API_URL` **and** `PUBLIC_WEB_URL` are set to
-something that is not a placeholder. `PUBLIC_WEB_URL` is where external round trips return to,
-because the webview's own origin (`tauri.localhost`) is not an address any provider can redirect
-to. With it unset those buttons are hidden. Add `PUBLIC_STORAGE_ORIGIN` whenever uploads go to
-S3/R2: the shell's `connect-src` is generated from exactly these values
-(`apps/native/scripts/tauri-config.ts` reads `apps/web/.env`, `.env.local`, `.env.production` and
-`.env.production.local` in Vite's own order, process environment last). Without the bucket origin
-every presigned upload fails the policy.
+something that is not a placeholder. `PUBLIC_WEB_URL` is where the shell's emailed links point,
+because the webview's own origin (`tauri://localhost` or `http://tauri.localhost`) is not an
+address a browser can open. The shells sign in with email and password only;
+`apps/native/README.md` lists what else they lack. The shell's `connect-src` is generated from
+exactly these values, plus `PUBLIC_STORAGE_ORIGIN` for an object-storage origin the app talks to
+directly (`apps/native/scripts/tauri-config.ts` reads `apps/web/.env`, `.env.local`,
+`.env.production` and `.env.production.local` in Vite's own order, process environment last).
 
 **Releasing.** Bump `version` in the root `package.json`. The generator writes
 `src-tauri/Cargo.toml`, `apps/native/package.json` and the Tauri config from it, so `Cargo.lock`
@@ -137,7 +137,8 @@ compose.
 
 - Astro sites: static assets on Workers (`wrangler.jsonc` in `apps/site` and `apps/docs`;
   `bun run --cwd apps/site deploy:cloudflare`, same for `apps/docs`). Each build needs that app's
-  own `SITE_URL`. A build without one fails.
+  own `SITE_URL`. A build without one fails, and `deploy:cloudflare` also refuses a localhost one,
+  the value `bun run setup` gives local builds.
 - SvelteKit: `ADAPTER=cloudflare` → `@sveltejs/adapter-cloudflare` (Workers static assets + SSR).
 - The API stays on a container host: it uses Bun-native `Bun.SQL`, long-lived Postgres connections
   and Better Auth's full feature set, which do not fit Workers well. To run the API at the edge,
@@ -156,12 +157,12 @@ docker compose run --rm backup bun src/cli.ts backup
 docker compose run --rm backup bun src/cli.ts restore latest --drill
 ```
 
-The `backup` service writes a custom-format `pg_dump` plus, with the local storage driver, a
-tarball of the uploads. It copies both to S3/R2 when a bucket is set, prunes old sets and pings
-`BACKUP_HEARTBEAT_URL`. Details: [Operations](/guides/operations/) and `infra/backup/README.md`.
+The `backup` service writes a custom-format `pg_dump`. It copies it to S3/R2 when a bucket is set,
+prunes old sets and pings `BACKUP_HEARTBEAT_URL`. Details: [Operations](/guides/operations/) and
+`infra/backup/README.md`.
 
 A real restore (`restore <stamp> --yes`) re-hashes the dump against its manifest, refuses a database
 name that does not match the target, and refuses to run while other sessions are connected. Stop
-the writers (`docker compose stop api worker`) or pass `--terminate-connections`. `list` exits 1
-when the newest set is stale. [Operations → Backups](/guides/operations/#backups) has the whole
-sequence and every flag.
+the API (`docker compose stop api`) or pass `--terminate-connections`. `list` exits 1 when the
+newest set is stale. [Operations → Backups](/guides/operations/#backups) has the whole sequence and
+every flag.

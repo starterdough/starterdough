@@ -1,7 +1,7 @@
 import { isAdmin } from '@repo/auth/permissions';
 import { error, redirect } from '@sveltejs/kit';
-import { m } from '$lib/paraglide/messages';
-import { sessionResult } from '$lib/utils/session';
+import { m } from '#lib/paraglide/messages.js';
+import { sessionResult } from '#lib/utils/session.js';
 import type { LayoutLoad } from './$types';
 
 /**

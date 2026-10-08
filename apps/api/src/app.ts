@@ -88,7 +88,9 @@ app.use(
 	cors({
 		origin: (origin) => (allowedOrigins.has(origin) ? origin : null),
 		credentials: true,
-		allowHeaders: ['Content-Type', 'Authorization'],
+		// `X-CSRF-Token` rides on every `/rpc/*` call (rpc/handler.ts). Without it here, the
+		// preflight fails for every trusted origin the API is not on: `app.` calling `api.`, a shell.
+		allowHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token'],
 		exposeHeaders: ['set-auth-token'],
 		maxAge: 600,
 	}),

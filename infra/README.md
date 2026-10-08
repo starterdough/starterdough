@@ -12,7 +12,7 @@ Three ways to run the same code. Pick one per environment; nothing in the apps c
 ## What is in here
 
 ```
-compose.yml               the production stack (postgres, migrate, api, worker*, web, ai, caddy, backup*, uptime-kuma*, lgtm*)   * = profile
+compose.yml               the production stack (postgres, migrate, api, web, caddy, backup*, uptime-kuma*, lgtm*)   * = profile
 compose.dev.yml           Postgres for local development (`bun run db:up`)
 caddy/                    subdomains.Caddyfile (public domain) · single-origin.Caddyfile (tailnet / LAN)
 caddy/conf.d/             your own site blocks, imported by both Caddyfiles (ships empty; README inside)
@@ -20,7 +20,7 @@ compose.proxy-network.yml optional overlay: caddy joins a network shared with ot
 demo/                     a public demo next to production: compose file, .env template, its two
                           Caddyfiles, reset script + timer, update script run by every deploy
 docker/Dockerfile.static  builds apps/site + apps/docs into the Caddy image
-backup/                   pg_dump + uploads to a volume and S3/R2, retention, restore drill (its own README)
+backup/                   pg_dump to a volume and S3/R2, retention, restore drill (its own README)
 scripts/provision.sh      one-time VPS setup: Docker, Tailscale, deploy user, firewall, clone, .env with secrets
 scripts/deploy.sh         pull a tag, restart, wait for health, readiness check. CI runs this over SSH
 env/                      the production .env, encrypted with SOPS + age (README inside)
@@ -39,31 +39,30 @@ form is `docker compose --env-file .env -f infra/compose.yml …`.
 # new server: Docker, Tailscale, Python, flock, a `deploy` user, ufw, unattended upgrades, the clone, .env with fresh secrets
 curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/infra/scripts/provision.sh \
   | sudo REPO_URL=https://github.com/<owner>/<repo>.git EXPOSE=tailscale bash     # or EXPOSE=public
+# from a private repository: copy provision.sh to the box and pass GIT_TOKEN (the top of the script shows how)
 
 su - deploy                        # or: sudo -iu deploy
 cd /opt/starterdough
 $EDITOR .env                       # DOMAIN (public) or WEB_URL/API_URL for a tailnet host (below);
                                    # provision.sh already set CADDY_MODE and generated the secrets
 docker compose up -d --build       # or, for the images CI pushed: see "prebuilt images" below
-docker compose ps                  # every service healthy; `migrate` exited 0, `worker` has no health check
+docker compose ps                  # every service healthy; `migrate` exited 0
 ```
 
-Four rows ship **empty on purpose**. A plausible value would produce a stack that looks healthy and
-is wrong:
+Three rows ship **empty on purpose**. A plausible value would produce a stack that looks healthy
+and is wrong:
 
 - `DOMAIN`: empty means `localhost` and Caddy's internal CA. Fill it in for the public mode.
 - `IMAGE_REGISTRY`: empty means the local `starterdough/<name>:<tag>` namespace, so
   `docker compose pull` fails with "pull access denied" instead of fetching a stranger's build.
 - `COOKIE_DOMAIN`: a bare hostname, never a URL. The browser silently drops a cookie whose `Domain=`
   is a URL and sign-in appears to work.
-- `PUBLIC_STORAGE_ORIGIN`: only needed with S3/R2. The app's and the shell's CSP must allow it for
-  the presigned PUT.
 
-`POSTGRES_PASSWORD`, `SERVICE_TOKEN` and `BETTER_AUTH_SECRET` are required (`${VAR:?…}` in
-`compose.yml`). `.env.example` ships them empty and compose stops with `set … in .env` rather than
-starting the stack on a placeholder. `provision.sh` generates all three. In production the API also
-refuses any `change-me…` secret and a `DATABASE_URL` whose password is `starterdough`, `postgres`
-or `change-me…`. Generate every value you fill in yourself:
+`POSTGRES_PASSWORD` and `BETTER_AUTH_SECRET` are required (`${VAR:?…}` in `compose.yml`).
+`.env.example` ships them empty and compose stops with `set … in .env` rather than starting the
+stack on a placeholder. `provision.sh` generates both. In production the API also refuses any
+`change-me…` secret and a `DATABASE_URL` whose password is `starterdough`, `postgres` or
+`change-me…`. Generate every value you fill in yourself:
 
 ```sh
 openssl rand -hex 32
@@ -79,9 +78,9 @@ Prebuilt images instead of building on the box:
 docker login ghcr.io && docker compose pull && docker compose up -d
 ```
 
-Migrations run automatically. The `migrate` service applies `packages/db/drizzle`, and `api` and
-`worker` only start once it has exited successfully. Every `docker compose up` repeats that (a no-op
-when nothing is pending).
+Migrations run automatically. The `migrate` service applies `packages/db/drizzle`, and `api` only
+starts once it has exited successfully. Every `docker compose up` repeats that (a no-op when nothing
+is pending).
 
 Create the first platform administrator from the checkout on the box. `provision.sh` installs Bun
 for the deploy user and writes a `DATABASE_URL` into `.env` that points at the compose Postgres,
@@ -105,12 +104,11 @@ Optional services are compose profiles. Keep them in `COMPOSE_PROFILES` in `.env
 passing `--profile` on the command line: `deploy.sh` runs `up --remove-orphans`, which removes the
 containers of every profile that is not active in that invocation.
 
-Builds ignore what a local run left behind. The root `.dockerignore` (and a per-service one for the
-ai image, which is built with its own context) keeps `node_modules`, every `.env` at every depth
-(`**/.env*`, with the tracked `.env.example` files allowed back in), `apps/native/src-tauri/target`,
-build output and the uploads directory out of the build context. `apps/api/` and `packages/` are
-copied into the api image's runtime stage, so a stray `apps/api/.env` would otherwise ship with the
-image.
+Builds ignore what a local run left behind. The root `.dockerignore` keeps `node_modules`, every
+`.env` at every depth (`**/.env*`, with the tracked `.env.example` files allowed back in),
+`apps/native/src-tauri/target` and build output out of the build context. `apps/api/` and
+`packages/` are copied into the api image's runtime stage, so a stray `apps/api/.env` would
+otherwise ship with the image.
 
 Containers run with `no-new-privileges`, `cap_drop: ALL` and a 512-pid limit. Both Caddy services
 add `NET_BIND_SERVICE` back: the image's binary carries that file capability, and the kernel
@@ -128,10 +126,9 @@ seamless.
 
 Both also do this at the edge, before anything reaches a container:
 
-- **Bound request bodies.** 32 MB on `/uploads/*` (the local storage driver's path; it has to fit
-  `MAX_UPLOAD_BYTES`, 25 MiB by default), 1 MB everywhere else, answered as `413`. Plus
+- **Bound request bodies.** 1 MB, answered as `413`. Plus
   `servers { timeouts { read_header 15s; read_body 5m; idle 5m } }`. There is **no** `write`
-  timeout on purpose: it would cut the `jobs.stream` SSE response mid-flight.
+  timeout on purpose: it would cut a server-sent event stream mid-flight.
 - **A Content-Security-Policy on the two static sites**, with `COOP`, `base-uri`,
   `object-src 'none'` and `frame-ancestors 'none'`. `connect-src` (and the docs' `form-action`)
   carry the API origin, interpolated from `API_URL`, which compose passes to the caddy container.
@@ -140,15 +137,15 @@ Both also do this at the edge, before anything reaches a container:
   Starlight emit inline `<script>`/`<style>` and a static header cannot carry their hashes; Astro's
   `experimental.csp` (per-page hashes) is the upgrade path. The **app** is not covered here:
   SvelteKit emits its own policy.
-- **A redacted access log.** `sig` (signed upload URLs), `token`, `code`, `state` and `email` are
-  deleted from the logged query string, so a live password-reset credential does not sit in
-  `docker compose logs`. `X-Request-Id` still ties the entry to the API's own structured log.
+- **A redacted access log.** `sig`, `token`, `code`, `state` and `email` are deleted from the
+  logged query string, so a live password-reset credential does not sit in `docker compose logs`.
+  `X-Request-Id` still ties the entry to the API's own structured log.
 - **Compression by response content type on the API** (`application/json*` only). Caddy's default
   matcher includes `text/*`, which would buffer `text/event-stream`.
 
 | | `subdomains` (public) | `single-origin` (tailnet / LAN) |
 | --- | --- | --- |
-| URLs | `DOMAIN`, `docs.DOMAIN`, `app.DOMAIN`, `api.DOMAIN`; Let's Encrypt automatic | one origin: `/` app, `/api /rpc /uploads /healthz /readyz` → API, `/docs` → docs |
+| URLs | `DOMAIN`, `docs.DOMAIN`, `app.DOMAIN`, `api.DOMAIN`; Let's Encrypt automatic | one origin: `/` app, `/api /rpc /healthz /readyz` → API, `/docs` → docs |
 | DNS | four A/AAAA records → the host | none (Tailscale MagicDNS) or one LAN name |
 | `.env` | `DOMAIN=your-domain.com`, `COOKIE_DOMAIN=.your-domain.com`, `WEB_URL=https://app.your-domain.com`, `API_URL=https://api.your-domain.com`, `TRUSTED_ORIGINS=https://your-domain.com,https://docs.your-domain.com`, optionally `ACME_EMAIL` | `WEB_URL=API_URL=https://<host>.<tailnet>.ts.net`, `DOCS_URL=https://<host>.<tailnet>.ts.net/docs` (leave `DOMAIN` and `COOKIE_DOMAIN` empty: one origin, no CORS) |
 | TLS | Caddy | terminated upstream (Tailscale or your router); Caddy listens on plain :80 |
@@ -204,14 +201,41 @@ ports.
 
 ### Deploy, update, roll back
 
-`.github/workflows/deploy.yml` builds the five images on every push to `main` (and `v*` tags) and
-pushes them to `ghcr.io/<owner>/<repo>/{api,web,ai,caddy,backup}` tagged `sha-<commit>` plus, on
-`main`, `main` and `latest`. A `v1.2.0` tag gets `sha-<commit>` and `1.2.0`; `latest` is only ever
-a `main` build. Set the repository variable `DEPLOY_HOST` (+ secret `DEPLOY_SSH_KEY`, the key pair
-whose public half is in the deploy user's `authorized_keys`) and it also runs
-`infra/scripts/deploy.sh` on the server after each build. For a server that is only on your
-tailnet, set `DEPLOY_VIA_TAILSCALE=true` plus a Tailscale OAuth client in `TS_OAUTH_CLIENT_ID` /
-`TS_OAUTH_SECRET`.
+`.github/workflows/deploy.yml` is **off until you switch it on**. In a new repository a push runs CI
+and nothing else, so the first push cannot go red over a server you have not set up yet. Once it is
+on, production follows CI: when CI passes for a push to `main`, the workflow builds the images
+behind `infra/compose.yml` from that exact commit, pushes them to `ghcr.io/<owner>/<repo>/<name>`
+tagged `sha-<commit>`, `main` and `latest`, then delivers the commit to the server and runs
+`infra/scripts/deploy.sh` there. A commit whose CI fails is never built or deployed, and neither is
+one `main` has already moved past. A `v1.2.0` tag builds images tagged `sha-<commit>` and `1.2.0`
+and deploys nothing; `latest` is only ever a `main` build.
+
+The one-time setup, in this order:
+
+1. **The server.** `provision.sh`, above. From a private repository, copy the script to the box
+   and pass `GIT_TOKEN` for the first clone (the top of the script shows how); nothing needs that
+   token afterwards. Then make a key pair for CI and authorize its public half for the deploy user
+   (`provision.sh` gave that user root's keys, so your own login works for this):
+   ```sh
+   ssh-keygen -t ed25519 -N '' -C starterdough-ci -f starterdough-ci     # on your machine
+   ssh-copy-id -i starterdough-ci.pub deploy@<host>
+   ```
+2. **Variables** (Settings → Secrets and variables → Actions → Variables): `SITE_URL`, `DOCS_URL`,
+   `WEB_URL` and `API_URL`, which are baked into the images (the build names any that is missing),
+   and `DEPLOY_HOST`. `DEPLOY_USER` and `DEPLOY_PATH` only if you changed `provision.sh`'s
+   defaults, and `DEPLOY_VIA_TAILSCALE=true` for a server that is only on your tailnet.
+3. **Secrets** (the same page, Secrets tab): `DEPLOY_SSH_KEY`, the private half
+   (`starterdough-ci`). Optional: `SOPS_AGE_KEY` (see "Secrets" below), `GHCR_PULL_TOKEN`, and a
+   Tailscale OAuth client in `TS_OAUTH_CLIENT_ID` / `TS_OAUTH_SECRET` with `DEPLOY_VIA_TAILSCALE`.
+4. **No deploy key.** The server never fetches from GitHub: the workflow pushes the commit it
+   releases into the server's checkout over the same SSH login. The box holds no credential for
+   your repository, so there is nothing to add on GitHub, store on the server or rotate.
+5. **Switch it on** with the variable `DEPLOY_ENABLED=true`. The next push to `main` deploys once CI
+   passes; to deploy the current `main` straight away, Actions → Deploy → Run workflow.
+
+`DEPLOY_ENABLED=true` without `DEPLOY_HOST` builds and pushes the images and deploys nothing, for a
+host that pulls them itself. To have a person approve every release, add required reviewers to the
+`production` environment (Settings → Environments); the deploy job waits for them.
 
 ```sh
 # by hand, on the server (what CI runs)
@@ -221,9 +245,13 @@ BUILD=1 bash infra/scripts/deploy.sh                                  # no regis
 ```
 
 Rollback = deploy an older tag: Actions → Deploy → Run workflow with `tag: sha-<previous>` (skips
-the build), or the first command above. `deploy.sh` writes the deployed `IMAGE_TAG` back into
-`.env`, so the rollback survives a later plain `docker compose up -d`. The workflow validates the
-`tag` input (`[A-Za-z0-9._-]`, no leading `-`). The `pgdata` volume is never touched by a deploy.
+the build), or the first command above. A run by hand deploys only a commit that passed CI on a
+push to `main`, and refuses anything else before it builds or touches the server. The first command
+needs no access to the repository for a commit the workflow delivered, which is already in the
+checkout; any other commit is fetched from `origin`, and on a private repository that needs a
+credential on the box. `deploy.sh` writes the deployed `IMAGE_TAG` back into `.env`, so the
+rollback survives a later plain `docker compose up -d`. The workflow validates the `tag` input
+(`[A-Za-z0-9._-]`, no leading `-`). The `pgdata` volume is never touched by a deploy.
 Migrations are forward-only. Check release compatibility before rolling back code; a migration
 that must be undone requires a new migration or a coordinated database and file recovery.
 
@@ -267,21 +295,18 @@ existing hosts before their first recovery-aware deployment.
 `COMPOSE_PROFILES=backup` in `.env` runs a scheduler (never `--profile` on the command line:
 `deploy.sh` runs `up --remove-orphans`, which drops the containers of every profile not active in
 that call). Every night at `BACKUP_SCHEDULE` (UTC) it writes `pg_dump` (custom format, compressed)
-plus, with the local storage driver, a tarball of the uploads to the `backups` volume, copies both
-to S3/R2 when a bucket is configured, prunes anything older than `BACKUP_RETENTION_DAYS`, and pings
-`BACKUP_HEARTBEAT_URL`. Point that at a Healthchecks.io check or an Uptime Kuma push monitor and
-you are alerted when backups *stop*. Details and every variable: `infra/backup/README.md`.
+to the `backups` volume, copies it to S3/R2 when a bucket is configured, prunes anything older than
+`BACKUP_RETENTION_DAYS`, and pings `BACKUP_HEARTBEAT_URL`. Point that at a Healthchecks.io check or
+an Uptime Kuma push monitor and you are alerted when backups *stop*. Details and every variable:
+`infra/backup/README.md`.
 
 ```sh
 docker compose run --rm backup bun src/cli.ts backup                  # a backup right now (do this once, immediately)
 docker compose run --rm backup bun src/cli.ts list                    # what exists (disk + bucket); exit 1 when the newest set is older than BACKUP_MAX_AGE
 docker compose run --rm backup bun src/cli.ts restore latest --drill  # restore into a scratch database, verify checksum + row counts, drop it
-docker compose stop api worker                                        # a real restore refuses while other sessions are connected (or pass --terminate-connections)
+docker compose stop api                                               # a real restore refuses while other sessions are connected (or pass --terminate-connections)
 docker compose run --rm backup bun src/cli.ts restore <stamp> --yes
-# with the uploads (see below: a different mount path, and STORAGE_DIR pointed at it)
-docker compose run --rm -v starterdough_uploads:/restore/uploads -e STORAGE_DIR=/restore/uploads \
-  backup bun src/cli.ts restore <stamp> --yes --uploads
-docker compose start api worker
+docker compose start api
 ```
 
 `BACKUP_ON_START=true` (only `true`/`1`/`false`/`0`/empty are accepted) makes the scheduler take
@@ -308,15 +333,6 @@ on server-side encryption in the bucket, give the backup a write-only credential
 `HeadObject`) with pruning by lifecycle rule, and keep object versioning on so a leaked key cannot
 delete the history.
 
-`--uploads` needs a writable uploads directory, and a `run -v` on `/data/uploads` does not give
-one: Compose keeps the service's `:ro` for that target path even if the flag says `:rw`. Mount the
-volume somewhere else for the one-shot and point `STORAGE_DIR` at that path (`starterdough_uploads`
-is the volume's name under the compose project, `name: starterdough`). The CLI checks that the
-uploads target is writable and that the archive exists before it touches the database. Unpacking
-*merges* into the volume: a document deleted after that backup reappears. Wipe the volume first if
-you want exactly what the archive holds. With the **S3 storage driver** no documents are backed up
-at all (they never touch the box): turn on bucket versioning plus a lifecycle rule and treat that as
-their backup.
 
 Losing the whole machine: `pg_dump` captures neither the roles nor the database itself, so Postgres
 must exist before anything is restored.
@@ -326,41 +342,36 @@ must exist before anything is restored.
 # 2. put back the .env you kept with the backups, and the backup files (bucket, or the `backups` volume)
 docker compose up -d postgres                                          # 3. an empty `starterdough` database
 docker compose run --rm backup bun src/cli.ts restore <stamp> --yes     # 4. schema + data
-docker compose run --rm -v starterdough_uploads:/restore/uploads -e STORAGE_DIR=/restore/uploads \
-  backup bun src/cli.ts restore <stamp> --yes --uploads                 # 5. the documents
-docker compose up -d                                                   # 6. the rest of the stack
+docker compose up -d                                                   # 5. the rest of the stack
 ```
 
 Every nightly run also verifies its own dump (`pg_restore --list`) and records the entry count and
 a `sha256` in the manifest. Retention prunes after every attempt and at scheduler start, but never
 the newest three complete sets. A failed scheduled run pings `${BACKUP_HEARTBEAT_URL}/fail`, which
 Healthchecks.io and Better Stack expect. Do the drill after the first backup and then on a
-calendar. Backups that stay on the same disk are not backups: set `BACKUP_S3_BUCKET` (or reuse the
-uploads bucket) or copy the volume off the box. Keep the `.env` (or its SOPS copy) with the
-backups: a database without its `BETTER_AUTH_SECRET` is not a restore.
+calendar. Backups that stay on the same disk are not backups: set `BACKUP_S3_BUCKET` or copy the
+volume off the box. Keep the `.env` (or its SOPS copy) with the backups: a database without its
+`BETTER_AUTH_SECRET` is not a restore.
 
 ### Health, logs, traces, alerting
 
 | Signal | Where |
 | --- | --- |
-| Liveness | `GET /healthz` on the API and the web (process up); container health checks on api/web/ai/caddy (Dockerfile `HEALTHCHECK`s; Caddy's is a compose `healthcheck:` against its admin API). `docker compose ps` shows them. `worker` is exempt on purpose (`healthcheck: disable: true`): it runs the API image but serves no HTTP |
+| Liveness | `GET /healthz` on the API and the web (process up); container health checks on api/web/caddy (Dockerfile `HEALTHCHECK`s; Caddy's is a compose `healthcheck:` against its admin API). `docker compose ps` shows them |
 | Readiness | `GET /readyz` on the API (database reachable). Caddy only routes to a ready API; `deploy.sh` ends on it. The 503 body names the failing check only (`{"status":"unavailable","checks":{"database":"timeout"\|"unreachable"}}`); the reason is in the `readiness check failed` log line (`check`, `outcome`, `reason`). Simultaneous probes share one bounded `select 1`, so a hung database costs one connection however often you poll |
 | Shutdown | `SIGTERM` (a deploy, `docker compose stop`): the API stops accepting, drains in-flight requests for up to 10 s, flushes telemetry (3 s cap) and closes the pool (1 s), all inside compose's 15 s `stop_grace_period`. It exits 0 even if a teardown step fails (`shutdown failed` is logged first). An unhandled rejection or uncaught exception logs `unhandled rejection` / `uncaught exception` and exits 1, which `restart: unless-stopped` turns into a restart |
 | Logs | `docker compose logs -f api`: JSON lines (`LOG_FORMAT=json` in production, verbosity `LOG_LEVEL`). Every line written while a request is handled carries that request's `requestId` (matching Caddy's `X-Request-Id`), procedure calls also carry `procedure`, and `traceId` with tracing on. A 500 hands the id back as `{"error":"internal_error","requestId":…}`. All containers rotate at 10 MB × 5 |
-| Traces | set `OTEL_EXPORTER_OTLP_ENDPOINT`. The `observability` profile gives you Grafana + Tempo (`http://lgtm:4318`, UI on `127.0.0.1:3030`); or Grafana Cloud / Axiom / Honeycomb with `OTEL_EXPORTER_OTLP_HEADERS`. A job and the `ai.*` calls it makes share one trace; the request that queued it is a separate trace by design (`apps/api/src/jobs/worker.ts` makes `job.run` a root span), linked through the `jobId` in the logs. Service names come from compose (`starterdough-api`, `starterdough-worker`, `starterdough-ai`), not from `.env`. Health probes (`/healthz`, `/readyz`, the AI `/health`) are not traced; query strings are stripped from span URLs |
-| Uptime + alerting | `--profile monitoring`: Uptime Kuma on `127.0.0.1:${UPTIME_KUMA_PORT:-3001}` (reach it over Tailscale). A stock container, nothing is pre-configured: add monitors for `http://api:3000/readyz`, `http://web:3000/healthz`, `http://ai:8000/health`, your public URLs, and the backup heartbeat as a push monitor; notifications to mail/Slack/Telegram. External (Better Stack, Healthchecks.io) for a second vantage point |
-| System page | `/admin/system` in the app: version, migrations, AI service, queue depth, storage, providers |
+| Traces | set `OTEL_EXPORTER_OTLP_ENDPOINT`. The `observability` profile gives you Grafana + Tempo (`http://lgtm:4318`, UI on `127.0.0.1:3030`); or Grafana Cloud / Axiom / Honeycomb with `OTEL_EXPORTER_OTLP_HEADERS`. Service names come from compose (`starterdough-api`), not from `.env`. Health probes (`/healthz`, `/readyz`) are not traced; query strings are stripped from span URLs |
+| Uptime + alerting | `--profile monitoring`: Uptime Kuma on `127.0.0.1:${UPTIME_KUMA_PORT:-3001}` (reach it over Tailscale). A stock container, nothing is pre-configured: add monitors for `http://api:3000/readyz`, `http://web:3000/healthz`, your public URLs, and the backup heartbeat as a push monitor; notifications to mail/Slack/Telegram. External (Better Stack, Healthchecks.io) for a second vantage point |
+| System page | `/admin/system` in the app: version, migrations, providers |
 
 ### Scaling and tuning
 
-- **Jobs**: `COMPOSE_PROFILES=worker` in `.env` runs the job worker as its own container (set
-  `WORKER_ENABLED=false`); `docker compose up -d --scale worker=3` adds more. The Postgres queue
-  (`SKIP LOCKED`) needs no coordination.
-- **Database connections**: each API/worker process holds up to `DATABASE_POOL_MAX` (10). Postgres
-  allows 100. Leave headroom for `migrate` (2 while it runs: the advisory lock it takes so two
-  deploys cannot migrate at once, plus the migrator itself), `backup` and your own `psql`.
-- **Memory**: `compose.yml` caps api/worker/ai at 1 GB and web at 512 MB. These are caps, not
-  reservations. `docker compose ps` shows OOM restarts; raise the cap rather than removing it.
+- **Database connections**: each API process holds up to `DATABASE_POOL_MAX` (10). Postgres allows
+  100. Leave headroom for `migrate` (2 while it runs: the advisory lock it takes so two deploys
+  cannot migrate at once, plus the migrator itself), `backup` and your own `psql`.
+- **Memory**: `compose.yml` caps api at 1 GB and web at 512 MB. These are caps, not reservations.
+  `docker compose ps` shows OOM restarts; raise the cap rather than removing it.
 - **Load test** before you guess:
   ```sh
   docker run --rm -i -e API_URL=http://<api-origin> grafana/k6 run - < infra/loadtest/k6/smoke.js
@@ -381,21 +392,24 @@ writes the server's `.env` before restarting. 1Password (`op inject`) and Dopple
 ### Security notes
 
 - Ports: Caddy publishes 80/443 on `CADDY_BIND`. Postgres is published on loopback only
-  (`127.0.0.1:${POSTGRES_PORT:-5432}`, for `admin:create` and `psql` from the host). The API, the
-  AI service and the worker are on the compose network. Uptime Kuma and Grafana bind to
-  `127.0.0.1`. `provision.sh` sets ufw to deny inbound except the tailnet interface (and 80/443
-  with `EXPOSE=public`; 22 until you remove it).
+  (`127.0.0.1:${POSTGRES_PORT:-5432}`, for `admin:create` and `psql` from the host). The API is on
+  the compose network. Uptime Kuma and Grafana bind to `127.0.0.1`. `provision.sh` sets ufw to deny
+  inbound except the tailnet interface (and 80/443 with `EXPOSE=public`; 22 until you remove it).
 - Headers: Caddy sets the browser headers. The API sets its own (Hono `secureHeaders`) with
   `Cross-Origin-Resource-Policy: cross-origin` because `app.` and `api.` are different origins.
 - CORS: only `WEB_URL` + `TRUSTED_ORIGINS` may call the API from a browser. List the site and the
   docs there in production.
+- CSRF: every `/rpc` call must carry the `x-csrf-token` header the shared client sends, and a
+  cookie-carrying write to `/api/v1` from an origin outside that same list answers
+  `403 forbidden_origin`. It backs up the `SameSite=Lax` session cookie against pages on a sibling
+  subdomain, which count as the same site.
 - Rate limits: 300 procedure calls/min and Better Auth's own limits per client IP. The API keys them
   on the single `X-Forwarded-For` address Caddy sends only because `TRUST_PROXY=true` is set on the
   `api` service. Anything else (an empty header, a chain of hops, `TRUST_PROXY` off) falls back to
   the socket address. Never set `TRUST_PROXY` where the API port is reachable without going through
   Caddy. Determined abuse belongs at the edge (Cloudflare, fail2ban on Caddy's logs).
-- Dependencies: CI runs `bun audit --prod --audit-level=high` and `pip-audit` on pushes to `main`
-  and on pull requests.
+- Dependencies: CI runs `bun audit --prod --audit-level=high` on pushes to `main` and on pull
+  requests.
 
 ### A public demo next to production
 
@@ -461,10 +475,13 @@ user, except where it says root.
    docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile
    docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
    ```
-   Both demo hosts answer 502 until step 5 is done.
-4. Prepare the demo clone and its environment before enabling automated demo deploys.
+   Both demo hosts answer 502 until step 5 is done. Deploys never touch this copy: when
+   `infra/demo/caddy/demo.caddy` changes, copy it again and run the last two commands.
+4. Prepare the demo clone and its environment before enabling automated demo deploys. Clone the
+   repository production runs from. It needs read access only for this first clone: the Deploy
+   workflow pushes every release into the demo's checkout, as it does into production's.
    ```sh
-   git clone https://github.com/starterdough/starterdough-turbo.git /opt/starterdough-demo
+   git clone https://github.com/<owner>/<repo>.git /opt/starterdough-demo
    cd /opt/starterdough-demo
    cp infra/demo/.env.example .env && chmod 600 .env
    $EDITOR .env               # fill in the secrets: openssl rand -hex 32 for each
@@ -474,9 +491,11 @@ user, except where it says root.
    Custom layouts can override any of them with `DEMO_SITE_URL`, `DEMO_DOCS_URL`, `DEMO_WEB_URL`
    and `DEMO_API_URL`; those values must match the demo clone's `SITE_URL`, `DOCS_URL`, `WEB_URL`
    and `API_URL` rows. `DEMO_DOMAIN` remains required because it also identifies an enabled,
-   fully configured demo build. Run the **Deploy** workflow with an empty `tag`: it publishes
-   `demo-static`, deploys production, then runs `infra/demo/update.sh` to pull and start the demo.
-   An existing tag from before demo images were published is rejected before deployment.
+   fully configured demo build. Run the **Deploy** workflow with an empty `tag` (it needs
+   `DEPLOY_ENABLED=true`, and a run by hand deploys only a commit whose CI passed on a push to
+   `main`): it publishes `demo-static`, deploys production, then runs `infra/demo/update.sh` to pull
+   and start the demo. An existing tag from before demo images were published is rejected before
+   deployment.
 6. Verify the stack. Initial bring-up pulled every image and did no compilation on the box.
    ```sh
    cd /opt/starterdough-demo
@@ -524,7 +543,7 @@ It checks out that commit (the compose file and the migrations have to match the
 all images and restarts with `--no-build`, and it refuses to run anywhere but the demo before
 it moves anything, the way `reset.sh` does. It is not a reset: the database, the volume and
 whoever has signed up all survive, and visitors lose only their session when `demo-api` and
-`demo-web` restart. A missing `demo-static` image fails before any upload writer is stopped or
+`demo-web` restart. A missing `demo-static` image fails before any writer is stopped or
 container is replaced.
 
 The pull needs a GHCR login, and by hand that is a login of the box's own: the one `deploy.yml`
@@ -574,10 +593,10 @@ design (the project is `starterdough`, not the demo): the reset on that box is
 | `api` restarts, `migrate` exited non-zero | `docker compose logs migrate`; usually `DATABASE_URL`/`POSTGRES_PASSWORD` changed after the volume was created |
 | 502 for ~15 s after a deploy, then fine | expected worst case; the API took long to become ready. `docker compose logs api` |
 | `/readyz` 503 | Postgres down or out of connections: `docker compose ps postgres`, `docker compose exec postgres psql -U starterdough -c 'select count(*) from pg_stat_activity'`. The body only says `timeout` or `unreachable`; `docker compose logs api \| grep 'readiness check failed'` has the reason |
-| Uploads fail in single-origin mode | `/uploads/*` must reach the API (it does in the shipped Caddyfile); `MAX_UPLOAD_BYTES` |
-| Jobs stuck `queued` | no worker: `WORKER_ENABLED=false` without `--profile worker`; AI service down: they retry, then refund |
 | No traces | `OTEL_EXPORTER_OTLP_ENDPOINT` unset in `.env`, or the collector needs `OTEL_EXPORTER_OTLP_HEADERS` |
 | `docker compose pull` denied | private GHCR packages: `docker login ghcr.io` with a token that has `read:packages`, or make the packages public |
+| A Deploy run did nothing but its `Plan` job | its notice says why: `DEPLOY_ENABLED` is not `true` (lowercase), CI did not pass for that push, or `main` had already moved past the commit. The newer commit's own CI run releases it; a push CI skipped (`[skip ci]`) gets none, so push again |
+| `Deliver the release commit to the server` fails | no git checkout at `DEPLOY_PATH` (or `DEMO_PATH`) that the deploy user owns: rerun `provision.sh`, or `chown -R deploy:deploy` the checkout |
 
 ## Cloudflare notes
 
@@ -588,19 +607,3 @@ design (the project is `starterdough`, not the demo): the reset on that box is
   and Better Auth's full feature set, which do not fit Workers well. To run the API at the edge, use
   Hyperdrive for Postgres pooling and swap `drizzle-orm/bun-sql` for `drizzle-orm/postgres-js`.
 
-## Jobs, uploads and the AI service
-
-- **Background jobs** run inside the `api` container (`WORKER_ENABLED=true`, the default). To scale
-  them separately, add `worker` to `COMPOSE_PROFILES` and set `WORKER_ENABLED=false` in `.env`, so
-  the API replicas leave the queue to the `worker` service. Any number of workers can share the
-  queue.
-- **Uploaded documents** live on the `uploads` volume when `S3_BUCKET` is unset (the API serves
-  them itself through signed URLs) and are included in the nightly backup. For Cloudflare R2 / S3 /
-  MinIO set `S3_BUCKET`, `S3_ENDPOINT`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`.
-  Browsers then upload and download straight from the bucket, so its CORS rules must allow the web
-  origin (`PUT`, `GET`, header `Content-Type`). Browser PUTs target staging keys only. Finalization
-  verifies the selected bytes and publishes a unique server-only final key. The worker must remain
-  active for namespace sweeps and permanent legacy-key cleanup, even when no jobs are queued.
-  Migration `0009_immutable_uploads` requires draining old API/worker replicas; the deployment
-  scripts do so after pulling/building images. Do not roll back to an image predating this storage
-  layout after migration. See the documents-and-jobs guide for recovery and provider validation.

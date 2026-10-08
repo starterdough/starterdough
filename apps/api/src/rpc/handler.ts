@@ -2,6 +2,7 @@ import { OpenAPIGenerator } from '@orpc/openapi';
 import { OpenAPIHandler } from '@orpc/openapi/fetch';
 import { ORPCError, onError } from '@orpc/server';
 import { RPCHandler } from '@orpc/server/fetch';
+import { SimpleCsrfProtectionHandlerPlugin } from '@orpc/server/plugins';
 import {
 	experimental_ZodSmartCoercionPlugin as ZodSmartCoercionPlugin,
 	ZodToJsonSchemaConverter,
@@ -9,6 +10,7 @@ import {
 import { env } from '@repo/env';
 import type { Hono } from 'hono';
 import { addLogContext, log } from '../log';
+import { refuseCrossSiteCookieWrites } from '../middleware/csrf';
 import { createContext } from './context';
 import { router } from './router';
 import { version } from './version';
@@ -16,7 +18,7 @@ import { version } from './version';
 const rpcLog = log.with({ component: 'rpc' });
 
 /**
- * The matched procedure (`documents.list`) on every line this request writes, the error line below
+ * The matched procedure (`account.me`) on every line this request writes, the error line below
  * included: the request-level interceptor sees the error but not which procedure raised it. Runs
  * before the procedure, so a line from inside the handler carries it too. `requestId`, method and
  * path are already in the context (see `middleware/request-log.ts`).
@@ -43,13 +45,27 @@ function logError(error: unknown) {
 	rpcLog.error('procedure failed', { error });
 }
 
-/** Compact transport for our own TypeScript clients (rich types: Date, Map, Set, …). */
+/**
+ * Compact transport for our own TypeScript clients (rich types: Date, Map, Set, …).
+ *
+ * Every call must carry `x-csrf-token: orpc`, which `@repo/api-client` adds to each request
+ * (`SimpleCsrfProtectionLinkPlugin`); without it the answer is 403 `CSRF_TOKEN_MISMATCH`. The value
+ * is no secret. What counts is that an HTML form cannot send a custom header at all, and a page on
+ * another origin can only send one after a CORS preflight, which only `trustedOrigins()` pass. So
+ * the session cookie alone never invokes a procedure here, whichever sibling subdomain the page is
+ * on and whatever the body's encoding.
+ */
 const rpcHandler = new RPCHandler(router, {
 	interceptors: [onError(logError)],
 	clientInterceptors: [tagProcedure],
+	plugins: [new SimpleCsrfProtectionHandlerPlugin()],
 });
 
-/** Plain REST for everyone else: Python services, curl, third parties. */
+/**
+ * Plain REST for everyone else: Python services, curl, third parties. They are not asked for the
+ * header; a cookie-carrying write from a page outside `trustedOrigins()` is refused before it
+ * reaches this handler instead (`middleware/csrf.ts`).
+ */
 const openapiHandler = new OpenAPIHandler(router, {
 	interceptors: [onError(logError)],
 	clientInterceptors: [tagProcedure],
@@ -105,6 +121,7 @@ export function mountRpc(app: Hono) {
 		return c.body(body, 200, { ...headers, 'content-type': 'application/json' });
 	});
 
+	app.use('/api/v1/*', refuseCrossSiteCookieWrites());
 	app.use('/api/v1/*', async (c, next) => {
 		const { matched, response } = await openapiHandler.handle(c.req.raw, {
 			prefix: '/api/v1',

@@ -14,7 +14,6 @@
 		"test:db": "bun --env-file=../../.env test",
 		"generate": "bun --env-file=../../.env run drizzle-kit generate",
 		"migrate": "bun --env-file=../../.env run src/migrate.ts",
-		"push": "bun --env-file=../../.env run drizzle-kit push",
 		"studio": "bun --env-file=../../.env run drizzle-kit studio"
 	},
 	"dependencies": {

@@ -40,6 +40,12 @@ import { BackupBucket } from './s3';
 
 export { quoteIdentifier };
 
+/**
+ * What stops every compose service that writes to the database, for the hints a refused restore
+ * gives. Compose rejects a service name the stack does not define, so this names exactly its own.
+ */
+const STOP_WRITERS = 'docker compose stop api';
+
 export interface RestoreOptions {
 	/** `latest`, a stamp (`20260909T023000Z`) or an artifact file name. */
 	name: string;
@@ -234,7 +240,7 @@ export async function restore(
 			safetyDump: options.noSafetyDump
 				? 'disabled by --no-safety-dump'
 				: `would dump ${baseDatabase} to ${join(config.backupDir, safetyDumpName(baseDatabase, '<now>'))} first`,
-			hint: 'stop the api and worker services first, then re-run with --yes',
+			hint: `stop the writers first (${STOP_WRITERS}), then re-run with --yes`,
 		});
 		return {
 			...base,
@@ -864,7 +870,7 @@ async function requireNoWriters(
 		if (rows.length === 0) return;
 		if (!options.terminateConnections) {
 			throw new RestoreError(
-				`${rows.length} other session(s) are connected to ${database} (pids ${rows.map((row) => row.pid).join(', ')}); nothing was changed. Stop the writers (docker compose stop api worker) and re-run, or pass --terminate-connections to disconnect them`,
+				`${rows.length} other session(s) are connected to ${database} (pids ${rows.map((row) => row.pid).join(', ')}); nothing was changed. Stop the writers (${STOP_WRITERS}) and re-run, or pass --terminate-connections to disconnect them`,
 			);
 		}
 		// One statement per pid, deliberately. `... where pid <> pg_backend_pid() and

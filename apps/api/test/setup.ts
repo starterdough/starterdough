@@ -7,4 +7,3 @@ process.env.WEB_URL ??= 'http://localhost:5173';
 process.env.DATABASE_URL ??=
 	'postgres://starterdough:starterdough@localhost:5432/starterdough_test';
 process.env.BETTER_AUTH_SECRET ??= 'test-secret-test-secret-test-secret-test-secret';
-// Local storage driver (no S3_BUCKET) writing to a scratch directory, never the repo.

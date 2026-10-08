@@ -3,84 +3,42 @@ title: Quickstart
 description: From a clone to a running API and app in a few commands.
 ---
 
-## Prerequisites
-
-- **Bun 1.4 or newer**: runtime, package manager and test runner for the whole repository.
-- **Docker with Compose and a running daemon**: runs the local Postgres. The Docker executable
-  alone does not prove that `db:up` can run.
-- **Rust toolchain**: only for `apps/native` (the Tauri shells).
+The setup guide is `QUICKSTART.md` at the root of the repository, the one copy kept up to date. It
+takes a fresh clone to a running app in about ten minutes, then covers the first administrator,
+the accounts and keys you need next, deployment and the launch checklist. This page is its
+outline; where the two differ, `QUICKSTART.md` is right.
 
 ## Install and run
 
-The local setup commands below use the same syntax in bash and PowerShell.
+You need Bun 1.4 or newer, and Docker with Compose and a running daemon for the local Postgres, or
+an existing Postgres 17 instead of Docker. Rust is only for the Tauri shells. Node.js is optional,
+but if it is installed it must be 22.17 or newer: Vite runs under it.
 
-1. Install dependencies and copy the env templates:
+Start from a release, not from the kit's `main`: `UPGRADING.md`'s first block checks out the
+release you name (name the newest: `git tag -l "kit/*" --sort=-v:refname` lists them) and files the
+kit's tags under `kit/`, which later upgrades merge from. Then:
 
 ```sh
 bun install
-cp .env.example .env                 # API, db tooling, compose
-cp apps/web/.env.example apps/web/.env
+bun run setup        # every .env from its template, with generated secrets
+bun run doctor       # read-only: prerequisites and configuration
+bun run db:up        # Postgres 17 in Docker on 127.0.0.1:5433
+bun run db:migrate
+bun run dev:app      # API on :3000, app on http://localhost:5173
 ```
 
-2. Generate `BETTER_AUTH_SECRET`. It ships empty, and the API refuses to boot without it. Put the
-   output in `.env`:
+Without Docker, point `DATABASE_URL` in the root `.env` at a development database on your own
+Postgres, run `bun run doctor -- --database=external` instead of `bun run doctor`, and skip
+`db:up`. The doctor then skips its Docker checks; it does not install or configure Postgres.
 
-```sh
-bun -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-```
+Rename the kit before `setup` if you already have a product name, on the branch `UPGRADING.md` names
+so later releases merge cleanly (`QUICKSTART.md`, Step 1, item 2). `setup` never replaces a value
+you set, so it is safe to run again. It also gives the marketing site and the docs their local
+`SITE_URL`, so `bun run build` works on a fresh clone.
 
-3. Check setup, start Postgres, apply the migrations and run the app:
-
-```sh
-bun run doctor                       # app configuration, dependencies, Docker + Compose + daemon
-bun run db:up                        # Postgres 17 in Docker (127.0.0.1:5433 by default)
-bun run db:migrate                   # applies packages/db/drizzle/*.sql (exits 1 if any stay pending)
-
-bun run dev:app                      # api on :3000 + web on :5173
-```
-
-Then open [http://localhost:5173](http://localhost:5173). The defaults in `.env.example` are enough
-for local development: emails print to the API terminal and social sign-in stays off. See
-[Configuration](/start/configuration/) for what each variable switches on.
-
-`doctor` checks prerequisites and configuration; it does not connect to Postgres or apply
-migrations. For an existing database, set `DATABASE_URL`, run
-`bun run doctor -- --database=external`, omit `db:up`, then run `db:migrate`.
-
-### Build all apps locally
-
-App signup uses only the root and web configuration. A full build also needs the sites:
-
-```sh
-cp apps/site/.env.example apps/site/.env
-cp apps/docs/.env.example apps/docs/.env
-```
-
-Set `SITE_URL=http://localhost:4321` in `apps/site/.env` and
-`SITE_URL=http://localhost:4322` in `apps/docs/.env`. Then run:
-
-```sh
-bun run doctor -- --build
-bun run build
-```
-
-Add `--database=external` to the doctor command when using your own database. Keep the shell's
-`SITE_URL` unset for distinct per-site origins; a nonempty exported value overrides both files.
-Use your public origins before deployment. See [Configuration](/start/configuration/) for file
-precedence and [the worked feature example](/guides/feature-example/) when adding your first feature.
-
-### Other entry points
-
-| Command | What |
-| --- | --- |
-| `bun run dev` | every app with a `dev` script (api, web, site `:4321`, docs `:4322`) |
-| `bun run dev:desktop` | Tauri desktop shell around the dev server (needs Rust) |
-| `bun run verify` | lint, typecheck and tests, in CI's order. Run it before every push |
-| `bun run check` · `bun run test` · `bun run lint` · `bun run build` | the same steps one at a time, plus the build. `test` runs Svelte components in a real browser and installs Playwright's Chromium on first run |
-| `bun run test:e2e` | Playwright against a production preview of `apps/web` |
-| `bun run admin:create -- --email … [--name …] [--yes]` | create or promote the first platform administrator. New accounts use `ADMIN_PASSWORD` or a prompt; promoting an existing account requires `--yes` |
-
-The full list is in [Commands](/reference/commands/).
+[Configuration](/start/configuration/) explains every variable, and [Commands](/reference/commands/)
+lists every command. When you add your first feature, follow
+[the worked feature example](/guides/feature-example/).
 
 ## First steps in the app
 
@@ -92,8 +50,8 @@ The full list is in [Commands](/reference/commands/).
 
 ## First platform administrator
 
-Platform administrators are users whose `role` is `admin`. This role is independent of organization
-roles. Promote the account you created during signup, then manage others from `/admin/users`:
+Platform administrators are users whose `role` is `admin`. Promote the account you created during
+signup, then manage others from `/admin/users`:
 
 ```sh
 bun run admin:create -- --email you@example.com --name 'You' --yes

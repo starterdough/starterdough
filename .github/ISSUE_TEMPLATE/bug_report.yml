@@ -15,7 +15,7 @@ body:
     attributes:
       label: Version
       description: The `version` in the root `package.json`, or the commit you are on.
-      placeholder: 0.3.0 (or 375834e)
+      placeholder: 1.0.0 (or 375834e)
     validations:
       required: true
 
@@ -72,12 +72,11 @@ body:
       label: Environment
       description: >-
         OS and version, `bun --version`, and anything non-default: which `ADAPTER`, which
-        optional providers are configured, local disk or S3/R2 storage, Docker or a host
-        Postgres.
+        optional providers are configured, Docker or a host Postgres.
       placeholder: |
         Windows 11 / macOS 15 / Ubuntu 24.04
         bun 1.4.2
-        ADAPTER=node, storage on local disk
+        ADAPTER=node, Postgres in Docker (bun run db:up)
     validations:
       required: true
 

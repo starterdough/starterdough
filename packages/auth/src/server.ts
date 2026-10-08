@@ -29,7 +29,8 @@ function normalizeName(value: unknown): string | undefined {
 		.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ')
 		.replace(/\s+/g, ' ')
 		.trim();
-	return cleaned.slice(0, MAX_NAME_LENGTH);
+	// In code points: `slice` counts UTF-16 units and would keep half of an emoji at the cut.
+	return Array.from(cleaned).slice(0, MAX_NAME_LENGTH).join('');
 }
 
 /** `beforeCreate`/`beforeUpdate` shape for anything with an optional `name`. */

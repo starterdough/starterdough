@@ -9,6 +9,7 @@
 	"shell_banner_verify_text": "Bestätige deine E-Mail-Adresse, um dein Konto abzusichern.",
 	"shell_boundary_error": "Beim Darstellen dieser Seite ist etwas schiefgelaufen.",
 	"shell_error_generic_description": "Der Fehler wurde aufgezeichnet. Neu laden hilft meistens; wenn es weiterhin passiert, wende dich an den Support und nenne die Referenz unten.",
+	"shell_impersonation_signed_out": "Diese App kann dich nicht zu deinem eigenen Konto zurückbringen und hat dich deshalb abgemeldet. Melde dich wieder mit deinem Konto an.",
 	"shell_impersonation_stop": "Impersonation beenden",
 	"shell_impersonation_stop_error": "Die Impersonation konnte nicht beendet werden",
 	"shell_impersonation_stopping": "Wird beendet…",

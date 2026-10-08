@@ -2,15 +2,15 @@
 	import { Alert, Button, FormField, Input } from '@repo/ui';
 	import { onMount } from 'svelte';
 	import { defaults, setError, superForm } from 'sveltekit-superforms';
-	import { browser } from '$app/environment';
-	import { replaceState } from '$app/navigation';
+	import { returnUrl } from '#lib/api.js';
+	import { authClient } from '#lib/auth.js';
+	import { spaForm, zodForm } from '#lib/forms.js';
+	import { m } from '#lib/paraglide/messages.js';
+	import { ForgotPasswordSchema } from '#lib/schemas.js';
+	import { withoutSensitiveParams } from '#lib/utils/redirect.js';
+	import { browser } from '$app/env';
+	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { returnUrl } from '$lib/api';
-	import { authClient } from '$lib/auth';
-	import { spaForm, zodForm } from '$lib/forms';
-	import { m } from '$lib/paraglide/messages';
-	import { ForgotPasswordSchema } from '$lib/schemas';
-	import { withoutSensitiveParams } from '$lib/utils/redirect';
 
 	let sent = $state(false);
 
@@ -18,7 +18,7 @@
 	// address bar (analytics, error reports and access logs all see the URL).
 	onMount(() => {
 		const stripped = withoutSensitiveParams(page.url);
-		if (stripped) replaceState(stripped, page.state);
+		if (stripped) void goto(stripped, { shallow: true, replace: true, state: page.state });
 	});
 
 	const sf = superForm(

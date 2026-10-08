@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { Card } from '@repo/ui';
-	import LocaleSwitcher from '$lib/components/LocaleSwitcher.svelte';
-	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import LocaleSwitcher from '#lib/components/LocaleSwitcher.svelte';
+	import ThemeToggle from '#lib/components/ThemeToggle.svelte';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { children } = $props();
 </script>
@@ -22,7 +22,7 @@
 <!--
 	The forms sit in a card rather than loose on the page: an unbounded column of inputs on a wide
 	viewport reads as debris, and the card gives the eye an edge to find them by. `min-h-screen`
-	rather than `h-screen`, so the tall pages (sign-up, an invitation) grow past the fold and scroll
+	rather than `h-screen`, so the tall pages (sign-up among them) grow past the fold and scroll
 	instead of centring their own top out of reach.
 
 	The wordmark is a label, not a link: `/` redirects into the app (`src/routes/+page.ts`), which

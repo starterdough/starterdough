@@ -8,9 +8,9 @@ and how to reproduce the scan on your own tree after you add dependencies.
 ## How the scan was done
 
 `scripts/licenses.ts` reads the metadata that is already on disk after an install: every
-`package.json` under a `node_modules`, plus the `*.dist-info/METADATA` files `uv sync` writes into
-the Python service's virtualenv. It adds no dependency of its own, so it cannot itself change what it is
-measuring.
+`package.json` under a `node_modules`, plus the `*.dist-info/METADATA` files of any Python
+virtualenv `uv sync` has written. It adds no dependency of its own, so it cannot itself change what
+it is measuring.
 
 ```sh
 bun install
@@ -34,8 +34,8 @@ installers are built from this tree, so the line between the two is not where th
 
 ### Result at 0.3.0
 
-823 packages: 775 npm, 48 Python. No AGPL, SSPL, GPL, BUSL, Commons Clause or non-commercial
-licence anywhere in either tree. Five entries needed a human:
+Every npm package in the tree. No AGPL, SSPL, GPL, BUSL, Commons Clause or non-commercial licence
+anywhere in it. Five entries needed a human:
 
 | Package | Declared | Verdict |
 | --- | --- | --- |
@@ -43,8 +43,6 @@ licence anywhere in either tree. Five entries needed a human:
 | `@img/sharp-<platform>` (e.g. `@img/sharp-win32-x64`) | Apache-2.0 AND LGPL-3.0-or-later | Notice below. The LGPL half is the bundled libvips binary. |
 | `@lix-js/sdk-win32-x64` | nothing declared | MIT. A native sidecar of `@lix-js/sdk` (MIT, same repository, `opral/lix`) that omits the field and ships no `LICENSE`. Attribution only. |
 
-The Python tree needed no notices; `protobuf` spells BSD-3-Clause in prose and `typing_extensions`
-uses `PSF-2.0`, both of which the scan normalises.
 
 ## Notice 1: `@sentry/cli` is FSL-1.1-MIT
 

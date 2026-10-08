@@ -10,21 +10,21 @@ import * as schema from './schema';
  * Only the API (Bun runtime) talks to the database. Frontends never import this
  * package; they go through the HTTP API (see README → "Single source of truth").
  *
- * Pool sizing: every process that loads this module (each API replica, each standalone worker)
- * may open up to `DATABASE_POOL_MAX` connections, and Postgres refuses anything beyond its
- * `max_connections` (100 by default). Keep
+ * Pool sizing: every process that loads this module (each API replica, and each replica of any
+ * other service built from the API image) may open up to `DATABASE_POOL_MAX` connections, and
+ * Postgres refuses anything beyond its `max_connections` (100 by default). Keep
  *
- *   api replicas × pool + workers × pool + migrate (2: lock + migrator) + backup/pg_dump (1)
+ *   those processes × pool + migrate (2: lock + migrator) + backup/pg_dump (1)
  *     + headroom for psql
  *
  * under that limit, or raise `max_connections` / put PgBouncer in front before scaling out.
- * The default of 10 per process leaves plenty of room for the compose setup (one api, one worker).
+ * The default of 10 per process leaves plenty of room for the compose setup (one of each service).
  */
 const poolMax = env.DATABASE_POOL_MAX;
 
 // `bun --hot` re-evaluates this module and would open a fresh pool each time, never closing the
-// previous one: keep the single pool on `globalThis` (same slot trick as the API's worker and
-// telemetry). Changing `DATABASE_URL` / `DATABASE_POOL_MAX` therefore needs a real restart.
+// previous one: keep the single pool on `globalThis` (same slot trick as the API's telemetry).
+// Changing `DATABASE_URL` / `DATABASE_POOL_MAX` therefore needs a real restart.
 const POOL = Symbol.for('starterdough.db.pool');
 const g = globalThis as typeof globalThis & { [POOL]?: SQL };
 // `connectionTimeout` (seconds) bounds a hung connect: the shared `/readyz` ping only settles

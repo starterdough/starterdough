@@ -6,9 +6,9 @@ are welcome; see the bottom of the page.
 
 ## The loop
 
-Follow `QUICKSTART.md` to copy and configure the environment files first. Run `bun run doctor`
-before starting the local database; use `bun run doctor -- --database=external` and omit `db:up`
-when you intentionally use an existing development database. The
+Set up once with `QUICKSTART.md`, where `bun run setup` writes the environment files. Run
+`bun run doctor` before starting the local database; use `bun run doctor -- --database=external`
+and omit `db:up` when you intentionally use an existing development database. The
 [worked feature example](apps/docs/src/content/docs/guides/feature-example.md) follows a shipped
 feature through the database, contract, permissions, localized form and tests.
 
@@ -53,7 +53,8 @@ The architecture depends on these. Breaking one is a bug:
   `messages/de`, keys sorted. The Astro sites are English only.
 - **Internal packages are consumed from source.** No build step, no `dist`.
 - **Generated files are regenerated, not edited:** `packages/db/src/schema/auth.ts` (`bun run
-  auth:schema`), the Paraglide output, `apps/api/openapi.json`, and `.svelte-kit`.
+  auth:schema`, then put back the hand-added constraints it names), the Paraglide output,
+  `apps/api/openapi.json`, and `.svelte-kit`.
 - **Shared components live in `packages/ui`.** Its README maps every export to the props the app
   uses. `apps/web` serves `/dev/ui` in development: every export in both themes with focus states
   visible. It is a 404 in every build. Check a component change there before shipping it.
@@ -73,6 +74,20 @@ at pre-commit.
   the tests next to them. `bun test` for the TypeScript packages and the API, Vitest (browser mode)
   for Svelte components, Playwright for the end-to-end suites.
 - Match the file you are editing.
+
+Tests against Postgres are named `*.db.test.ts` and skip themselves unless `DATABASE_URL` is set
+and `RUN_DB_TESTS=1`. The URL alone is not enough: the API's test preload sets a placeholder one for
+every test. CI's database job runs every tracked `*.db.test.ts` that mentions `RUN_DB_TESTS`
+against a migrated database, so a new one needs no workflow change. Run one yourself, against a
+database you can throw away, with `DATABASE_URL=postgres://… RUN_DB_TESTS=1 bun test ./<path>`.
+
+```ts
+import { describe, it } from 'bun:test';
+const enabled = Boolean(process.env.DATABASE_URL && process.env.RUN_DB_TESTS === '1');
+(enabled ? describe : describe.skip)('notes in Postgres', () => {
+	it('keeps a note', async () => { /* … */ });
+});
+```
 
 ## Decisions
 

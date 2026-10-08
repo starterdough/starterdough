@@ -1,15 +1,14 @@
 import { fileURLToPath } from 'node:url';
 import { paraglideVitePlugin } from '@inlang/paraglide-js';
 import cloudflare from '@sveltejs/adapter-cloudflare';
-import node from '@sveltejs/adapter-node';
 import staticAdapter from '@sveltejs/adapter-static';
-import type { KitConfig } from '@sveltejs/kit';
-import { sveltekit } from '@sveltejs/kit/vite';
+import { type Config, sveltekit } from '@sveltejs/kit/vite';
 import tailwindcss from '@tailwindcss/vite';
 import { playwright } from '@vitest/browser-playwright';
 import { loadEnv } from 'vite';
 import { defineConfig } from 'vitest/config';
 import { paraglideOptions } from './i18n.config.ts';
+import { nodeAdapter } from './node-adapter.ts';
 
 /**
  * One codebase, three deployment targets (README → "Serve anywhere"):
@@ -35,11 +34,11 @@ const adapter =
 		? cloudflare()
 		: target === 'static'
 			? staticAdapter({ fallback: 'index.html', pages: staticOutDir, assets: staticOutDir })
-			: node();
+			: nodeAdapter();
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 
-type CspConfig = NonNullable<KitConfig['csp']>;
+type CspConfig = NonNullable<Config['csp']>;
 /** `self`, a scheme or an origin; SvelteKit adds the quotes where CSP wants them. */
 type CspSource = NonNullable<NonNullable<CspConfig['directives']>['connect-src']>[number];
 
@@ -51,8 +50,8 @@ type CspSource = NonNullable<NonNullable<CspConfig['directives']>['connect-src']
  *
  * Third-party origins appear only when that integration is switched on:
  *  - `PUBLIC_API_URL`      the API (same origin on a single-origin deployment, where 'self' covers it)
- *  - `PUBLIC_STORAGE_ORIGIN`  the presigned-upload bucket, e.g. https://<bucket>.r2.cloudflarestorage.com.
- *                          Empty means the local storage driver, which lives on the API origin.
+ *  - `PUBLIC_STORAGE_ORIGIN`  an object-storage origin the browser talks to directly (an S3/R2
+ *                          bucket endpoint). Empty means none.
  *  - `PUBLIC_SENTRY_DSN`   the SDK posts envelopes to the DSN's host
  *  - `PUBLIC_POSTHOG_KEY`  events go to the PostHog host, lazily loaded bundles to its assets twin
  */
@@ -116,7 +115,7 @@ export default defineConfig(({ command, mode }) => ({
 		'import.meta.env.ADAPTER': JSON.stringify(target),
 	},
 	plugins: [
-		// i18n: compiles apps/web/messages/** into $lib/paraglide using the shared options in
+		// i18n: compiles apps/web/messages/** into #lib/paraglide using the shared options in
 		// i18n.config.ts. One module per locale while developing (few files, fast HMR); one module per
 		// message for builds so each route chunk carries only its own text.
 		paraglideVitePlugin({
@@ -132,7 +131,7 @@ export default defineConfig(({ command, mode }) => ({
 			},
 			adapter,
 			csp: csp(loadEnv(mode, root, 'PUBLIC_')),
-			// Registered by $lib/pwa.svelte.ts instead: production browsers only, never in the
+			// Registered by #lib/pwa.svelte.ts instead: production browsers only, never in the
 			// Tauri shells (their files ship in the bundle) and never in dev.
 			serviceWorker: { register: false },
 		}),
@@ -158,7 +157,7 @@ export default defineConfig(({ command, mode }) => ({
 				test: {
 					name: 'server',
 					environment: 'node',
-					include: ['src/**/*.{test,spec}.{js,ts}'],
+					include: ['src/**/*.{test,spec}.{js,ts}', '*.spec.ts'],
 					exclude: ['src/**/*.svelte.{test,spec}.{js,ts}'],
 				},
 			},

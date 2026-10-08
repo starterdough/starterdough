@@ -136,7 +136,9 @@ services:
       NODE_ENV: production
       PORT: '3000'
       HOST: 0.0.0.0
-      ORIGIN: ${WEB_URL:-https://app.${DOMAIN:?set DOMAIN in .env}}
+      # No ORIGIN: adapter-node 6 dropped it and takes the origin from the Host header Caddy
+      # passes through, over https. The app has no form actions for SvelteKit's CSRF origin check
+      # to guard; the API checks its own callers (apps/api/src/middleware/csrf.ts, rpc/handler.ts).
       PUBLIC_API_URL: ${API_URL:-https://app.${DOMAIN:?set DOMAIN in .env}}
       # Internal API origin for SSR
       API_URL: http://demo-api:3000

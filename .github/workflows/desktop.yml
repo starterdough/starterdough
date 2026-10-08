@@ -24,12 +24,12 @@
 #   PUBLIC_WEB_URL         REQUIRED. Deployed web origin; the shell sends external return
 #                          trips there through the system browser, since its own origin
 #                          (`tauri.localhost`) is unroutable.
-#   PUBLIC_STORAGE_ORIGIN  Optional. Origin of the presigned upload URLs (the S3/R2 bucket endpoint).
-#                          Leave empty for the local disk driver, whose URLs are on the API origin.
-#                          Without it the shipped CSP blocks every document upload.
+#   PUBLIC_STORAGE_ORIGIN  Optional. An object-storage origin the app talks to directly (an S3/R2
+#                          bucket endpoint), added to the shipped CSP. Leave empty when there is none.
 #   PUBLIC_SENTRY_DSN      Optional. Enables Sentry in the shipped app and allows its host in the CSP.
 #   PUBLIC_POSTHOG_KEY     Optional. Enables PostHog; PUBLIC_POSTHOG_HOST overrides https://us.i.posthog.com
-# Repository secrets, all optional (installers are unsigned until they exist):
+# Repository secrets, all optional (macOS installers are unsigned until they exist; this workflow
+# has no Windows signing step, and Linux packages are unsigned as usual):
 #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD  base64 .p12 Developer ID certificate + password
 #   APPLE_SIGNING_IDENTITY                         optional, pins the identity in that certificate
 #   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID        Apple ID + app-specific password for notarization
@@ -211,7 +211,7 @@ jobs:
           for file in dist/*; do
             case "$(basename "$file")" in
               *"$VERSION"*) ;;
-              # rpm writes Starterdough-0.3.0-1.x86_64.rpm, the rest use _0.3.0_; both contain the version.
+              # rpm writes Starterdough-1.0.0-1.x86_64.rpm, the rest use _1.0.0_; both contain the version.
               *) echo "::error::$file does not carry version $VERSION"; exit 1 ;;
             esac
           done
@@ -247,7 +247,7 @@ jobs:
         run: |
           set -euo pipefail
           ls -l dist
-          notes="Desktop installers for $VERSION. Unsigned unless the signing secrets are configured (see .github/workflows/desktop.yml)."
+          notes="Desktop installers for $VERSION. macOS builds are signed and notarised only when the Apple secrets are configured; Windows and Linux installers are unsigned (see .github/workflows/desktop.yml)."
           if gh release view "$TAG" >/dev/null 2>&1; then
             # A re-run of the same tag replaces the assets rather than deleting a release that may
             # already have notes written on it.

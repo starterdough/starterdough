@@ -2,8 +2,8 @@
 	import LanguagesIcon from '@lucide/svelte/icons/languages';
 	import { Button, DropdownMenu } from '@repo/ui';
 	import { onMount } from 'svelte';
-	import { getLocale, type Locale, localeName, locales, switchLocale } from '$lib/i18n';
-	import { m } from '$lib/paraglide/messages';
+	import { getLocale, type Locale, localeName, locales, switchLocale } from '#lib/i18n.js';
+	import { m } from '#lib/paraglide/messages.js';
 
 	interface Props {
 		class?: string;

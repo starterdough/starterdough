@@ -19,6 +19,7 @@ across every workspace that defines the script.
 
 | Command | What |
 | --- | --- |
+| `bun run setup` | Create every local `.env` from the `.env.example` next to it, or complete an existing one: generated secrets and the sites' local `SITE_URL`. Fills only absent or blank rows, never prints a secret, and is safe to rerun |
 | `bun run doctor` | Read-only local setup check: Bun, dependencies, app configuration, Docker CLI, Compose and daemon. `-- --database=external` skips Docker for your existing database; `-- --build` adds site/docs build configuration. Does not connect to Postgres or apply migrations |
 | `bun run verify` | `lint`, `check` and `test` in CI's order. The pre-push command. Add `bun run build` for the whole pipeline |
 | `bun run check` | `turbo check`: svelte-check in the app and packages, `astro check` in the sites |
@@ -37,15 +38,14 @@ across every workspace that defines the script.
 | --- | --- |
 | `bun run db:up` · `bun run db:down` | Postgres 17 + pgvector (`pgvector/pgvector:pg17`) in Docker via `infra/compose.dev.yml` (host port `POSTGRES_PORT`, default 5433) |
 | `bun run db:migrate` | apply `packages/db/drizzle/*.sql`, then verify nothing is still pending and **exit 1** if something is. A branch merge can interleave migration timestamps, which Drizzle's migrator would otherwise skip |
-| `bun run db:generate` | generate a migration from the schema |
-| `bun run db:push` | push the schema without a migration (development only) |
+| `bun run db:generate` | generate a migration from the schema, then apply it with `db:migrate`. Every schema change goes through a migration, in development too: a migration can carry SQL the schema cannot describe (triggers, data fixes), and a database that skipped it no longer matches production |
 | `bun run db:studio` | Drizzle Studio |
 
 ## Auth and admin
 
 | Command | What |
 | --- | --- |
-| `bun run auth:schema` | regenerate the Better Auth tables after changing plugins. Then `db:generate` and `db:migrate` |
+| `bun run auth:schema` | regenerate the Better Auth tables after changing plugins. It **exits 1** until you put back the hand-added constraints it names ([how](/guides/authentication/#changing-auth-plugins)); then `db:generate`, check that the migration drops none of them, and `db:migrate` |
 | `bun run admin:create -- --email … [--name …] [--yes]` | create or promote the first platform administrator. The password comes from `ADMIN_PASSWORD` or an interactive prompt, never from the command line (arguments land in shell history and `ps`). It runs through the kit's own auth config with no `bunx` and no network, so it works inside the API container too. `--yes` is required to promote an account that already exists |
 
 ## API
@@ -53,14 +53,13 @@ across every workspace that defines the script.
 | Command | What |
 | --- | --- |
 | `bun run api:openapi` | write `apps/api/openapi.json` for non-TypeScript client generation |
-| `bun run --cwd apps/api worker` | run the job worker as its own process (then `WORKER_ENABLED=false` on the API) |
 
 ## Operations (`infra/`)
 
 | Command | What |
 | --- | --- |
 | `docker compose up -d --build` | production stack from the repository root (`COMPOSE_FILE` in `.env`) |
-| `COMPOSE_PROFILES=backup` in `.env`, then `docker compose up -d` | nightly `pg_dump` (+ uploads); `run --rm backup bun src/cli.ts backup\|list\|restore`. Profiles live in `.env`, not on the command line: `deploy.sh --remove-orphans` drops containers of profiles it cannot see |
+| `COMPOSE_PROFILES=backup` in `.env`, then `docker compose up -d` | nightly backups (`infra/backup`); `run --rm backup bun src/cli.ts backup\|list\|restore`. Profiles live in `.env`, not on the command line: `deploy.sh --remove-orphans` drops containers of profiles it cannot see |
 | `sudo REPO_URL=… EXPOSE=tailscale bash infra/scripts/provision.sh` | one-time VPS setup, as root (`EXPOSE=public` opens 80/443): Docker, Tailscale, deploy user, firewall, clone, `.env`. Or `curl … \| sudo … bash` as in the runbook |
 | `bash infra/scripts/deploy.sh` | pull `IMAGE_TAG`, restart, wait healthy, hit `/readyz` (what CI runs over SSH) |
 | `docker run --rm -i -e API_URL=… grafana/k6 run - < infra/loadtest/k6/smoke.js` | load test the API |
@@ -75,11 +74,11 @@ with `bun run --cwd apps/<app> <script>`.
 | App | Commands |
 | --- | --- |
 | `apps/web` | `build` (node) · `build:node` · `build:cloudflare` · `build:static` · `build:static:desktop` (into `build-static/`, what the Tauri shell bundles) · `preview` · `check` · `test` · `test:e2e` · `i18n:compile` · `deploy:cloudflare` |
-| `apps/api` | `dev` · `worker` · `bun test` · `openapi` |
 | `apps/site`, `apps/docs` | `dev` · `build` · `preview` · `check` · `deploy:cloudflare` (`astro build && wrangler deploy`) |
 | `apps/native` | `dev:desktop` · `build:desktop` · `android:init|dev|build` · `ios:init|dev|build` · `icons` |
 | `packages/ui` | `bunx shadcn-svelte@latest add <name> -c packages/ui` |
 | `infra/backup` | `bun src/cli.ts backup\|list\|restore\|schedule` (image: `infra/backup/Dockerfile`) |
+| `apps/api` | `dev` · `bun test` · `openapi` |
 
 ## Environment flags
 
@@ -89,4 +88,4 @@ with `bun run --cwd apps/<app> <script>`.
 | `STATIC_OUT_DIR` | where `ADAPTER=static` writes (default `build`, the same directory the server adapters use). `build:static:desktop` sets it to `build-static` so a desktop build and a server build cannot overwrite each other |
 | `SKIP_ENV_VALIDATION=1` | relax the API's env validation for steps that never boot the app (type checks, CI builds). Never for `dev` or `migrate`. Values are still parsed, so they keep their real types. Only the cross-field production rules are skipped, and `DATABASE_URL` / `BETTER_AUTH_SECRET` get placeholders |
 | `ADMIN_PASSWORD` | password for `admin:create`, instead of the interactive prompt |
-| `SITE_URL` | canonical origin for the Astro builds. Each site has its own. `astro build` **fails** without it, and fails on an `example.com` placeholder. `astro dev` and `astro check` fall back to `localhost:4321` / `:4322` |
+| `SITE_URL` | canonical origin for the Astro builds. Each site has its own. `astro build` **fails** without it, and fails on an `example.com` placeholder; `deploy:cloudflare` also refuses a localhost one. `astro dev` and `astro check` fall back to `localhost:4321` / `:4322` |

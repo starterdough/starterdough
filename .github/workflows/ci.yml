@@ -1,6 +1,7 @@
 # Every third-party action is pinned to a full commit SHA with its version in a trailing comment: a
 # moving tag like `@v5` is whatever that repository points it at when the job starts.
-# .github/dependabot.yml opens the bump PRs (it rewrites both the SHA and the comment).
+# The pins move with each release of the kit (UPGRADING.md). A fork that wants them bumped sooner
+# can add a .github/dependabot.yml for the `github-actions` ecosystem.
 
 name: CI
 
@@ -112,12 +113,11 @@ jobs:
           # so generate throwaway ones (a later line in .env wins) to exercise the interpolation.
           {
             echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)"
-            echo "SERVICE_TOKEN=$(openssl rand -hex 24)"
             echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)"
           } >> .env
           docker compose config --quiet
           # Every optional service too: a profile is the easiest place for a YAML mistake to hide.
-          COMPOSE_PROFILES=worker,backup,monitoring,observability docker compose config --quiet
+          COMPOSE_PROFILES=backup,monitoring,observability docker compose config --quiet
           # Exercise the actual db:up/db:down options in an isolated fixture. This catches either
           # script dropping the root env file or selecting production's Compose project/volumes.
           python3 infra/scripts/dev-compose.test.py
@@ -126,7 +126,6 @@ jobs:
           cp infra/demo/.env.example .env.demo
           {
             echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)"
-            echo "SERVICE_TOKEN=$(openssl rand -hex 24)"
             echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)"
           } >> .env.demo
           docker compose --env-file .env.demo -f infra/demo/compose.yml config --quiet
@@ -277,9 +276,9 @@ jobs:
             caddy fmt --diff demo.caddy
           bash infra/caddy/static-routing.test.sh
 
-  # Production's five images plus demo-static, built but never pushed: a Dockerfile that stops
-  # building must fail on the pull request, not on the push to `main` that deploys. Keep the matrix
-  # in step with .github/workflows/deploy.yml.
+  # Production's images (api, web, caddy, backup) plus demo-static, built but never pushed: a
+  # Dockerfile that stops building must fail on the pull request, not on the push to `main` that
+  # deploys. Keep the matrix in step with .github/workflows/deploy.yml.
   docker:
     name: Build image (${{ matrix.name }})
     if: github.event_name == 'pull_request'
@@ -366,9 +365,7 @@ jobs:
           sudo apt-get install -y -qq postgresql-client-17
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
           /usr/lib/postgresql/17/bin/pg_dump --version | grep -q ' 17\.' || { echo "::error::pg_dump 17 not found"; exit 1; }
-      # The queue, ledger and lock SQL tests (`packages/db/src/queue.test.ts`) skip themselves without
-      # a DATABASE_URL; here they get the service database, migrated first. `bun test` alone never
-      # touches Postgres, so this is the only place the lock-holder and idempotency SQL runs in CI.
+      # Every migration, applied to an empty Postgres the way a first deploy applies them.
       - run: |
           bun run --cwd packages/db src/migrate.ts
           cd packages/db && bun test
@@ -387,3 +384,26 @@ jobs:
       - run: bun run --cwd infra/backup test
         env:
           BACKUP_TEST_DATABASE_URL: postgres://starterdough:starterdough@127.0.0.1:5432/starterdough
+      # Your own database tests, found by name: every tracked `*.db.test.ts` that opts in with
+      # RUN_DB_TESTS, the convention CONTRIBUTING.md describes. A kit suite with a flag of its own has
+      # its own step and is not picked up here. With no such file this step passes having run nothing.
+      # The list is NUL-separated and unquoted, so a name with a space or a non-ASCII letter arrives as
+      # one path. It is read on fd 3, so a test that reads stdin cannot swallow the rest of it.
+      - name: Database tests that opt in with RUN_DB_TESTS
+        run: |
+          git ls-files -z -- '*.db.test.ts' > "$RUNNER_TEMP/db-tests"
+          failed=0
+          while IFS= read -r -d '' file <&3; do
+            # grep exits 1 when the file does not opt in, and 2 when it cannot read it.
+            found=0
+            grep -qw RUN_DB_TESTS -- "$file" || found=$?
+            case "$found" in
+              0) bun test "./$file" || failed=1 ;;
+              1) ;;
+              *) echo "::error::Could not read $file"; failed=1 ;;
+            esac
+          done 3< "$RUNNER_TEMP/db-tests"
+          exit "$failed"
+        env:
+          DATABASE_URL: postgres://starterdough:starterdough@127.0.0.1:5432/starterdough
+          RUN_DB_TESTS: '1'

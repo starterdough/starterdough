@@ -1,7 +1,7 @@
 import { createTanstackQueryUtils } from '@orpc/tanstack-query';
 import { ORPCError } from '@repo/api-client';
 import { QueryClient } from '@tanstack/svelte-query';
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { api } from './api';
 
 /**
@@ -27,7 +27,7 @@ let browserClient: QueryClient | undefined;
 
 /**
  * The QueryClient for the current page (root `+layout.ts`). One per browser session (the layout
- * load re-runs on `invalidateAll()` and must not wipe the cache) and one per request on the
+ * load re-runs on `refreshAll()` and must not wipe the cache) and one per request on the
  * server. Queries are disabled during SSR: they would run with the server's plain `fetch` (no
  * session cookie). Pages that need data in the HTML fetch it in `load` with `apiFor(fetch)`.
  */

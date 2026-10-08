@@ -44,6 +44,18 @@ const KEEP_VERBATIM = new Set([
 	'scripts/rename.ts',
 ]);
 
+/**
+ * The seller's tools that generate and publish the free edition, their tests, and the files they
+ * carry into it. They name the seller's repositories and site on purpose, and their tests, which
+ * `bun run test` runs in your fork too, check those literal names: renamed, the tools would point
+ * at repositories you do not own and the tests would fail. The free edition ships none of them.
+ */
+const SELLER_TOOLING: RegExp[] = [];
+
+function sellerTooling(path: string): boolean {
+	return SELLER_TOOLING.some((pattern) => pattern.test(path));
+}
+
 /** Lockfiles are regenerated, not edited; the rest is generated or binary. */
 const SKIP_PATTERNS = [/\.lock$/, /(^|\/)src-tauri\/gen\//, /(^|\/)dist\//, /(^|\/)build\//];
 const BINARY_EXTENSIONS = new Set([
@@ -245,6 +257,7 @@ async function trackedFiles(): Promise<string[]> {
 
 function skipped(path: string): string | undefined {
 	if (KEEP_VERBATIM.has(path)) return 'describes the kit, not your product';
+	if (sellerTooling(path)) return "the seller's free-edition tooling";
 	if (SKIP_PATTERNS.some((pattern) => pattern.test(path))) return 'generated or a lockfile';
 	const extension = basename(path).split('.').pop()?.toLowerCase();
 	if (extension && BINARY_EXTENSIONS.has(extension)) return 'binary';
@@ -326,7 +339,10 @@ const verbatimSites = await (async () => {
 	});
 	const stdout = await new Response(grep.stdout).text();
 	await grep.exited;
-	return stdout.split('\n').filter(Boolean);
+	// Only what you may want to repoint: the seller's tooling names the seller on purpose.
+	return stdout
+		.split('\n')
+		.filter((line) => line && !sellerTooling(line.slice(0, line.indexOf(':'))));
 })();
 
 const oldSlug = current.slug;
@@ -342,7 +358,8 @@ Residue checklist — none of this is a text substitution, so the script left it
      docker volume create ${slug}_pgdata
      docker run --rm -v ${oldSlug}_pgdata:/from -v ${slug}_pgdata:/to alpine sh -c 'cd /from && cp -a . /to'
 
-   (repeat for ${oldSlug}_uploads and, for the dev database, ${oldSlug}-dev_pgdata → ${slug}-dev_pgdata)
+   (repeat for every other volume \`docker volume ls --filter name=${oldSlug}_\` lists and, for the
+   dev database, ${oldSlug}-dev_pgdata → ${slug}-dev_pgdata)
    — or, if you have no data worth keeping, delete the old ones and start clean:
 
      bun run db:down && docker volume rm ${oldSlug}-dev_pgdata && bun run db:up && bun run db:migrate
@@ -378,7 +395,7 @@ ${verbatimSites.map((line) => `     ${line}`).join('\n') || '     (none found)'}
 9. Product copy is still ours: the landing and legal pages under apps/site/src/content, the docs
    under apps/docs/src/content, the OG images, and the blog posts. Read them before you publish.
 
-Then: bun install && bun run verify
+Then: bun install && bun run lint:fix && bun run verify
 `);
 
 if (!args.write) {

@@ -1,12 +1,110 @@
 # @repo/native
 
-Tauri 2 shell for desktop (Windows, macOS, Linux) and mobile (Android, iOS).
+Tauri 2 shell for desktop (Windows, macOS, Linux), with mobile (Android, iOS) scripts that have not
+been run yet. It opens the static build of `@repo/web` in the operating system's webview, and the
+frontend talks to the API over HTTP exactly like the browser does.
 
-**No IPC by design (D9, D26).** The shell loads the static build of `@repo/web`. The frontend talks
-to the API over HTTP exactly like the browser does. The Rust side (`src-tauri/src/lib.rs`) only
-grows for native capabilities the web platform lacks (tray, autostart, deep links, updater,
-notifications, biometrics), as Tauri plugins, never as a data layer. The frontend does not import
+**No IPC by design (D9, D26).** The Rust side (`src-tauri/src/lib.rs`) only grows for native
+capabilities the web platform lacks (tray, autostart, deep links, updater, notifications,
+biometrics), as Tauri plugins, never as a data layer. The frontend does not import
 `@tauri-apps/api`.
+
+## Status, in plain words
+
+A desktop build runs the whole app with email and password sign-in. It is a starting point, not a
+finished desktop product: social sign-in and passkeys are not available in it, an account with
+two-factor turned on cannot sign in to it yet, admins cannot impersonate users from it, the session
+token is not in the OS keychain, there is no auto-update, Windows installers are unsigned, and
+nothing is set up for any app store. Mobile has never been initialised or run. The two lists below
+say what works and what does not, so you can decide what to finish before you ship.
+
+What has been run by hand, on Windows only: sign-up, sign-in, sign-out, reloads and the language
+choice, in `dev:desktop`, `preview:desktop` and a release binary (D26 in `docs/DECISIONS.md`, early
+September 2026; the app has changed a lot since). Nobody has yet run the macOS or Linux shell, or
+installed what the Desktop workflow builds. Treat your first release as the test.
+
+## What works in a shell build
+
+- **Email and password sign-in**, with email verification and password reset. The session is a
+  bearer token, so it survives restarts. Two-factor can be turned on and off in the shell's
+  settings, but read the first item of the next list before you rely on it.
+- **The rest of the app.** Its screens make plain HTTP calls to the API, the same as in a browser,
+  so they need nothing special in the shell. The one exception is the admin panel's Impersonate,
+  in the next list.
+- **Emailed links** (verification, password reset, email change, account deletion) point at
+  `PUBLIC_WEB_URL`, so they open the web app in the user's browser. After verifying an address
+  there, the user comes back to the shell and signs in. Every such link is built by `returnUrl()`
+  in `apps/web/src/lib/api.ts`, and a test fails if a page builds one from `location.origin`, which
+  in the shell is an address no browser can open.
+- **External links** open in the system browser (`on_navigation` in `src-tauri/src/lib.rs`). The
+  webview never leaves the app, because a shell has no address bar and no back button.
+
+## What does not work yet
+
+- **Signing in to an account that has two-factor turned on.** Better Auth keeps the half-finished
+  sign-in in a cookie (`two_factor`) until the code is checked. The shell's page and the API are
+  different sites, and a browser engine drops a `SameSite=Lax` cookie that a cross-site `fetch`
+  tries to set, so the code check would fail ("invalid two factor cookie"). This was checked in
+  Chromium, the engine behind WebView2, with a page and an API on different sites, not in a shell;
+  WebKit, behind the macOS and Linux webviews, is at least as strict. (`dev:desktop` would get away
+  with it, because `localhost:5175` and `localhost:3000` count as the same site.) So the shell's
+  code page says the app cannot finish this step and points back to sign-in, and its security
+  settings warn before two-factor is turned on (`TWO_FACTOR_SIGN_IN_AVAILABLE`). Until it is fixed,
+  an account with two-factor on can only use the web app. The fix is the bearer plugin's trick
+  applied to that one cookie: the API hands its value to the client in a response header, the client
+  sends it back in a request header on `/two-factor/*`, and the API turns it back into the cookie;
+  then lift the constant.
+- **GitHub and Google sign-in.** Hidden in shell builds (`SOCIAL_SIGN_IN_AVAILABLE` in
+  `apps/web/src/lib/api.ts`). The provider's page opens in the system browser, and the round trip
+  ends with a session cookie in that browser, so at best the user is signed in to the web app there
+  while the shell stays on its sign-in page. Making it work needs a way back into the app:
+  `tauri-plugin-deep-link` (a `starterdough://` scheme) with `tauri-plugin-single-instance`, a
+  Better Auth hook that redirects to that scheme with a short-lived one-time code (never the session
+  token itself), and an API endpoint that trades the code for a bearer token. The Rust side can
+  hand the code over by navigating the webview to an app page, so the no-IPC rule can stay. Plan on
+  about a week, including registering the scheme on each OS.
+- **Passkeys.** The shell can neither sign in with a passkey nor add one, so it offers neither
+  (`PASSKEYS_AVAILABLE`). WebAuthn ties a passkey to the web app's hostname (the API's `rpID`,
+  taken from `WEB_URL`) and refuses, with a `SecurityError`, on any page whose own origin is on a
+  different host. The shell's origin is `tauri://localhost` or `http://tauri.localhost`. Passkeys
+  added in a browser are still listed in the shell's security settings, where they can be renamed
+  or removed. Real native passkeys need a platform plugin plus Apple associated domains and Android
+  Digital Asset Links: weeks of work, not days.
+- **Impersonating a user from the admin panel.** Better Auth swaps the session for the other
+  user's, which the bearer plugin hands to the shell, and parks the admin's own session in an
+  `admin_session` cookie. That cookie is dropped for the same cross-site reason as `two_factor`, so
+  "Stop impersonating" could never bring the admin back. The shell's admin panel has no Impersonate
+  button and says to use the web app (`IMPERSONATION_AVAILABLE`). If a shell is impersonating
+  anyway, as an older build could be, "Stop impersonating" signs that session out and the admin
+  signs in again. The fix is the same header trick as for two-factor, applied to `admin_session`.
+- **Secure token storage.** The bearer token sits in the webview's `localStorage`, an ordinary file
+  in the app's data directory. Any script running in the webview can read it, and anyone who can
+  read the user's files can copy it. It is valid for 7 days and renewed as it is used. The fix is an
+  OS-keychain (or Stronghold) plugin behind the existing `TokenStore` interface. That one does need
+  a little IPC, because the webview has to get the token back from Rust; record it as a decision.
+- **Auto-update.** `tauri-plugin-updater` is not wired. An installed app stays on its version until
+  the user downloads a new installer. The header of `.github/workflows/desktop.yml` lists the steps
+  (a signing key pair, the `.sig` files and a `latest.json`).
+- **Signed installers.** macOS builds are signed and notarised only when the Apple secrets listed in
+  `desktop.yml` are set, which needs a paid Apple Developer account. The workflow has no Windows
+  signing step at all, so Windows installers are always unsigned and SmartScreen warns before they
+  run. Linux packages are unsigned, which is usual there.
+- **App stores.** Nothing is prepared for the Mac App Store, the Microsoft Store, Google Play or the
+  App Store (sandboxing, store manifests, review). The Desktop workflow drafts a GitHub release with
+  plain installers, and publishing it is up to you.
+- **Mobile.** Never initialised, built or run. `src-tauri/gen/android` and `src-tauri/gen/apple` do
+  not exist; `android:init` and `ios:init` create them on a machine with Android Studio and the NDK,
+  or Xcode. Set your own bundle identifier first: `bun run rename` takes it as `--identifier`,
+  together with the `--name`, `--slug` and `--scope` it also requires, for example
+  `bun run rename --name Acme --slug acme --identifier com.acme.desktop --scope @acme --write`. The
+  default, `dev.starterdough.native`, ends in `native`, a Java keyword that an Android package name
+  cannot contain. Then come icons, testing on real devices, and every item in this list again.
+- **Tray, autostart, notifications.** None of these exist yet.
+- **The remote (thin-client) mode** described below has not been tried. `is_app_url` in
+  `src-tauri/src/lib.rs` treats every origin except the bundled one and the dev server as external
+  and hands it to the system browser, so add your web app's origin there first. That mode runs the
+  web build (cookies, not bearer tokens), so the GitHub and Google buttons come back, with the same
+  dead end as above.
 
 ## Prerequisites
 
@@ -39,6 +137,9 @@ anything under `src-tauri/` changes, so `tauri.build.conf.json` lives one level 
   kept in `localStorage` and sent as `Authorization: Bearer …` by `@repo/auth/client` and
   `@repo/api-client`. Sign-out clears it. The webview's storage lives in the app's data directory
   (`%LOCALAPPDATA%\dev.starterdough.native\EBWebView` on Windows), so the session survives restarts.
+  Inside the shell (`usesBearerAuth` plus Tauri's `__TAURI_INTERNALS__`), the app also turns off
+  social sign-in, passkeys, the two-factor step and impersonation (see above); the same static
+  build served from a static host keeps them.
 - **Locale** is resolved `cookie → localStorage → navigator.languages → en`
   (`apps/web/project.inlang/paraglide.config.ts`). `setLocale()` writes both stores, so webviews
   that drop cookies between launches still find the choice in `localStorage`.
@@ -71,7 +172,7 @@ anything under `src-tauri/` changes, so `tauri.build.conf.json` lives one level 
   Linux), capped at 1 MB plus one rotation. Debug builds also print to the terminal. A failure
   before the window exists also drops `dev.starterdough.native-startup-error.txt` in the temp
   directory. Ask for both when a user reports "it opens and closes again".
-- **No service worker, no install prompt.** `$lib/pwa.svelte.ts` detects `__TAURI_INTERNALS__`.
+- **No service worker, no install prompt.** `#lib/pwa.svelte.js` detects `__TAURI_INTERNALS__`.
 
 ## Debugging the webview
 
@@ -93,9 +194,10 @@ disconnects.
    `bun run --cwd apps/web build:static:desktop` (`STATIC_OUT_DIR=build-static`, so a desktop build
    never overwrites a web build in `apps/web/build`). The shell works offline for its own files.
    The API URL is baked in via `PUBLIC_API_URL` at build time.
-2. **Remote (thin client).** Set `frontendDist` to `https://app.example.com` and grant that origin
-   in a capability (`remote.urls`). Ship the app once, update the frontend by deploying the web app.
-   The web app then runs with cookies against its own origin, exactly like the browser.
+2. **Remote (thin client), untried.** Set `frontendDist` to `https://app.example.com`, grant that
+   origin in a capability (`remote.urls`) and add it to `is_app_url` in `src-tauri/src/lib.rs`
+   (see above). Ship the app once, update the frontend by deploying the web app. The web app then
+   runs with cookies against its own origin, exactly like the browser.
 
 ## Releases
 
@@ -110,17 +212,5 @@ anything is built, and each leg re-checks that every file it produced carries th
 Required repository variables (Settings → Secrets and variables → Actions → Variables):
 `PUBLIC_API_URL` and `PUBLIC_WEB_URL`. Unset or still an `example.com` placeholder fails the run.
 Optional: `PUBLIC_STORAGE_ORIGIN` (needed for S3/R2 uploads to pass the CSP), `PUBLIC_SENTRY_DSN`,
-`PUBLIC_POSTHOG_KEY`, `PUBLIC_POSTHOG_HOST`. Signing and notarisation secrets are listed at the top
-of the workflow. Without them the binaries are unsigned, and Windows SmartScreen and macOS
-Gatekeeper warn.
-
-## Not included yet
-
-- **OAuth inside the shell.** Social sign-in is a redirect to a third party and back to
-  `WEB_URL`, which does not work inside a cookie-less webview. The plan is
-  `tauri-plugin-deep-link` (`starterdough://` scheme), a Better Auth hook that puts the session
-  token on the deep-link callback, and `tauri-plugin-opener` so that flow runs in the system
-  browser. Until then use email/password (+ 2FA / passkeys) in the shell.
-- **Updater** (`tauri-plugin-updater`, signed releases; needs the owner's key pair), **tray /
-  autostart / notifications**, **Android / iOS init** (needs Android Studio / Xcode on the machine),
-  **secure token storage** (Stronghold or an OS-keychain plugin instead of `localStorage`).
+`PUBLIC_POSTHOG_KEY`, `PUBLIC_POSTHOG_HOST`. The macOS signing and notarisation secrets are listed
+at the top of the workflow; without them the macOS binaries are unsigned too, and Gatekeeper warns.

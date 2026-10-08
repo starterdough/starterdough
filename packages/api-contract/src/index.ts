@@ -1,5 +1,12 @@
-import { oc } from '@orpc/contract';
 import { z } from 'zod';
+import {
+	adminProcedure,
+	controlCharacterRule,
+	isPlainText,
+	isSingleLine,
+	protectedProcedure,
+	publicProcedure,
+} from './procedures';
 
 /**
  * API contract: the single source of truth consumed by every frontend
@@ -8,6 +15,9 @@ import { z } from 'zod';
  *
  * Rules of the road:
  *  - Define shape + routing here, implement in `apps/api/src/rpc/router.ts`.
+ *  - A feature can keep its procedures in a file of its own next to this one: build them with the
+ *    builders and text rules in `./procedures`, export them as one object and spread it into
+ *    `contract` below.
  *  - Every procedure gets an explicit `route` so it is also a plain REST endpoint.
  *  - Auth-protected procedures extend `protectedProcedure` so `UNAUTHORIZED`/`FORBIDDEN`
  *    are typed on the client.
@@ -37,31 +47,6 @@ export const AuthConfigSchema = z.object({
 	requireEmailVerification: z.boolean(),
 });
 export type AuthConfig = z.infer<typeof AuthConfigSchema>;
-
-/**
- * Control characters in stored free text are refused here, at the edge every caller passes: a
- * newline in a name becomes a second email header, and a stray code point in a
- * `content-disposition` filename throws where the header is built.
- *
- * `allowWhitespace` keeps tab, LF and CR, for the one field where paragraphs are legitimate.
- */
-function hasControlCharacter(value: string, allowWhitespace: boolean): boolean {
-	for (const character of value) {
-		const code = character.codePointAt(0) ?? 0;
-		if (allowWhitespace && (code === 9 || code === 10 || code === 13)) continue;
-		if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return true;
-	}
-	return false;
-}
-
-const controlCharacterRule = {
-	error: 'Remove line breaks and control characters',
-	// `params` lets UIs recognise the rule and phrase it in the user's language.
-	params: { reason: 'control_characters' },
-} as const;
-
-const isSingleLine = (value: string) => !hasControlCharacter(value, false);
-const isPlainText = (value: string) => !hasControlCharacter(value, true);
 
 // ── Admin schemas (platform administrators, Better Auth `user.role`) ───────────────────────────
 
@@ -132,18 +117,6 @@ export const ContactInputSchema = z.object({
 	website: z.string().max(200).optional(),
 });
 export type ContactInput = z.infer<typeof ContactInputSchema>;
-
-// ── Base builders ──────────────────────────────────────────────────────────────
-
-const publicProcedure = oc;
-
-const protectedProcedure = oc.errors({
-	UNAUTHORIZED: { message: 'You must be signed in.' },
-	FORBIDDEN: { message: 'You do not have access to this resource.' },
-});
-
-/** Same errors; `FORBIDDEN` additionally covers "signed in but not a platform admin". */
-const adminProcedure = protectedProcedure;
 
 // ── Contract ───────────────────────────────────────────────────────────────────
 

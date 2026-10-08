@@ -11,8 +11,8 @@
 	},
 	"scripts": {
 		"check": "tsc --noEmit",
-		"test": "bun test",
-		"schema": "SKIP_ENV_VALIDATION=1 bunx --bun auth@1.7.3 generate --config src/server.ts --output ../db/src/schema/auth.ts --adapter drizzle --dialect postgresql --yes",
+		"test": "bun test --isolate",
+		"schema": "SKIP_ENV_VALIDATION=1 bunx --bun auth@1.7.3 generate --config src/server.ts --output ../db/src/schema/auth.ts --adapter drizzle --dialect postgresql --yes && bun ../db/src/schema/auth-constraints.ts",
 		"create-admin": "bun --env-file=../../.env run scripts/create-admin.ts"
 	},
 	"dependencies": {

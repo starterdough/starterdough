@@ -8,10 +8,10 @@ import {
 } from './paraglide/runtime';
 
 /**
- * Locale utilities on top of the Paraglide runtime (`$lib/paraglide/runtime`, generated from
+ * Locale utilities on top of the Paraglide runtime (`#lib/paraglide/runtime`, generated from
  * `apps/web/messages/**`; see project.inlang/paraglide.config.ts for the strategy).
  *
- * Text comes from `import { m } from '$lib/paraglide/messages'`; this module covers what is not
+ * Text comes from `import { m } from '#lib/paraglide/messages.js'`; this module covers what is not
  * a message: the switcher, `<html lang>` on the client, Intl formatting and Zod's own messages.
  */
 
@@ -127,7 +127,7 @@ export function formatRelative(value: Date | string | number, now = Date.now()):
 
 /**
  * Zod's built-in messages ("Invalid input", "Too small…") in the current locale. Our forms phrase
- * the common issues themselves (`$lib/forms` → `zodForm`); this covers the rest. Client-only: forms
+ * the common issues themselves (`#lib/forms` → `zodForm`); this covers the rest. Client-only: forms
  * validate in the browser (SPA mode), and a process-wide config would leak between SSR requests.
  *
  * Loaded on demand rather than imported: every page's root layout calls this, but only the pages

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Button } from '@repo/ui';
-	import { analytics } from '$lib/analytics.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { analytics } from '#lib/analytics.svelte.js';
+	import { m } from '#lib/paraglide/messages.js';
 </script>
 
 <!-- Only when the deployment has analytics and the visitor has not decided yet. -->

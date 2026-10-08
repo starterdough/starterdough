@@ -40,18 +40,18 @@ export interface Telemetry {
 }
 
 export interface TelemetryOptions {
-	/** `service.name` unless `OTEL_SERVICE_NAME` overrides it: `starterdough-api` or `starterdough-worker`. */
+	/** `service.name` unless `OTEL_SERVICE_NAME` overrides it, e.g. `starterdough-api`. */
 	serviceName: string;
 }
 
 // The API globals can be registered once per process, and `bun --hot` re-runs the entrypoint:
-// keep the live handle on `globalThis` (same trick as the job worker) and hand it back.
+// keep the live handle on `globalThis` (same trick as the database pool) and hand it back.
 const TELEMETRY = Symbol.for('starterdough.telemetry');
 type Global = typeof globalThis & { [TELEMETRY]?: Telemetry };
 
 /**
- * `url.full` without its query string. The query is where the secrets travel: the presigned
- * `/uploads` signature (`?exp=&sig=`, which *is* the authorization), Better Auth's
+ * `url.full` without its query string. The query is where the secrets travel: a signed URL's
+ * signature (`?exp=&sig=`, which *is* the authorization), Better Auth's
  * `verify-email?token=`, an OAuth `callback?code=&state=`. None of it belongs in a backend.
  */
 export function stripSearch(url: string): string {
@@ -184,7 +184,7 @@ export async function startTelemetry(options: TelemetryOptions): Promise<Telemet
 
 /**
  * `telemetry.shutdown()` with a deadline. An unreachable collector makes the OTLP export wait out
- * its own 10 s timeout, which the shutdown budget in `index.ts` / `worker.ts` cannot afford; past
+ * its own 10 s timeout, which the entrypoint's shutdown budget cannot afford; past
  * `capMs` the pending spans are abandoned and the caller moves on to closing the database.
  */
 export async function shutdownTelemetry(telemetry: Telemetry, capMs: number): Promise<void> {

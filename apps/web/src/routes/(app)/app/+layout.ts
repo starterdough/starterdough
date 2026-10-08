@@ -1,7 +1,7 @@
 import { error, redirect } from '@sveltejs/kit';
-import { flagsFor } from '$lib/flags';
-import { m } from '$lib/paraglide/messages';
-import { sessionResult } from '$lib/utils/session';
+import { flagsFor } from '#lib/flags.js';
+import { m } from '#lib/paraglide/messages.js';
+import { sessionResult } from '#lib/utils/session.js';
 import type { LayoutLoad } from './$types';
 
 /**
@@ -9,7 +9,7 @@ import type { LayoutLoad } from './$types';
  * has no server, while the server-rendered targets still run this during SSR, so anonymous
  * visitors are redirected before any HTML is sent. Data access is protected by the API.
  *
- * Also seeds the feature flags (`page.data.flags`, `$lib/flags`).
+ * Also seeds the feature flags (`page.data.flags`, `#lib/flags`).
  */
 export const load: LayoutLoad = async ({ fetch, url }) => {
 	const { session, reason } = await sessionResult(fetch);

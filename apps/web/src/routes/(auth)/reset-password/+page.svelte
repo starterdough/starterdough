@@ -2,14 +2,14 @@
 	import { Alert, Button, FormField, Input } from '@repo/ui';
 	import { onMount } from 'svelte';
 	import { defaults, setError, superForm } from 'sveltekit-superforms';
-	import { browser } from '$app/environment';
-	import { replaceState } from '$app/navigation';
+	import { authClient } from '#lib/auth.js';
+	import { spaForm, zodForm } from '#lib/forms.js';
+	import { m } from '#lib/paraglide/messages.js';
+	import { ResetPasswordSchema } from '#lib/schemas.js';
+	import { withoutSensitiveParams } from '#lib/utils/redirect.js';
+	import { browser } from '$app/env';
+	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { authClient } from '$lib/auth';
-	import { spaForm, zodForm } from '$lib/forms';
-	import { m } from '$lib/paraglide/messages';
-	import { ResetPasswordSchema } from '$lib/schemas';
-	import { withoutSensitiveParams } from '$lib/utils/redirect';
 
 	// Better Auth lands here with `?token=` from a valid emailed link, `?error=INVALID_TOKEN`
 	// otherwise. Read once, not derived: the token is a single-use credential and the address bar
@@ -19,7 +19,7 @@
 
 	onMount(() => {
 		const stripped = withoutSensitiveParams(page.url);
-		if (stripped) replaceState(stripped, page.state);
+		if (stripped) void goto(stripped, { shallow: true, replace: true, state: page.state });
 	});
 
 	let done = $state(false);

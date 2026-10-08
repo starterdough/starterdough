@@ -1,6 +1,6 @@
 ---
 title: Why one HTTP API is the whole architecture
-description: Every surface in Starterdough (web, desktop, mobile, scripts, the Python service) is a thin client of a single HTTP API. Here is what that rule buys and what it costs.
+description: Every surface in Starterdough (web, desktop, mobile, scripts, services in other languages) is a thin client of a single HTTP API. Here is what that rule buys and what it costs.
 pubDate: 2026-09-09
 author: Starterdough maintainers
 tags: [architecture, api]
@@ -8,9 +8,9 @@ tags: [architecture, api]
 
 Starterdough has one architectural rule that everything else follows from: **there is a single
 source of truth, and it speaks HTTP.** The SvelteKit app, the Tauri desktop and mobile shells, the
-dynamic parts of the Astro sites, command-line scripts and the Python service all consume the same
-API: the same authentication, the same procedures, the same OpenAPI document. Nothing else has
-business logic, and nothing else touches the database.
+dynamic parts of the Astro sites, command-line scripts and services in other languages all consume
+the same API: the same authentication, the same procedures, the same OpenAPI document. Nothing else
+has business logic, and nothing else touches the database.
 
 This post explains the rule, the alternatives, and what it means day to day. The long form is in the
 repository's decision log (D5, D16, D18, D19).
@@ -24,7 +24,7 @@ exposed over two transports:
 - `POST /rpc/*`: the oRPC transport with rich types, used by the TypeScript client in
   `packages/api-client`.
 - `/api/v1/*`: plain REST with an OpenAPI 3.1 document at `/api/v1/openapi.json`, used by the
-  Python service, `curl` and third parties.
+  services in other languages, `curl` and third parties.
 
 Better Auth is mounted on the same server at `/api/auth/*`. Only the API has a database client.
 
@@ -44,9 +44,9 @@ server. Server `load` functions call the API with SvelteKit's `fetch`, and a hoo
 origin to the internal API address during server rendering. Server-side rendering is a rendering
 concern only.
 
-**tRPC, GraphQL, hand-written REST.** tRPC has no native OpenAPI story, which matters for the
-Python side. GraphQL is heavier than the problem. Hand-written REST loses end-to-end types. oRPC
-gives typed RPC and REST with OpenAPI from one contract.
+**tRPC, GraphQL, hand-written REST.** tRPC has no native OpenAPI story, which matters for
+anything not written in TypeScript. GraphQL is heavier than the problem. Hand-written REST loses
+end-to-end types. oRPC gives typed RPC and REST with OpenAPI from one contract.
 
 ## What it buys
 

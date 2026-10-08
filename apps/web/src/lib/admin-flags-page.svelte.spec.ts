@@ -2,7 +2,7 @@ import type { FeatureFlag } from '@repo/api-client';
 import { QueryClient } from '@tanstack/svelte-query';
 import { expect, test, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
-import type { PageSession } from '$lib/utils/session';
+import type { PageSession } from '#lib/utils/session.js';
 
 const session: PageSession = {
 	user: {
@@ -47,7 +47,7 @@ const { upsert } = vi.hoisted(() => ({
 	upsert: vi.fn(),
 }));
 
-vi.mock('$lib/api', () => ({
+vi.mock('#lib/api.js', () => ({
 	api: {
 		admin: {
 			flags: {

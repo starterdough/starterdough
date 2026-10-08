@@ -1,3 +1,6 @@
+import { match } from '$app/paths';
+import type { ReadonlyURL } from '$app/state';
+
 /**
  * Validate a `?next=` return path before redirecting to it.
  *
@@ -13,10 +16,22 @@ export function safeNext(value: string | null | undefined): string | null {
 }
 
 /**
+ * `path` when a page of this app answers it, else `fallback`: what to hand `goto` after signing in.
+ *
+ * SvelteKit 3's `goto` rejects a path no page matches, where Kit 2 fell back to a full page load.
+ * A `?next=` that passed `safeNext` can still name one (an old bookmark, a page since removed, a
+ * server-only route), and the user would be left signed in on the form with nothing happening.
+ * `match` runs the same lookup `goto` does, `reroute` included, so this cannot disagree with it.
+ */
+export async function routable(path: string, fallback = '/app'): Promise<string> {
+	return (await match(path)) ? path : fallback;
+}
+
+/**
  * Where sign-up lands when nothing else was requested: the validated `?next=` when the link
  * carried one, else the app.
  */
-export function afterSignUp(url: URL): string {
+export function afterSignUp(url: ReadonlyURL): string {
 	return safeNext(url.searchParams.get('next')) ?? '/app';
 }
 
@@ -24,7 +39,7 @@ export function afterSignUp(url: URL): string {
  * Query parameters that must never leave the browser or stay in the address bar: the credentials
  * Better Auth mails out (`token` for password reset, `code` for one-time codes) and the address
  * they were sent to. A page reads them into state once and drops them from the URL; analytics and
- * error reporting redact them from any URL they would send ($lib/analytics.svelte.ts,
+ * error reporting redact them from any URL they would send (#lib/analytics.svelte.ts,
  * src/hooks.client.ts).
  */
 export const SENSITIVE_PARAMS = ['token', 'code', 'email'] as const;
@@ -32,7 +47,7 @@ export const SENSITIVE_PARAMS = ['token', 'code', 'email'] as const;
 const REDACTED = 'redacted';
 
 /** True when `url` carries at least one sensitive parameter. */
-function hasSensitiveParams(url: URL): boolean {
+function hasSensitiveParams(url: ReadonlyURL): boolean {
 	return SENSITIVE_PARAMS.some((key) => url.searchParams.has(key));
 }
 
@@ -62,9 +77,9 @@ export function redactUrl(value: string): string {
  * state, or `null` when there is nothing to remove. Keeps every other parameter (`?next=`, an
  * error code) so a reload still behaves the same.
  */
-export function withoutSensitiveParams(url: URL): string | null {
+export function withoutSensitiveParams(url: ReadonlyURL): string | null {
 	if (!hasSensitiveParams(url)) return null;
-	const stripped = new URL(url);
+	const stripped = new URL(url.href);
 	for (const key of SENSITIVE_PARAMS) stripped.searchParams.delete(key);
 	return `${stripped.pathname}${stripped.search}${stripped.hash}`;
 }

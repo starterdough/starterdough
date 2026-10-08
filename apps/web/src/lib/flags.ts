@@ -1,6 +1,6 @@
 import { type FetchLike, safe } from '@repo/api-client';
+import { apiFor } from '#lib/api.js';
 import { page } from '$app/state';
-import { apiFor } from '$lib/api';
 
 /** Resolved feature flags: key → enabled, at their global defaults. */
 export type Flags = Record<string, boolean>;

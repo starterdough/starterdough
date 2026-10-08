@@ -1,15 +1,25 @@
 # Container images + (optional) deploy to your server.
 #
-# On every push to `main` and every `v*` tag this builds the five images behind infra/compose.yml,
-# plus demo-static when DEMO_PATH enables the public demo, and pushes them to GitHub Container
-# Registry as ghcr.io/<owner>/<repo>/<name>:<tag>, tagged with the commit (`sha-abc1234`), the branch
-# or version (`main`, `1.2.0`) and `latest` on main. Nothing to configure: GITHUB_TOKEN may push to
-# this repository's packages. They are private until you make them public (repository → Packages →
-# package settings) or `docker login ghcr.io` on the server.
+# Off until you switch it on. A new repository has no server and none of the variables below, so
+# until the repository variable DEPLOY_ENABLED is `true` every run of this workflow is one short job
+# that says how to switch it on: nothing is built, nothing is deployed, and nothing goes red.
 #
-# Then, when the repository *variable* DEPLOY_HOST is set, it deploys over SSH by running
-# infra/scripts/deploy.sh on the server (checkout of this commit, `docker compose pull`, `up -d`,
-# readiness check). Variables (Settings → Secrets and variables → Actions → Variables):
+# Once it is on, production follows CI. When the CI workflow (.github/workflows/ci.yml) passes for a
+# push to `main`, this builds the five images behind infra/compose.yml from that exact commit, plus
+# demo-static when DEMO_PATH enables the public demo, and pushes them to GitHub Container Registry as
+# ghcr.io/<owner>/<repo>/<name>:<tag>, tagged with the commit (`sha-abc1234`), `main` and `latest`.
+# A `v*` tag builds the same images tagged with the commit and the version (`1.2.0`), for a later
+# rollback by version, and deploys nothing. Nothing to configure for the registry: GITHUB_TOKEN may
+# push to this repository's packages. They are private until you make them public (repository →
+# Packages → package settings) or `docker login ghcr.io` on the server.
+#
+# Then, when the repository *variable* DEPLOY_HOST is set, it deploys over SSH: it pushes the commit
+# into the server's checkout and runs infra/scripts/deploy.sh there (checkout of this commit,
+# `docker compose pull`, `up -d`, readiness check). Variables (Settings → Secrets and variables →
+# Actions → Variables):
+#   DEPLOY_ENABLED        `true` switches this workflow on. Set it last, once the rest is in place
+#                         (infra/README.md, "Deploy, update, roll back", lists the order). On without
+#                         DEPLOY_HOST, it builds and pushes the images and deploys nothing.
 #   DEPLOY_HOST           the server (hostname, IP, or its tailnet name)
 #   DEPLOY_USER           SSH user, default `deploy` (infra/scripts/provision.sh creates it)
 #   DEPLOY_PATH           the clone on the server, default /opt/starterdough
@@ -36,6 +46,19 @@
 #                         (a PAT, or public packages).
 #   TS_OAUTH_CLIENT_ID / TS_OAUTH_SECRET   optional: a Tailscale OAuth client (tag:ci) for DEPLOY_VIA_TAILSCALE
 #
+# No deploy key and no token on the server: it never fetches from GitHub. The runner already holds
+# the commit being released and an SSH login to the box, so it pushes that commit into the checkout
+# (the "Deliver" step). A private repository therefore deploys exactly like a public one.
+#
+# Why `workflow_run` rather than `push`: a push-triggered deploy starts alongside CI, so a commit
+# whose tests, audit or database checks fail would be built, and its migrations run against
+# production, before CI had said a word. `workflow_run` starts once CI has finished, and the plan job
+# releases only a passing run of a push to this repository's `main` whose commit is still the tip of
+# `main`. GitHub runs the copy of this file on the default branch, with this repository's secrets,
+# so it never checks out anything but that commit (`workflow_run.head_sha`; `github.sha` on this
+# event is merely wherever `main` points). Pull requests release nothing: their CI runs are
+# `pull_request` events, including a fork's whose branch is also called `main`.
+#
 # The deploy also passes IMAGE_REGISTRY (this repository's own GHCR namespace, lowercased) to
 # deploy.sh, which pins it in the server's .env, so a fork never edits that row by hand.
 #
@@ -46,18 +69,26 @@
 # Every third-party action is pinned to a full commit SHA (version in the trailing comment). This job
 # holds SOPS_AGE_KEY, which decrypts every production secret, so a moving tag like `@v3` (whatever
 # that repository points it at when the job starts) is not an acceptable dependency here.
-# .github/dependabot.yml opens the bump PRs and rewrites both the SHA and the comment.
+# The pins move with each release of the kit (UPGRADING.md). A fork that wants them bumped sooner
+# can add a .github/dependabot.yml for the `github-actions` ecosystem.
 #
 # Rollback: run the workflow by hand (Actions → Deploy → Run workflow) with `tag` set to a previous
 # `sha-…` (or a released version like `1.2.0`): the build is skipped and that tag is deployed, with
-# the matching commit checked out on the server. Preview environments per PR are not part of this
-# workflow; Coolify/Dokploy (or a second compose project per branch) do that well.
+# the matching commit checked out on the server. With `tag` empty, a run by hand builds and deploys
+# the commit it was started from. Either way it deploys only a commit CI passed on a push to `main`,
+# and refuses anything else before building or touching the server. Preview environments per PR are
+# not part of this workflow; Coolify/Dokploy (or a second compose project per branch) do that well.
 
 name: Deploy
 
 on:
-  push:
+  workflow_run:
+    # The `name:` of .github/workflows/ci.yml. The plan job looks the same workflow up by file name,
+    # so renaming either means editing both.
+    workflows: [CI]
+    types: [completed]
     branches: [main]
+  push:
     tags: ['v*']
   workflow_dispatch:
     inputs:
@@ -67,7 +98,16 @@ on:
         default: ''
 
 concurrency:
-  group: deploy-production
+  # Releases queue one at a time and a newer release replaces one still waiting. Only a run that can
+  # deploy joins that queue (the plan job's rules, as far as this context can see them). A run for a
+  # failed CI run, a pull request, a superseded commit or a `v*` tag, or one with deployment switched
+  # off, changes nothing on the server, and in the shared group it would displace a green commit
+  # still waiting its turn. .github/workflows/recover-deployment.yml shares the group.
+  group: >-
+    ${{ vars.DEPLOY_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' ||
+    (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' &&
+    github.event.workflow_run.head_sha == github.sha)) && 'deploy-production' ||
+    format('deploy-{0}', github.run_id) }}
   cancel-in-progress: false
 
 # Per job below: only the two image-building jobs may write packages.
@@ -78,9 +118,165 @@ env:
   REGISTRY: ghcr.io/${{ github.repository }}
 
 jobs:
+  # Decides, before anything is built, whether this run builds, deploys, or only says why not. Every
+  # run has this job and nothing else is unconditional, so a run that releases nothing is one green
+  # job with a notice.
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Lists CI's runs for a commit: a run by hand deploys only what CI passed.
+      actions: read
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      deploy: ${{ steps.plan.outputs.deploy }}
+      sha: ${{ steps.plan.outputs.sha }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        # Only a requested tag needs the history: `1.2.0` resolves through its git tag, and an
+        # abbreviated `sha-…` to the full commit id the CI lookup and the server need.
+        if: vars.DEPLOY_ENABLED == 'true' && github.event_name == 'workflow_dispatch' && inputs.tag != ''
+        with:
+          fetch-depth: 0
+      - id: plan
+        name: Decide what this run releases
+        # Everything comes through env, never `${{ }}` inside the script (the tag input is free text).
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_ENABLED: ${{ vars.DEPLOY_ENABLED }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          REQUESTED: ${{ inputs.tag }}
+          CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          CI_EVENT: ${{ github.event.workflow_run.event }}
+          CI_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          CI_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          build=false
+          deploy=false
+          sha=
+          tag=
+          finish() {
+            printf 'build=%s\ndeploy=%s\nsha=%s\ntag=%s\n' "$build" "$deploy" "$sha" "$tag" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          if [ "$DEPLOY_ENABLED" != true ]; then
+            off='Deployment is switched off, so this workflow builds and deploys nothing. Switch it on with the repository variable DEPLOY_ENABLED=true (Settings → Secrets and variables → Actions → Variables) once the server, the variables and the secrets infra/README.md lists under "Deploy, update, roll back" are in place.'
+            # The expressions above compare without case and this check with it, so `True` is off;
+            # say so rather than leave it a mystery.
+            case "$DEPLOY_ENABLED" in
+              [Tt][Rr][Uu][Ee]) off="$off It is set to '$DEPLOY_ENABLED': only a lowercase true switches it on." ;;
+            esac
+            # Asked for by hand, silence would read as success.
+            if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+              echo "::error title=Deployment is switched off::$off"
+              exit 1
+            fi
+            echo "::notice title=Deployment is switched off::$off"
+            finish
+          fi
+
+          case "$GITHUB_EVENT_NAME" in
+            workflow_run)
+              if [ "$CI_CONCLUSION" != success ] || [ "$CI_EVENT" != push ] || [ "$CI_REPOSITORY" != "$GITHUB_REPOSITORY" ]; then
+                echo "::notice title=Nothing to release::CI ended '$CI_CONCLUSION' for a $CI_EVENT of ${CI_SHA:0:7}. Only a passing CI run of a push to main is built and deployed."
+                finish
+              fi
+              # Only main's tip is released. A newer commit is released by its own CI run; releasing
+              # this one now could only take production backwards, which is what a re-run of an old CI
+              # run, or of an old Deploy run, would otherwise do. The tip comes from the API, not from
+              # GITHUB_SHA: that is fixed when the event is created, and a re-run replays it. Roll back
+              # on purpose with the tag input.
+              tip="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha || true)"
+              if ! [[ "$tip" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "::error title=Cannot read main::GitHub did not say which commit main points at, so ${CI_SHA:0:7} is not released. Re-run this job, or Run workflow once main is readable."
+                exit 1
+              fi
+              if [ "$CI_SHA" != "$tip" ]; then
+                echo "::notice title=Superseded::main has moved on from ${CI_SHA:0:7} to ${tip:0:7}, which its own CI run releases once it passes. A push CI skips ([skip ci]) gets no such run: push again to release main."
+                finish
+              fi
+              sha="$CI_SHA"
+              build=true
+              deploy=true
+              ;;
+            push)
+              # A `v*` tag. Its commit reached production, or not, through main's own CI run.
+              sha="$GITHUB_SHA"
+              build=true
+              ;;
+            workflow_dispatch)
+              if [ -n "$REQUESTED" ]; then
+                # Image tags are [A-Za-z0-9._-] and never start with `-` (it would become an option).
+                case "$REQUESTED" in *[!A-Za-z0-9._-]*|-*) echo "invalid tag: $REQUESTED" >&2; exit 1 ;; esac
+                tag="$REQUESTED"
+                # The server checks out the commit the images were built from, so the compose file,
+                # the migrations and the images always match.
+                case "$REQUESTED" in
+                  sha-*)
+                    ref="${REQUESTED#sha-}"
+                    case "$ref" in ''|*[!0-9a-f]*) echo "invalid sha tag: $REQUESTED" >&2; exit 1 ;; esac
+                    ;;
+                  *)
+                    # A released version (`1.2.0`, pushed as git tag `v1.2.0`): resolve it to its commit.
+                    git fetch --quiet --tags --force origin
+                    ref="$(git rev-list -n1 "refs/tags/v$REQUESTED" 2>/dev/null || true)"
+                    [ -n "$ref" ] || ref="$(git rev-list -n1 "refs/tags/$REQUESTED" 2>/dev/null || true)"
+                    if [ -z "$ref" ]; then
+                      echo "::error title=Cannot resolve the requested tag::'$REQUESTED' is neither a sha-<commit> image tag nor a git tag in this repository, so there is no commit to deploy alongside it. Deploying it would run the current main against those images. Use the sha-<commit> tag of the build you want (Packages → the api image), or a version tag such as 1.2.0."
+                      exit 1
+                    fi
+                    ;;
+                esac
+                sha="$(git rev-parse --verify --quiet "$ref^{commit}" || true)"
+                if [ -z "$sha" ]; then
+                  echo "::error title=Unknown commit::'$REQUESTED' names no single commit in this repository."
+                  exit 1
+                fi
+              else
+                sha="$GITHUB_SHA"
+                build=true
+              fi
+              deploy=true
+              # CI runs on pushes to main (and pull requests), so a passing push run means the commit
+              # was on main and green. Fail closed on anything but a positive count.
+              passed="$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+                -f head_sha="$sha" -f event=push -f branch=main -f status=success -f per_page=1 \
+                --jq .total_count)"
+              case "$passed" in
+                ''|0|*[!0-9]*)
+                  echo "::error title=CI has not passed for this commit::${sha:0:7} has no successful CI run for a push to main, so it is not deployed. A commit still in CI deploys by itself once CI passes; to roll back, pick a sha-… tag that was deployed before."
+                  exit 1
+                  ;;
+              esac
+              ;;
+            *)
+              echo "unexpected event: $GITHUB_EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
+
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "unexpected commit id: $sha" >&2; exit 1; }
+          # Spelled out rather than docker/metadata-action's `type=sha`, which tags `github.sha`:
+          # after a CI run that is wherever main points, not necessarily the commit built here.
+          [ -n "$tag" ] || tag="sha-${sha:0:7}"
+          if [ "$deploy" = true ] && [ -z "$DEPLOY_HOST" ]; then
+            if [ "$build" != true ]; then
+              echo "::error title=No server to deploy to::Set the repository variable DEPLOY_HOST to deploy an existing tag."
+              exit 1
+            fi
+            deploy=false
+            echo "::notice title=Images only::DEPLOY_HOST is not set, so this run builds and pushes the images and deploys nothing."
+          fi
+          finish
+
   images:
     name: Image (${{ matrix.name }})
-    if: github.event_name != 'workflow_dispatch' || inputs.tag == ''
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -120,6 +316,10 @@ jobs:
             dockerfile: infra/backup/Dockerfile
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # The commit the plan chose, never `github.sha`: after a CI run that is wherever main
+          # points by now.
+          ref: ${{ needs.plan.outputs.sha }}
       - name: The static sites need their canonical URLs
         if: matrix.name == 'caddy'
         env:
@@ -148,11 +348,14 @@ jobs:
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ${{ env.REGISTRY }}/${{ matrix.name }}
+          # The commit tag and the revision label come from the plan (see `tag` there).
           tags: |
-            type=sha,prefix=sha-
+            type=raw,value=${{ needs.plan.outputs.tag }}
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.revision=${{ needs.plan.outputs.sha }}
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: ${{ matrix.context }}
@@ -167,15 +370,16 @@ jobs:
 
   demo-image:
     name: Image (demo-static)
-    if: |
-      (github.event_name != 'workflow_dispatch' || inputs.tag == '') &&
-      vars.DEMO_PATH != ''
+    needs: plan
+    if: needs.plan.outputs.build == 'true' && vars.DEMO_PATH != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
       - name: The public demo image needs its canonical domain
         env:
           DEMO_DOMAIN: ${{ vars.DEMO_DOMAIN }}
@@ -197,10 +401,12 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/demo-static
           tags: |
-            type=sha,prefix=sha-
+            type=raw,value=${{ needs.plan.outputs.tag }}
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.revision=${{ needs.plan.outputs.sha }}
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
@@ -219,10 +425,10 @@ jobs:
 
   deploy:
     name: Deploy to ${{ vars.DEPLOY_HOST }}
-    needs: [images, demo-image]
+    needs: [plan, images, demo-image]
     # Runs after a successful build, or straight away when an existing tag was requested.
     if: |
-      always() && vars.DEPLOY_HOST != '' &&
+      always() && needs.plan.result == 'success' && needs.plan.outputs.deploy == 'true' &&
       (needs.images.result == 'success' || needs.images.result == 'skipped') &&
       (needs.demo-image.result == 'success' || needs.demo-image.result == 'skipped')
     runs-on: ubuntu-latest
@@ -240,40 +446,12 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          # Tags and their commits: a requested `1.2.0` image tag is resolved to the commit its git
-          # tag points at (below), which a shallow clone cannot do.
+          # The released commit after a CI run; a run by hand keeps the commit it was started from,
+          # whose infra/env/production.enc.env is the current one, even when rolling back.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # Full history: the release commit is pushed to the server from here, and a rollback's
+          # is older than the one checked out.
           fetch-depth: 0
-      - id: tag
-        name: Resolve the image tag (and matching commit) to deploy
-        env:
-          REQUESTED: ${{ inputs.tag }}
-        run: |
-          if [ -n "$REQUESTED" ]; then
-            # Image tags are [A-Za-z0-9._-] and never start with `-` (it would become an option).
-            case "$REQUESTED" in ''|*[!A-Za-z0-9._-]*|-*) echo "invalid tag: $REQUESTED" >&2; exit 1 ;; esac
-            echo "value=$REQUESTED" >> "$GITHUB_OUTPUT"
-            # The server checks out the commit the images were built from, so the compose file, the
-            # migrations and the images always match.
-            case "$REQUESTED" in
-              sha-*)
-                ref="${REQUESTED#sha-}"
-                case "$ref" in ''|*[!0-9a-f]*) echo "invalid sha tag: $REQUESTED" >&2; exit 1 ;; esac
-                echo "ref=$ref" >> "$GITHUB_OUTPUT" ;;
-              *)
-                # A released version (`1.2.0`, pushed as git tag `v1.2.0`): resolve it to its commit.
-                git fetch --quiet --tags --force origin
-                ref="$(git rev-list -n1 "refs/tags/v$REQUESTED" 2>/dev/null || true)"
-                [ -n "$ref" ] || ref="$(git rev-list -n1 "refs/tags/$REQUESTED" 2>/dev/null || true)"
-                if [ -z "$ref" ]; then
-                  echo "::error title=Cannot resolve the requested tag::'$REQUESTED' is neither a sha-<commit> image tag nor a git tag in this repository, so there is no commit to deploy alongside it. Deploying it would run the current main against those images. Use the sha-<commit> tag of the build you want (Packages → the api image), or a version tag such as 1.2.0."
-                  exit 1
-                fi
-                echo "ref=$ref" >> "$GITHUB_OUTPUT" ;;
-            esac
-          else
-            echo "value=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-            echo "ref=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
-          fi
       - name: Log the runner into GHCR for demo rollback validation
         if: vars.DEMO_PATH != '' && github.event_name == 'workflow_dispatch' && inputs.tag != ''
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -284,7 +462,7 @@ jobs:
       - name: Verify an existing tag includes the public demo image
         if: vars.DEMO_PATH != '' && github.event_name == 'workflow_dispatch' && inputs.tag != ''
         env:
-          IMAGE_TAG: ${{ steps.tag.outputs.value }}
+          IMAGE_TAG: ${{ needs.plan.outputs.tag }}
         run: |
           IMAGE_REGISTRY="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           image="$IMAGE_REGISTRY/demo-static:$IMAGE_TAG"
@@ -321,6 +499,21 @@ jobs:
               echo "deployment recovery is pending; use the Recover deployment workflow before starting another release" >&2
               exit 1
             fi'
+      - name: Deliver the release commit to the server
+        env:
+          GIT_REF: ${{ needs.plan.outputs.sha }}
+          DEMO_PATH: ${{ vars.DEMO_PATH }}
+        run: |
+          # The server never fetches from GitHub: on a private repository that would need a
+          # credential on the box (a deploy key or a token) for every owner to create, store and
+          # rotate. This runner holds the commit and an SSH login to the server, so it pushes the
+          # commit into each checkout under a ref of its own. That touches neither HEAD nor the
+          # working tree, so nothing changes until the Deploy step checks it out under the host lock.
+          set -euo pipefail
+          for checkout in "$DEPLOY_PATH" "$DEMO_PATH"; do
+            [ -n "$checkout" ] || continue
+            git push --quiet --force "target:$checkout" "$GIT_REF:refs/starterdough/release"
+          done
       - name: Ship the environment file (only when SOPS_AGE_KEY is set)
         env:
           SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
@@ -368,8 +561,8 @@ jobs:
           printf '%s\n' "$GHCR_TOKEN" | ssh target "docker login ghcr.io -u '$GHCR_USER' --password-stdin"
       - name: Deploy
         env:
-          IMAGE_TAG: ${{ steps.tag.outputs.value }}
-          GIT_REF: ${{ steps.tag.outputs.ref }}
+          IMAGE_TAG: ${{ needs.plan.outputs.tag }}
+          GIT_REF: ${{ needs.plan.outputs.sha }}
           DEMO_PATH: ${{ vars.DEMO_PATH }}
         run: |
           # GHCR namespaces are lowercase; github.repository keeps the owner's casing.
@@ -388,7 +581,6 @@ jobs:
               exit 1
             fi
             cd '$DEPLOY_PATH'
-            git fetch --quiet origin
             for path in infra/scripts/operation-lock.sh infra/scripts/deployment-recovery.py infra/scripts/deployment-recovery.sh infra/scripts/recover-deployment.sh; do
               git cat-file -e '$GIT_REF':\$path
             done
@@ -396,7 +588,6 @@ jobs:
             if [ -n '$DEMO_PATH' ]; then
               git show '$GIT_REF:infra/demo/update.sh' | grep -F 'deployment-recovery.sh' >/dev/null
               git show '$GIT_REF:infra/demo/reset.sh' | grep -F 'deployment-recovery.sh' >/dev/null
-              git -C '$DEMO_PATH' fetch --quiet origin
               git -C '$DEMO_PATH' checkout --quiet --detach '$GIT_REF'
               (cd '$DEMO_PATH' && IMAGE_REGISTRY='$IMAGE_REGISTRY' IMAGE_TAG='$IMAGE_TAG' GIT_REF='' bash infra/demo/update.sh)
             fi

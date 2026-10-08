@@ -32,17 +32,3 @@ export const requireAdmin = os.middleware(async ({ context, next }) => {
 });
 
 export const adminOnly = os.use(requireAdmin);
-
-/**
- * A Postgres unique violation (`23505`) as it arrives through Drizzle, which wraps every failure in
- * a `DrizzleQueryError` and keeps the driver's error as `cause`.
- *
- * A procedure that pre-checks uniqueness still loses the race sometimes; the index is what actually
- * enforces it, and its violation must surface as the `CONFLICT` the contract declares, not a 500.
- */
-export function isUniqueViolation(error: unknown): boolean {
-	if (typeof error !== 'object' || error === null) return false;
-	const { cause } = error as { cause?: unknown };
-	if (typeof cause !== 'object' || cause === null) return false;
-	return (cause as { code?: unknown }).code === '23505';
-}

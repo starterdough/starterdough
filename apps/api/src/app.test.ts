@@ -118,10 +118,78 @@ describe('api', () => {
 	it('serves the health procedure over RPC', async () => {
 		const res = await app.request('/rpc/system/health', {
 			method: 'POST',
-			headers: { 'content-type': 'application/json' },
+			headers: { 'content-type': 'application/json', 'x-csrf-token': 'orpc' },
 			body: JSON.stringify({ json: undefined }),
 		});
 		expect(res.status).toBe(200);
+	});
+
+	// A form cannot send a header, so the cookie alone never calls a procedure over RPC.
+	it('refuses an RPC call without the CSRF header', async () => {
+		const res = await app.request('/rpc/system/health', {
+			method: 'POST',
+			headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: 'a=b' },
+			body: '',
+		});
+		expect(res.status).toBe(403);
+		expect(((await res.json()) as { json: { code: string } }).json.code).toBe(
+			'CSRF_TOKEN_MISMATCH',
+		);
+	});
+
+	it('lets a trusted origin send the CSRF header through the CORS preflight', async () => {
+		const res = await app.request('/rpc/system/health', {
+			method: 'OPTIONS',
+			headers: {
+				origin: 'http://localhost:5173',
+				'access-control-request-method': 'POST',
+				'access-control-request-headers': 'content-type,x-csrf-token',
+			},
+		});
+		expect(res.status).toBe(204);
+		expect(res.headers.get('access-control-allow-headers')?.toLowerCase()).toContain(
+			'x-csrf-token',
+		);
+	});
+
+	describe('REST writes that carry a cookie', () => {
+		const upsertFlag = (headers: Record<string, string>) =>
+			app.request('/api/v1/admin/flags/csrf-probe', {
+				method: 'PUT',
+				headers: { 'content-type': 'application/json', ...headers },
+				body: JSON.stringify({ enabled: true }),
+			});
+		const cookie = 'better-auth.session_token=forged.value';
+
+		it('refuses one from a cross-site page', async () => {
+			const res = await upsertFlag({
+				cookie,
+				origin: 'https://evil.example',
+				'sec-fetch-site': 'cross-site',
+			});
+			expect(res.status).toBe(403);
+			expect(await res.json()).toEqual({ error: 'forbidden_origin' });
+		});
+
+		// Past the guard, the procedure answers as it would anyway: this cookie is no session.
+		it('lets one from a trusted origin reach the procedure', async () => {
+			const res = await upsertFlag({
+				cookie,
+				origin: 'http://localhost:5173',
+				'sec-fetch-site': 'same-site',
+			});
+			expect(res.status).toBe(401);
+		});
+
+		it('lets a bearer token without a cookie through from anywhere', async () => {
+			const res = await upsertFlag({
+				// Signed-token shaped, so Better Auth rejects its signature without asking the database.
+				authorization: 'Bearer forged.value',
+				origin: 'https://evil.example',
+				'sec-fetch-site': 'cross-site',
+			});
+			expect(res.status).toBe(401);
+		});
 	});
 
 	it('tells clients which sign-in methods are configured', async () => {

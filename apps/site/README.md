@@ -11,7 +11,7 @@ The site never imports server-only packages. Its only workspace dependency is
 ## Develop
 
 ```sh
-cp .env.example .env
+cp .env.example .env   # `bun run setup` at the repository root writes this and every other .env
 bun run dev            # http://localhost:4321
 bun run check          # astro check (types in .astro files, content frontmatter)
 bun run build          # dist/, plus the OG images, sitemap, RSS and robots.txt

@@ -3,8 +3,8 @@
 	import FolderOpenIcon from '@lucide/svelte/icons/folder-open';
 	import LockIcon from '@lucide/svelte/icons/lock';
 	import { Button } from '@repo/ui';
+	import { m } from '#lib/paraglide/messages.js';
 	import { page } from '$app/state';
-	import { m } from '$lib/paraglide/messages';
 
 	// Rendered inside the app shell for anything under /app; unexpected failures arrive with the
 	// reference id that `handleError` attached.

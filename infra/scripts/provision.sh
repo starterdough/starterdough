@@ -7,15 +7,22 @@
 #     | sudo REPO_URL=https://github.com/<owner>/<repo>.git EXPOSE=tailscale bash
 #
 # The `curl | bash` bootstrap above reads the script over the *raw* URL, which needs a public
-# repository. From a private fork, either download it with a token first
-# (`curl -fsSL -H "Authorization: token <PAT>" https://raw.githubusercontent.com/… -o provision.sh`)
-# or copy the file to the box, then run it with GIT_TOKEN set so the clone can authenticate.
+# repository. From a private one, copy the file to the box instead (`scp infra/scripts/provision.sh
+# root@<host>:`) and run it there with GIT_TOKEN set so the clone can authenticate:
+#
+#   read -rs GIT_TOKEN && export GIT_TOKEN      # typed, so it stays out of the shell history
+#   sudo --preserve-env=GIT_TOKEN REPO_URL=https://github.com/<owner>/<repo>.git EXPOSE=tailscale \
+#     bash provision.sh
 #
 # Variables (all optional):
 #   REPO_URL     the repository to clone (default: the kit's)
-#   GIT_TOKEN    a PAT / app token with read access, for a private fork. Used for the clone only,
-#                through an in-memory `git -c http.extraheader`; it is never written to .git/config
-#                or to .env, so later `git pull`s on the box need their own credentials.
+#   GIT_TOKEN    a token with read access, for a private repository: a fine-grained personal access
+#                token for that one repository with read-only Contents is enough, and it can expire
+#                the same day. Used for the first clone only, through an in-memory
+#                `git -c http.extraheader`; it is never written to .git/config or to .env. Nothing
+#                later needs it: .github/workflows/deploy.yml pushes every release into the checkout
+#                over its SSH login, so the box holds no credential for the repository. Only a
+#                `git pull` by hand on the box would need one of its own.
 #   DEPLOY_USER  user that owns the checkout and runs compose (default deploy)
 #   DEPLOY_PATH  where the checkout lives (default /opt/starterdough)
 #   EXPOSE       tailscale (default: nothing public; Caddy bound to loopback, reach it via
@@ -114,13 +121,21 @@ dpkg-reconfigure -f noninteractive unattended-upgrades >/dev/null
 
 echo "▸ repository → $DEPLOY_PATH"
 if [ ! -d "$DEPLOY_PATH/.git" ]; then
+	# No credential prompt: a private repository without GIT_TOKEN fails here with what to pass,
+	# instead of asking for a GitHub password that git cannot use anyway.
+	export GIT_TERMINAL_PROMPT=0
+	clone_failed() {
+		echo "could not clone $REPO_URL. Check REPO_URL; a private repository also needs GIT_TOKEN," >&2
+		echo "a token with read access to it (see the top of this script)." >&2
+		exit 1
+	}
 	if [ -n "${GIT_TOKEN:-}" ]; then
 		# `git -c` applies to this process only: unlike a token in the remote URL (or `git clone -c`)
 		# it is not written into $DEPLOY_PATH/.git/config, so the token never lands on disk.
 		git -c "http.extraheader=Authorization: Basic $(printf 'x-access-token:%s' "$GIT_TOKEN" | base64 -w0)" \
-			clone --quiet "$REPO_URL" "$DEPLOY_PATH"
+			clone --quiet "$REPO_URL" "$DEPLOY_PATH" || clone_failed
 	else
-		git clone --quiet "$REPO_URL" "$DEPLOY_PATH"
+		git clone --quiet "$REPO_URL" "$DEPLOY_PATH" || clone_failed
 	fi
 fi
 chown -R "$DEPLOY_USER:$DEPLOY_USER" "$DEPLOY_PATH"
@@ -165,7 +180,6 @@ if [ ! -f "$DEPLOY_PATH/.env" ]; then
 		-e "s|^BETTER_AUTH_SECRET=.*|BETTER_AUTH_SECRET=$(openssl rand -hex 32)|" \
 		-e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$POSTGRES_PASSWORD|" \
 		-e "s|^DATABASE_URL=.*|DATABASE_URL=postgres://starterdough:$POSTGRES_PASSWORD@127.0.0.1:5433/starterdough|" \
-		-e "s|^SERVICE_TOKEN=.*|SERVICE_TOKEN=$(openssl rand -hex 24)|" \
 		-e "s|^COMPOSE_PROFILES=.*|COMPOSE_PROFILES=backup|" \
 		-e "s|^CADDY_BIND=.*|CADDY_BIND=$CADDY_BIND|" \
 		-e "s|^CADDY_MODE=.*|CADDY_MODE=$CADDY_MODE|" \
@@ -177,7 +191,7 @@ if [ ! -f "$DEPLOY_PATH/.env" ]; then
 	fi
 	chown "$DEPLOY_USER:$DEPLOY_USER" "$DEPLOY_PATH/.env"
 	chmod 600 "$DEPLOY_PATH/.env"
-	echo "  wrote $DEPLOY_PATH/.env with generated BETTER_AUTH_SECRET, POSTGRES_PASSWORD (+ DATABASE_URL), SERVICE_TOKEN,"
+	echo "  wrote $DEPLOY_PATH/.env with generated BETTER_AUTH_SECRET, POSTGRES_PASSWORD (+ DATABASE_URL),"
 	echo "  CADDY_BIND=$CADDY_BIND CADDY_MODE=$CADDY_MODE DOMAIN=${DOMAIN:-<empty>} IMAGE_REGISTRY=${IMAGE_REGISTRY:-<unchanged>}"
 else
 	echo "  keeping the existing $DEPLOY_PATH/.env"
@@ -215,5 +229,9 @@ $URLS
       Set ADMIN_PASSWORD instead when you need it non-interactive.)
   5. docker compose run --rm backup bun src/cli.ts backup     — first backup, then the restore drill:
      docker compose run --rm backup bun src/cli.ts restore latest --drill
-  6. CI deploys: set the DEPLOY_HOST variable and the DEPLOY_SSH_KEY secret (.github/workflows/deploy.yml).
+  6. CI deploys (.github/workflows/deploy.yml, off until you switch it on; infra/README.md,
+     "Deploy, update, roll back", has the order): put the public half of a key pair made for CI
+     into /home/$DEPLOY_USER/.ssh/authorized_keys, set the repository variables SITE_URL DOCS_URL
+     WEB_URL API_URL and DEPLOY_HOST, the secret DEPLOY_SSH_KEY (the private half), and last
+     DEPLOY_ENABLED=true. No deploy key: each release is pushed into $DEPLOY_PATH over that SSH login.
 EOF

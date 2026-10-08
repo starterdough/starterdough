@@ -62,10 +62,10 @@ that becomes a sheet on small screens, and the same accessibility checks in both
 
 ## Your own box
 
-Cloudflare hosts the static surfaces and can host the SvelteKit SSR build. The API, the Python
-service and Postgres need a long-lived host. That can be a managed container platform or your own
-VPS or home server with `infra/compose.yml`: Postgres, API, web, AI service and Caddy in one compose
-file.
+Cloudflare hosts the static surfaces and can host the SvelteKit SSR build. The API, the services
+behind it and Postgres need a long-lived host. That can be a managed container platform or your own
+VPS or home server with `infra/compose.yml`: Postgres, the API, the web app, Caddy and everything else
+in one compose file.
 
 Caddy runs in one of two modes. **Subdomains** gives you `app.`, `api.` and `docs.` under your
 domain with automatic HTTPS; the session cookie spans them through a cookie domain setting.

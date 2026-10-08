@@ -72,7 +72,7 @@ export const features: Feature[] = [
 			'The same URL serves the website, the installable PWA and the native shell’s remote-URL mode.',
 			'The service worker precaches the build, tries the network first and falls back to a prerendered offline page for navigations without a connection. It is never registered in development or inside the Tauri shells.',
 		],
-		code: 'apps/web/src/service-worker.ts · apps/web/src/lib/pwa.svelte.ts',
+		code: 'apps/web/src/service-worker/index.ts · apps/web/src/lib/pwa.svelte.ts',
 	},
 	{
 		id: 'native',

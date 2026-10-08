@@ -1,5 +1,13 @@
-import { describe, expect, it } from 'vitest';
-import { afterSignUp, redactUrl, safeNext, withoutSensitiveParams } from './redirect';
+import { describe, expect, it, vi } from 'vitest';
+import { afterSignUp, redactUrl, routable, safeNext, withoutSensitiveParams } from './redirect';
+
+// The app's route table, as far as these tests need it: `match` answers null for anything else.
+vi.mock('$app/paths', () => ({
+	match: vi.fn(async (path: string) => {
+		const pathname = new URL(path, 'https://app.example.com').pathname;
+		return ['/app', '/app/settings'].includes(pathname) ? { id: pathname, params: {} } : null;
+	}),
+}));
 
 describe('safeNext', () => {
 	it('accepts same-origin paths', () => {
@@ -23,6 +31,18 @@ describe('safeNext', () => {
 		expect(safeNext('')).toBeNull();
 		expect(safeNext(null)).toBeNull();
 		expect(safeNext(undefined)).toBeNull();
+	});
+});
+
+describe('routable', () => {
+	it('keeps a path a page answers, query included', async () => {
+		expect(await routable('/app/settings?tab=profile')).toBe('/app/settings?tab=profile');
+	});
+
+	// SvelteKit 3's `goto` rejects these instead of loading the page in full, as Kit 2 did.
+	it('falls back for a path no page answers', async () => {
+		expect(await routable('/old-bookmark')).toBe('/app');
+		expect(await routable('/old-bookmark', '/app/settings')).toBe('/app/settings');
 	});
 });
 

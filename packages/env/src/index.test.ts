@@ -2,8 +2,14 @@ import { describe, expect, it } from 'bun:test';
 
 // `createEnv` validates at import time; this suite is about the rules, not this machine's `.env`.
 process.env.SKIP_ENV_VALIDATION ??= '1';
-const { configurationIssues, cookieDomainIssues, emailFromDomain, placeholderSecrets, env } =
-	await import('./index');
+const {
+	configurationIssues,
+	cookieDomainIssues,
+	emailFromDomain,
+	normalizeOrigin,
+	placeholderSecrets,
+	env,
+} = await import('./index');
 
 /** A production environment that satisfies the schema; the tests vary one value at a time. */
 const production = {
@@ -158,6 +164,44 @@ describe('cookieDomainIssues', () => {
 	});
 });
 
+describe('normalizeOrigin', () => {
+	it('spells an http(s) origin the way a browser sends it in `Origin`', () => {
+		expect(normalizeOrigin('https://app.example.com/')).toBe('https://app.example.com');
+		expect(normalizeOrigin('https://App.Example.COM')).toBe('https://app.example.com');
+		expect(normalizeOrigin('https://app.example.com:443')).toBe('https://app.example.com');
+		expect(normalizeOrigin('HTTP://localhost:5173/app/')).toBe('http://localhost:5173');
+		expect(normalizeOrigin('http://tauri.localhost')).toBe('http://tauri.localhost');
+		expect(normalizeOrigin('https://bücher.example')).toBe('https://xn--bcher-kva.example');
+	});
+
+	it('lower-cases only the scheme and authority of any other scheme, never turning it into `null`', () => {
+		// `new URL('tauri://localhost').origin` is the string 'null', which is what a sandboxed frame
+		// or a `data:` page sends: trusting it would trust every such page.
+		expect(normalizeOrigin('tauri://localhost')).toBe('tauri://localhost');
+		expect(normalizeOrigin('Capacitor://LocalHost')).toBe('capacitor://localhost');
+		expect(normalizeOrigin('https://')).toBe('https://');
+		// Better Auth compares a custom scheme's path case-sensitively, so it stays as written.
+		expect(normalizeOrigin('myapp://auth/Callback')).toBe('myapp://auth/Callback');
+		expect(normalizeOrigin('MyApp://Auth/Callback')).toBe('myapp://auth/Callback');
+		expect(normalizeOrigin('MyApp://Auth#Frag')).toBe('myapp://auth#Frag');
+	});
+
+	it('keeps a Better Auth wildcard pattern exactly as written', () => {
+		// `URL` reads `?` as the start of a query: `https://pr-???.example.com` became `https://pr-`.
+		expect(normalizeOrigin('https://pr-???.example.com')).toBe('https://pr-???.example.com');
+		expect(normalizeOrigin('https://*.Example.com/')).toBe('https://*.Example.com/');
+		expect(normalizeOrigin('*.example.com')).toBe('*.example.com');
+		expect(normalizeOrigin('MyApp://*')).toBe('MyApp://*');
+	});
+
+	it('keeps a value without an authority exactly as written', () => {
+		// An Android app's passkey origin: the key hash is base64url, so case is part of it.
+		const android = 'android:apk-key-hash:sYUC8p5I9cXh-Kw_2bOq7lGzRm3sTUVWXYZabcdEfGh';
+		expect(normalizeOrigin(android)).toBe(android);
+		expect(normalizeOrigin('ios-app:Example')).toBe('ios-app:Example');
+	});
+});
+
 describe('SKIP_ENV_VALIDATION', () => {
 	it('still parses, so transformed values keep their real types', () => {
 		// The whole point: readers must not have to defend against `'true'` or a string port.
@@ -177,6 +221,45 @@ function importEnv(overrides: Record<string, string>) {
 	});
 	return { code: result.exitCode, stderr: result.stderr.toString() };
 }
+
+describe('trustedOrigins', () => {
+	it('lists each origin once, the way a browser sends it, however the variables spell it', () => {
+		const result = Bun.spawnSync(
+			[
+				process.execPath,
+				'--eval',
+				'const { trustedOrigins } = await import("./index.ts"); console.log(JSON.stringify(trustedOrigins()))',
+			],
+			{
+				cwd: import.meta.dir,
+				env: {
+					PATH: process.env.PATH ?? '',
+					...production,
+					WEB_URL: 'https://App.Example.com:443/',
+					TRUSTED_ORIGINS: [
+						'https://app.example.com',
+						' https://docs.example.com/',
+						'tauri://localhost',
+						'https://pr-???.example.com',
+						'MyApp://auth/Callback',
+						'android:apk-key-hash:sYUC8p5I',
+					].join(','),
+				},
+				stderr: 'pipe',
+				stdout: 'pipe',
+			},
+		);
+		expect(result.stderr.toString()).toBe('');
+		expect(JSON.parse(result.stdout.toString())).toEqual([
+			'https://app.example.com',
+			'https://docs.example.com',
+			'tauri://localhost',
+			'https://pr-???.example.com',
+			'myapp://auth/Callback',
+			'android:apk-key-hash:sYUC8p5I',
+		]);
+	});
+});
 
 describe('env', () => {
 	it('fails to load in production when a secret is still the example placeholder', () => {

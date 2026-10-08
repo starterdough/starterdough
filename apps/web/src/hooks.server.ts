@@ -1,12 +1,22 @@
-import type { Handle, HandleFetch, HandleServerError, ServerInit } from '@sveltejs/kit';
-import { sequence } from '@sveltejs/kit/hooks';
-import { dev } from '$app/environment';
-import { env as privateEnv } from '$env/dynamic/private';
-import { env as publicEnv } from '$env/dynamic/public';
-import { m } from '$lib/paraglide/messages';
-import { getTextDirection } from '$lib/paraglide/runtime';
-import { paraglideMiddleware } from '$lib/paraglide/server';
-import { sessionPayloadWithoutToken } from '$lib/utils/session';
+import {
+	type Handle,
+	type HandleFetch,
+	type HandleServerError,
+	type ServerInit,
+	sequence,
+} from '@sveltejs/kit/hooks';
+import { m } from '#lib/paraglide/messages.js';
+import { getTextDirection } from '#lib/paraglide/runtime.js';
+import { paraglideMiddleware } from '#lib/paraglide/server.js';
+import { sessionPayloadWithoutToken } from '#lib/utils/session.js';
+import { dev } from '$app/env';
+import {
+	API_URL,
+	SENTRY_DSN,
+	SENTRY_ENVIRONMENT,
+	SENTRY_TRACES_SAMPLE_RATE,
+} from '$app/env/private';
+import { PUBLIC_API_URL } from '$app/env/public';
 
 // ── Error tracking ─────────────────────────────────────────────────────────────────────────────
 
@@ -19,13 +29,13 @@ type Sentry = typeof import('@sentry/sveltekit');
 let sentry: Sentry | null = null;
 
 const sentryOptions = () => ({
-	dsn: privateEnv.SENTRY_DSN,
-	environment: privateEnv.SENTRY_ENVIRONMENT || (dev ? 'development' : 'production'),
-	tracesSampleRate: Number(privateEnv.SENTRY_TRACES_SAMPLE_RATE ?? 0.1),
+	dsn: SENTRY_DSN,
+	environment: SENTRY_ENVIRONMENT || (dev ? 'development' : 'production'),
+	tracesSampleRate: Number(SENTRY_TRACES_SAMPLE_RATE ?? 0.1),
 });
 
 export const init: ServerInit = async () => {
-	if (!privateEnv.SENTRY_DSN) return;
+	if (!SENTRY_DSN) return;
 	sentry = await import('@sentry/sveltekit');
 	if (import.meta.env.ADAPTER !== 'cloudflare') sentry.init(sentryOptions());
 };
@@ -39,12 +49,19 @@ const withSentry: Handle = (input) => {
 	return sequence(...handles)(input);
 };
 
-/** Unexpected errors (not `error(...)` thrown on purpose): report, then hand the page a safe message. */
-export const handleError: HandleServerError = ({ error, event, status, message }) => {
+/**
+ * Unexpected errors: report, then hand the page a safe message. SvelteKit 3 calls this for every
+ * error, including `error(...)` thrown on purpose (`kind: 'app'`); those already carry a message
+ * meant for the user, so they pass through untouched and unreported, as they always did.
+ */
+export const handleError: HandleServerError = ({ kind, error, event }) => {
+	if (kind === 'app') return;
+	// `framework` (a 404 or 405 SvelteKit raised itself) carries a status; anything thrown is a 500.
+	const status = kind === 'unknown' ? 500 : error.status;
 	const id = crypto.randomUUID();
 	if (status !== 404) {
 		if (sentry) {
-			sentry.captureException(error, { extra: { id, status, message, path: event.url.pathname } });
+			sentry.captureException(error, { extra: { id, kind, status, path: event.url.pathname } });
 		} else {
 			console.error(error);
 		}
@@ -60,17 +77,20 @@ export const handleError: HandleServerError = ({ error, event, status, message }
 /**
  * Locale per request: cookie → Accept-Language → `en` (project.inlang/paraglide.config.ts). The
  * middleware keeps the locale in AsyncLocalStorage for the duration of `resolve`, so every
- * `m.…()` call in loads and components (and `handleError` above) renders in it. No URL
- * prefixes: the request is passed through unchanged.
+ * `m.…()` call in loads and components (and `handleError` above) renders in it.
+ *
+ * No URL prefixes, so the request the middleware hands back has the same URL as the one it got,
+ * and the original stays readable (Paraglide clones before it rebuilds). `event.request` is
+ * read-only since SvelteKit 3, so it is not swapped for the copy. Adding the `url` strategy would
+ * need a `reroute` hook that de-localizes the path instead.
  */
 const withLocale: Handle = ({ event, resolve }) =>
-	paraglideMiddleware(event.request, ({ request, locale }) => {
-		event.request = request;
-		return resolve(event, {
+	paraglideMiddleware(event.request, ({ locale }) =>
+		resolve(event, {
 			transformPageChunk: ({ html }) =>
 				html.replace('%lang%', locale).replace('%dir%', getTextDirection(locale)),
-		});
-	});
+		}),
+	);
 
 /**
  * Universal `load` functions call the API during SSR through SvelteKit's `fetch`, which hands
@@ -91,8 +111,7 @@ const serializedHeaders: Handle = ({ event, resolve }) =>
  *    opened) on another origin cannot reach the document.
  *  - `/app` and `/admin` render one signed-in user's data. `private, no-store` keeps it out of
  *    shared caches, the browser's disk cache and the back/forward store, the same reason the
- *    service worker does not cache navigations. `/uploads/*` needs the same header from the
- *    API (@repo/api serves it, not this app).
+ *    service worker does not cache navigations.
  */
 const securityHeaders: Handle = async ({ event, resolve }) => {
 	const response = await resolve(event);
@@ -118,8 +137,8 @@ export const handle = sequence(withSentry, withLocale, serializedHeaders, securi
  *     *returns* does not close this: the raw body is recorded separately, the moment it is read.
  */
 export const handleFetch: HandleFetch = async ({ event, request, fetch }) => {
-	const publicOrigin = (publicEnv.PUBLIC_API_URL || 'http://localhost:3000').replace(/\/+$/, '');
-	const internalOrigin = (privateEnv.API_URL || publicOrigin).replace(/\/+$/, '');
+	const publicOrigin = (PUBLIC_API_URL || 'http://localhost:3000').replace(/\/+$/, '');
+	const internalOrigin = (API_URL || publicOrigin).replace(/\/+$/, '');
 
 	if (request.url.startsWith(`${publicOrigin}/`) || request.url.startsWith(`${internalOrigin}/`)) {
 		const url = request.url.startsWith(`${publicOrigin}/`)

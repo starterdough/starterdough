@@ -9,10 +9,10 @@
 	import { Alert, Button, cn, FormField, Input } from '@repo/ui';
 	import { onMount, untrack } from 'svelte';
 	import { defaults, setError, superForm } from 'sveltekit-superforms';
-	import { browser } from '$app/environment';
-	import { api } from '$lib/api';
-	import { messageOf, spaForm, zodForm } from '$lib/forms';
-	import { m } from '$lib/paraglide/messages';
+	import { api } from '#lib/api.js';
+	import { messageOf, spaForm, zodForm } from '#lib/forms.js';
+	import { m } from '#lib/paraglide/messages.js';
+	import { browser } from '$app/env';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();

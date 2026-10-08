@@ -1,15 +1,15 @@
 <script lang="ts">
 	import { Alert, Button, FormField, Input } from '@repo/ui';
 	import { defaults, setError, superForm } from 'sveltekit-superforms';
-	import { browser } from '$app/environment';
+	import { returnUrl } from '#lib/api.js';
+	import { authClient } from '#lib/auth.js';
+	import { spaForm, zodForm } from '#lib/forms.js';
+	import { m } from '#lib/paraglide/messages.js';
+	import { SignUpSchema } from '#lib/schemas.js';
+	import { afterSignUp, routable, safeNext } from '#lib/utils/redirect.js';
+	import { browser } from '$app/env';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { returnUrl } from '$lib/api';
-	import { authClient } from '$lib/auth';
-	import { spaForm, zodForm } from '$lib/forms';
-	import { m } from '$lib/paraglide/messages';
-	import { SignUpSchema } from '$lib/schemas';
-	import { afterSignUp, safeNext } from '$lib/utils/redirect';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -48,7 +48,7 @@
 				sent = true;
 				return;
 			}
-			await goto(next);
+			await goto(await routable(next));
 		},
 	});
 	const { form, errors, enhance, submitting } = sf;

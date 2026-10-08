@@ -42,10 +42,13 @@ key behind `futureFlags.globalConfiguration` so Turborepo 3 is a version bump.
 
 **Context.** The reference stack said React Router 8 "for serious web applications". You prefer
 Svelte. RR8 (Jun 2026) is a deliberately boring release: ESM-only, middleware default, no capability
-gap either way. SvelteKit 2.70 is stable; SvelteKit 3 is in RC with no further breaking changes.
+gap either way. When this was decided, SvelteKit 2.70 was stable and SvelteKit 3 was in prerelease
+with no further breaking changes planned. SvelteKit 3.0.0 went GA on 2026-10-01 (3.0.1 on
+2026-10-06).
 
-**Decision.** SvelteKit with Svelte 5 runes. Configured in the SvelteKit 3 style already (adapter inside
-the `sveltekit()` Vite plugin). Three adapters, selected by `ADAPTER`: node, cloudflare, static.
+**Decision.** SvelteKit with Svelte 5 runes. Configured in the SvelteKit 3 style from the start
+(adapter inside the `sveltekit()` Vite plugin), and on SvelteKit 3 itself from the kit's 1.0.0
+release. Three adapters, selected by `ADAPTER`: node, cloudflare, static.
 
 **Alternatives.** React Router 8 in framework mode (largest ecosystem, React-only UI kits); Next.js
 (kept as literacy, not chosen; one integrated React surface isn't the goal here); Astro-only with
@@ -345,9 +348,9 @@ SSR (Node, Cloudflare) and the static SPA inside Tauri.
   Tailwind v4 registers it `inherits: false`, so a `:root` value never reaches a control.
 - **Forms: `sveltekit-superforms` in SPA mode with Zod 4**, never form actions; the API is the
    backend on every target and the static build has no server. Schemas are shared with the
-   contract where one exists (a procedure's `.input()`) and live in `$lib/schemas.ts` otherwise
+   contract where one exists (a procedure's `.input()`) and live in `#lib/schemas.js` otherwise
    (auth, account).
-  `spaForm` in `$lib/forms.ts` carries the common options; `applyApiError` maps an oRPC failure
+  `spaForm` in `#lib/forms.js` carries the common options; `applyApiError` maps an oRPC failure
   back onto fields or the form. Submit buttons stay disabled until hydration because a native
   `POST` to a page without actions is a 405.
  - **Data: `@tanstack/svelte-query` v6 (runes) with `@orpc/tanstack-query`**: keys, fetchers and
@@ -368,10 +371,10 @@ SSR (Node, Cloudflare) and the static SPA inside Tauri.
   imported dynamically only when a DSN is set; the SDK is not in the bundle otherwise; the
   Cloudflare build uses `initCloudflareSentryHandle` per request, Node initialises once in
   `init`. PostHog (`PUBLIC_POSTHOG_KEY`) loads only after the visitor accepts the consent banner;
-  page views come from `afterNavigate`. The service worker (`src/service-worker.ts`: precache +
-  network-first + prerendered `/offline` fallback) is registered by `$lib/pwa.svelte.ts` in
-  production browsers only, never in dev, never in the Tauri shells; the same module captures
-  `beforeinstallprompt` for an "Install app" button.
+  page views come from `afterNavigate`, shallow navigations excluded. The service worker
+  (`src/service-worker/index.ts`: precache + network-first + prerendered `/offline` fallback) is
+  registered by `#lib/pwa.svelte.js` in production browsers only, never in dev, never in the Tauri
+  shells; the same module captures `beforeinstallprompt` for an "Install app" button.
 - **Accessibility is tested.** `@axe-core/playwright` (WCAG 2.2 AA) runs in `test:e2e` on the
   public pages plus a skip-link test; the authenticated pages were axe-clean in the verification
   pass in both modes (the dark-mode danger button needed `--destructive-foreground` to flip to
@@ -382,13 +385,13 @@ shadcn-svelte inside `apps/web` (the Astro sites and future surfaces would copy 
 `:root`/`.dark` token blocks (the sites would need a class-toggle script to follow the OS);
 SvelteKit form actions (no server in the static build, and a second validation path beside the
 API); Svelte stores for data (v5 of svelte-query was store-based and unreliable under runes);
-`@vite-pwa/sveltekit` (a generator on top of the same `$service-worker` module, not needed for
-one worker); statically importing Sentry (≈460 KB minified in every deployment).
+`@vite-pwa/sveltekit` (a generator over the same build manifest, `$app/manifest` in SvelteKit 3;
+not needed for one worker); statically importing Sentry (≈460 KB minified in every deployment).
 
 **Consequences.** The client ships bits-ui + floating-ui + sonner (≈276 KB minified, shared
 chunk) on every page of the app. Components added later must be exported from
 `packages/ui/src/index.ts` (namespaced when multi-part). `taintedMessage` is off by default;
-enable it per form where unsaved edits matter. Flags are read once per session; `invalidateAll()`
+enable it per form where unsaved edits matter. Flags are read once per session; `refreshAll()`
 to refresh them. i18n (paraglide) is the one §5 item left; it touches every string and is best
 done in one pass.
 
@@ -423,11 +426,11 @@ some of which live in the contract and are also the API's own error text.
   locale to prove the pipeline; its text is a machine-drafted first pass, marked as such.
 - **Validation copy belongs to the UI, rules to the contract.** Zod 4 lets a schema-level message
   win over every error map, so the contract keeps its developer-facing English (it is also the
-  REST API's text) and the web does not strip it: `zodForm(schema)` (`$lib/forms.ts`) validates
+  REST API's text) and the web does not strip it: `zodForm(schema)` (`#lib/forms.js`) validates
   and then phrases each issue from its `code`/`format`/`params` (`issueMessage`), falling back to
-  Zod's own message, which `applyZodLocale` (`$lib/i18n.ts`) localises with `zod/locales` on the
+  Zod's own message, which `applyZodLocale` (`#lib/i18n.js`) localises with `zod/locales` on the
   client. Rules that need recognising carry `params` (the reserved-slug refine →
-  `{ reason: 'reserved_slug' }`); web-owned schemas (`$lib/schemas.ts`) use lazy messages
+  `{ reason: 'reserved_slug' }`); web-owned schemas (`#lib/schemas.js`) use lazy messages
   (`{ error: () => m.…() }`) so they resolve at validation time. Dates and numbers go through
   `Intl` with the current locale (`formatDate`, `formatRelative`, `formatNumber`).
  - **Out of scope for now:** the API's emails (need a stored user preference, a Better Auth
@@ -598,10 +601,13 @@ compose file that is safe to `up` on day one and a runbook that names every owne
  - **Backups are a workspace.** `@repo/backup` (`infra/backup`): `pg_dump` custom-format, S3/R2
    copy, retention, heartbeat, restore drill. Compose profile `backup`. No `BACKUP_S3_BUCKET` →
    on-box only, and the tool warns.
- - **Images and deploy are a workflow.** `.github/workflows/deploy.yml` pushes
-   `{api,web,caddy,backup}` to GHCR on `main`. `DEPLOY_HOST` + `DEPLOY_SSH_KEY` then run
+ - **Images and deploy are a workflow.** `.github/workflows/deploy.yml` is opt-in
+   (`DEPLOY_ENABLED`) and runs after CI passes on `main` (`workflow_run`). It pushes
+   `{api,web,caddy,backup}` to GHCR, then `DEPLOY_HOST` + `DEPLOY_SSH_KEY` push the commit
+   into the server's checkout and run
   `infra/scripts/deploy.sh` (checkout, `compose pull`, `up -d --wait`, `/readyz`). Rollback is
-  `IMAGE_TAG=sha-…`. Preview environments per PR are left to Coolify/Dokploy.
+  `IMAGE_TAG=sha-…`. The server never fetches from GitHub, so a private repository needs no
+  deploy key on the box. Preview environments per PR are left to Coolify/Dokploy.
 - **Secrets stay out of git.** `provision.sh` writes a `chmod 600` `.env`. SOPS + age
   (`/.sops.yaml`, `infra/env/`) is the documented path to version and CI-deploy it; 1Password and
   Doppler are named alternatives. CI runs `bun audit --prod --audit-level=high` and `pip-audit`.
@@ -721,3 +727,34 @@ several API replicas need a shared store first. Production deploys need a real e
 sender domain before the API starts. The app is 32 px dense with a tinted danger button and a
 visible input border; the dark dialog scrim is 65 %. The `auth` CLI is pinned to the installed
 `better-auth` version and the two are bumped together.
+
+## D32 · CSRF: a header on `/rpc`, an origin check for cookie writes on `/api/v1`
+
+**Context.** Both procedure transports accept the session cookie, and oRPC parses form-encoded and
+multipart bodies as well as JSON, so a plain HTML form can reach a procedure. Better Auth's cookie
+is `SameSite=Lax`, which keeps it off a POST from another site but not from a sibling subdomain:
+`blog.example.com` and `api.example.com` are the same site. Nothing checked `Origin`, a header or a
+token; CORS only decides who may read the answer, and a form does not ask.
+
+**Decision.** Defence in depth, one mechanism per transport, both reading `trustedOrigins()`.
+`/rpc/*` requires `x-csrf-token: orpc` (oRPC's `SimpleCsrfProtectionHandlerPlugin`), and
+`@repo/api-client` sends it on every call (`SimpleCsrfProtectionLinkPlugin`), so the browser, SSR
+through `apiFor(fetch)` and the static shells all comply without code of their own. A form cannot
+set a header, and a page on another origin can only after a CORS preflight, which the API grants
+to trusted origins alone (`X-CSRF-Token` is in its allowed headers). `/api/v1/*` is for curl,
+Python services and third parties, so it asks for no header; `middleware/csrf.ts` refuses only a
+write (not `GET`/`HEAD`/`OPTIONS`) that carries a cookie and whose `Origin` is not trusted, or that
+has no `Origin` and a `Sec-Fetch-Site` of `cross-site` or `same-site`, with
+`403 { error: 'forbidden_origin' }`.
+
+**Alternatives.** The header on both transports (breaks every curl and Python caller of REST that
+uses a bearer token, which no browser forges). A synchronizer token (state per session and a fetch
+before the first write, for no gain over a header a form cannot send). `SameSite=Strict` (signs a
+visitor out of every link that arrives from another site). Checking only Better Auth's session
+cookie by name (its name varies with `__Secure-` and the prefix; any cookie is enough to call a
+write forged).
+
+**Consequences.** A client of `/rpc` built without `createApiClient` must send the header. A
+browser page that writes to `/api/v1` with the cookie must be on `WEB_URL` or in `TRUSTED_ORIGINS`.
+A server-side caller that forwards a cookie and sends neither `Origin` nor `Sec-Fetch-Site` passes,
+as does every request without a cookie.

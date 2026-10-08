@@ -42,6 +42,27 @@ The switch happens at build time (`ADAPTER=static`). The UI code is identical. I
 on sibling subdomains, set `COOKIE_DOMAIN` (e.g. `.example.com`) so the cookie spans them. A
 single-origin deployment does not need it.
 
+The session cookie is `SameSite=Lax`, so a page on another site cannot make a browser send it with
+a write. A page on a sibling subdomain can, because it is the same site, so the API also refuses
+forged requests itself: every `/rpc` call must carry the `x-csrf-token` header that
+`@repo/api-client` adds and an HTML form cannot send, and a write to `/api/v1` that carries a cookie
+is refused when it comes from an origin outside `WEB_URL` and `TRUSTED_ORIGINS`. Bearer requests
+carry no cookie, so that second check never applies to them. The
+[API reference](/reference/api/) has the details.
+
+The shells sign in with email and password only. Social sign-in ends with a session cookie in the
+system browser, which the shell never sees; WebAuthn refuses a passkey made for `WEB_URL`'s hostname
+on the shell's `tauri://localhost` or `http://tauri.localhost` page; and the second step of a
+two-factor sign-in waits in a cookie that a cross-site page never gets back. So inside a shell the
+app hides social sign-in and passkeys, and its code page says it cannot finish a two-factor sign-in
+(`SOCIAL_SIGN_IN_AVAILABLE`, `PASSKEYS_AVAILABLE` and `TWO_FACTOR_SIGN_IN_AVAILABLE` in
+`apps/web/src/lib/api.ts`); the same static build served from a static host keeps all three.
+Passkeys added in a browser can still be renamed or removed from the shell. For the same cookie
+reason an admin could start impersonating a user in a shell but never stop, so the shell's admin
+panel leaves impersonation to the web app (`IMPERSONATION_AVAILABLE`). Links the shell puts in
+an email go to `PUBLIC_WEB_URL` through `returnUrl()`. `apps/native/README.md` lists what else the
+shells lack.
+
 ## The session guard is a universal `load`
 
 Protected routes redirect *before* rendering. The static SPA has no server, so
@@ -64,14 +85,36 @@ server, with no frontend redeploy.
 
 ## Changing auth plugins
 
-Auth plugins own their tables. After adding or changing one:
+Auth plugins own their tables, and the Better Auth CLI generates `packages/db/src/schema/auth.ts`
+from the auth config. After adding, changing or removing a plugin, regenerate it:
 
 ```sh
-bun run auth:schema && bun run db:generate && bun run db:migrate
+bun run auth:schema
 ```
 
-Generated files
-(`packages/db/src/schema/auth.ts`, `packages/db/drizzle/`) are regenerated, never edited.
+The file also carries a constraint the app relies on that the CLI does not generate: a unique
+index on `passkey.credential_id`.
+
+Every regeneration drops these hand-added constraints, so `auth:schema` checks the file right after
+the CLI writes it and **fails until each one is back**, naming what is missing and the code that
+restores it. The failure is deliberate: a migration generated from the file as the CLI left it
+would drop them from your database. Do not chain `auth:schema` with `db:generate`. Instead:
+
+1. Run `git diff packages/db/src/schema/auth.ts` to see what the generator removed. Put back the
+   header comment and the lines the check named, and keep what the CLI changed for your config.
+2. Run `bun packages/db/src/schema/auth-constraints.ts` to check again without regenerating
+   (`auth:schema` would overwrite your fix).
+3. Run `bun run db:generate` and read the migration before `bun run db:migrate`. It must not drop
+   an index or a constraint on the tables above. If it does, one is still missing: put it back,
+   remove the migration with `bunx drizzle-kit drop` in `packages/db`, and generate it again.
+
+If you removed a plugin, the check reports its table as missing. Delete that table's entries from
+`HAND_ADDED_AUTH_CONSTRAINTS` in `packages/db/src/schema/auth-constraints.ts` and from the header
+of `auth.ts`, then check again.
+
+`bun run test` runs the same check, so CI and the pre-push hook fail on a regenerated `auth.ts`
+committed without them. Apart from those lines, the generated files (`auth.ts` and
+`packages/db/drizzle/`) are regenerated, never edited.
 
 `auth:schema` runs the Better Auth CLI **pinned to the version of the `better-auth` dependency**
 (`auth@1.7.3`), not `@latest`. Bump the two together, or the schema it generates stops matching the

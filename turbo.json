@@ -13,7 +13,7 @@
 			"dependsOn": ["^build"],
 			"inputs": ["$TURBO_DEFAULT$", ".env", ".env.production"],
 			"outputs": ["build/**", "dist/**", ".svelte-kit/**", ".astro/**"],
-			"env": ["ADAPTER", "PUBLIC_*", "API_URL", "SITE_URL", "ORIGIN"]
+			"env": ["ADAPTER", "PUBLIC_*", "API_URL", "SITE_URL"]
 		},
 		"build:static": {
 			"dependsOn": ["^build"],

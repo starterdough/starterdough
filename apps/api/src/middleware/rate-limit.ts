@@ -13,6 +13,16 @@ export interface RateLimitOptions {
 	trustProxy?: boolean;
 	/** Clock, injectable for tests. */
 	now?: () => number;
+	/**
+	 * The answer past the limit, given the seconds until the window resets (already sent as
+	 * `Retry-After`). Defaults to `429 { error: 'rate_limited', retryAfter }`.
+	 */
+	refuse?: (c: Context, retryAfter: number) => Response | Promise<Response>;
+	/**
+	 * Hand the request's unit back when this answers true once the rest of the chain has run: for a
+	 * request a later check turned away, which should not spend this allowance as well.
+	 */
+	refund?: (c: Context) => boolean;
 }
 
 interface Bucket {
@@ -46,7 +56,7 @@ export function clientIp(c: Context, trusted: boolean = trustProxy()): string {
  * Swap the `Map` for Redis/Postgres before running several replicas.
  *
  * Responses carry `RateLimit-Limit` / `RateLimit-Remaining` / `RateLimit-Reset` (seconds);
- * rejected requests get `429` with `Retry-After`.
+ * rejected requests get `429` with `Retry-After`, or whatever `refuse` answers.
  */
 export function rateLimit(options: RateLimitOptions): MiddlewareHandler {
 	const {
@@ -55,6 +65,8 @@ export function rateLimit(options: RateLimitOptions): MiddlewareHandler {
 		trustProxy: trusted = trustProxy(),
 		keyFor = (c: Context) => clientIp(c, trusted),
 		now = Date.now,
+		refuse = (c: Context, retryAfter: number) => c.json({ error: 'rate_limited', retryAfter }, 429),
+		refund,
 	} = options;
 	const buckets = new Map<string, Bucket>();
 	let lastSweep = 0;
@@ -83,9 +95,10 @@ export function rateLimit(options: RateLimitOptions): MiddlewareHandler {
 
 		if (bucket.count > max) {
 			c.header('Retry-After', String(resetSeconds));
-			return c.json({ error: 'rate_limited', retryAfter: resetSeconds }, 429);
+			return refuse(c, resetSeconds);
 		}
 
 		await next();
+		if (refund?.(c)) bucket.count = Math.max(0, bucket.count - 1);
 	};
 }

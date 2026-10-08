@@ -1,6 +1,6 @@
 /**
  * Write the OpenAPI document to apps/api/openapi.json.
- * Use it to generate clients for non-TypeScript consumers, e.g. the Python service:
+ * Use it to generate clients for non-TypeScript consumers, e.g. Python:
  *   uvx openapi-python-client generate --path apps/api/openapi.json
  */
 import { generateSpec } from '../src/rpc/handler';

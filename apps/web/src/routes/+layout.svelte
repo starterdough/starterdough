@@ -7,13 +7,13 @@
 	import { QueryClientProvider } from '@tanstack/svelte-query';
 	import { ModeWatcher } from 'mode-watcher';
 	import { onMount } from 'svelte';
+	import { analytics } from '#lib/analytics.svelte.js';
+	import { API_URL, DEMO_MODE } from '#lib/api.js';
+	import favicon from '#lib/assets/favicon.svg';
+	import ConsentBanner from '#lib/components/ConsentBanner.svelte';
+	import { applyZodLocale, syncDocumentLocale } from '#lib/i18n.js';
+	import { pwa } from '#lib/pwa.svelte.js';
 	import { afterNavigate } from '$app/navigation';
-	import { analytics } from '$lib/analytics.svelte';
-	import { API_URL, DEMO_MODE } from '$lib/api';
-	import favicon from '$lib/assets/favicon.svg';
-	import ConsentBanner from '$lib/components/ConsentBanner.svelte';
-	import { applyZodLocale, syncDocumentLocale } from '$lib/i18n';
-	import { pwa } from '$lib/pwa.svelte';
 	import type { LayoutProps } from './$types';
 
 	let { data, children }: LayoutProps = $props();
@@ -26,7 +26,11 @@
 		analytics.start();
 	});
 
-	afterNavigate(() => analytics.page());
+	// A shallow `goto` only rewrites the address bar (the auth pages drop a credential from it that
+	// way), and since SvelteKit 3 it runs navigation hooks too. That is not a page view.
+	afterNavigate(({ shallow }) => {
+		if (!shallow) analytics.page();
+	});
 </script>
 
 <svelte:head>

@@ -2,8 +2,8 @@
 // for information about these interfaces
 declare global {
 	namespace App {
+		// `status` and `message` are built in.
 		interface Error {
-			message: string;
 			/** Reference id attached by `handleError` (also sent to Sentry when configured). */
 			id?: string;
 		}

@@ -7,7 +7,7 @@ the page that quotes them.
 ## Develop
 
 ```sh
-cp .env.example .env
+cp .env.example .env   # `bun run setup` at the repository root writes this and every other .env
 bun run dev            # http://localhost:4322
 bun run check          # astro check
 bun run build          # dist/

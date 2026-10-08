@@ -1,6 +1,6 @@
-import { browser } from '$app/environment';
-import { env } from '$env/dynamic/public';
-import { redactUrl } from '$lib/utils/redirect';
+import { redactUrl } from '#lib/utils/redirect.js';
+import { browser } from '$app/env';
+import { PUBLIC_POSTHOG_HOST, PUBLIC_POSTHOG_KEY } from '$app/env/public';
 
 /**
  * Product analytics (PostHog), twice gated: the deployment must set `PUBLIC_POSTHOG_KEY`, and the
@@ -11,8 +11,8 @@ import { redactUrl } from '$lib/utils/redirect';
 
 export type Consent = 'granted' | 'denied' | 'undecided';
 
-const KEY = env.PUBLIC_POSTHOG_KEY;
-const HOST = env.PUBLIC_POSTHOG_HOST || 'https://us.i.posthog.com';
+const KEY = PUBLIC_POSTHOG_KEY;
+const HOST = PUBLIC_POSTHOG_HOST || 'https://us.i.posthog.com';
 const STORAGE_KEY = 'starterdough.analytics-consent';
 
 type PostHog = typeof import('posthog-js').default;

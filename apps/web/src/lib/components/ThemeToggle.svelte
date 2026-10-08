@@ -4,7 +4,7 @@
 	import SunIcon from '@lucide/svelte/icons/sun';
 	import { Button, DropdownMenu } from '@repo/ui';
 	import { resetMode, setMode, userPrefersMode } from 'mode-watcher';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	interface Props {
 		class?: string;

@@ -1,11 +1,11 @@
 import { log } from './log';
 
 /**
- * What both entrypoints (`index.ts`, `worker.ts`) wire into the process before doing any work.
+ * What every entrypoint of the API image wires into the process before doing any work.
  *
  * `bun --hot` re-runs an entrypoint, so the handlers live in one `globalThis` slot and the previous
  * evaluation's are unhooked first: otherwise every reload stacks another `shutdown` closure holding
- * a stale server, worker and telemetry handle next to this one.
+ * stale server and telemetry handles next to this one.
  */
 const HANDLERS = Symbol.for('starterdough.process.handlers');
 

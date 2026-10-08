@@ -1,4 +1,4 @@
-import { apiFor } from '$lib/api';
+import { apiFor } from '#lib/api.js';
 import type { PageLoad } from './$types';
 
 /**

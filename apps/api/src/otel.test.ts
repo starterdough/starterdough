@@ -4,8 +4,8 @@ import { isProbeUrl, stripSearch } from './otel';
 // Only the pure helpers: the SDK stays dynamically imported behind OTEL_EXPORTER_OTLP_ENDPOINT.
 describe('otel', () => {
 	it('strips the query string from a span URL — that is where signatures and tokens travel', () => {
-		expect(stripSearch('http://localhost:3000/uploads/org_1/doc_1?exp=1700000000&sig=abc')).toBe(
-			'http://localhost:3000/uploads/org_1/doc_1',
+		expect(stripSearch('http://localhost:3000/signed/report.pdf?exp=1700000000&sig=abc')).toBe(
+			'http://localhost:3000/signed/report.pdf',
 		);
 		expect(stripSearch('https://api.example.com/api/auth/verify-email?token=t&callbackURL=/')).toBe(
 			'https://api.example.com/api/auth/verify-email',

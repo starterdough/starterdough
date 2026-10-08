@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { env } from '@repo/env';
 import { migrate } from 'drizzle-orm/bun-sql/migrator';
 import { db, pg } from './client';
 import { migrationStatus } from './migrations';
@@ -14,32 +15,97 @@ import { migrationStatus } from './migrations';
  */
 const MIGRATION_LOCK_KEY = 4_021_927_183;
 
-let lock: Awaited<ReturnType<typeof pg.reserve>> | null = null;
-try {
-	lock = await pg.reserve();
-	await lock`select pg_advisory_lock(${MIGRATION_LOCK_KEY})`;
-	await migrate(db, { migrationsFolder: join(import.meta.dir, '../drizzle') });
-	// Drizzle's migrator compares each file against the *single newest* applied `when`, so a migration
-	// whose journal timestamp is older than one already applied (what merging a branch
-	// produces) is skipped permanently while `migrate()` still resolves. Verify inside the lock, where
-	// nothing else can be applying: anything still pending means a green deploy against a schema the
-	// new code does not match.
-	const status = await migrationStatus();
-	if (status.pending.length > 0) {
-		throw new Error(
-			`still pending after the run: ${status.pending.join(', ')}. Drizzle skipped them because their journal timestamp is older than the newest applied migration — regenerate them so they sort last, or apply them by hand.`,
-		);
+/**
+ * Where a connection URL points, `host:port/database`, or null when that cannot be told without
+ * risking the user or the password: this goes to logs.
+ *
+ * URL ends the authority at its first `/`, `?` or `#` (or `\`, for http; this check stops there for
+ * every scheme), so one of those unencoded in the user or password ends it early and moves the
+ * credentials into the host, port and path: `postgres://app:4821/9xQ@db:5432/app` has host `app`, port `4821` and path
+ * `/9xQ@db:5432/app`, and `postgres://u:s3cret@ss#x@db/app` has host `ss`. The `@` that closes the
+ * credentials then lies past the authority, so any `@` there means no part of the parse can be
+ * trusted (a query holding one only costs the target). With none there, URL splits the authority
+ * at its last `@`, and the credentials are all before it.
+ */
+function databaseTarget(url: string): string | null {
+	const afterAuthority = /^[a-z][a-z\d+.-]*:\/\/[^/?#\\]*([\s\S]*)$/i.exec(url)?.[1];
+	if (afterAuthority === undefined) return 'a value that is not a URL';
+	if (afterAuthority.includes('@')) return null;
+	try {
+		const parsed = new URL(url);
+		const database = decodeURIComponent(parsed.pathname.slice(1));
+		return `${parsed.hostname}:${parsed.port || '5432'}${database ? `/${database}` : ''}`;
+	} catch {
+		return 'a value that is not a URL';
 	}
-	console.log(`✓ migrations applied (${status.applied} of ${status.shipped})`);
-} catch (error) {
-	// One line, then a non-zero exit: this runs as a deployment step, and a half-applied schema must
-	// stop the rollout rather than let the new code start against the old tables.
-	console.error(`✗ migration failed: ${error instanceof Error ? error.message : String(error)}`);
-	process.exitCode = 1;
-} finally {
-	if (lock) {
-		await lock`select pg_advisory_unlock(${MIGRATION_LOCK_KEY})`.catch(() => {});
-		lock.release();
+}
+
+/**
+ * The line a failed run prints. When Postgres never answers, Bun's driver says only "Failed to
+ * connect", so a connection failure also names the database DATABASE_URL points at and the next
+ * step. So does a server that refuses the login or does not have the database (SQLSTATE class 28,
+ * and 3D000), which Bun reports in `errno`. A refused login prints the SQLSTATE in place of the
+ * server's message, which names the user (`password authentication failed for user "app"`); the
+ * Postgres log has the reason.
+ */
+export function failureMessage(error: unknown, databaseUrl: string): string {
+	const { code, errno } = (typeof error === 'object' && error !== null ? error : {}) as {
+		code?: unknown;
+		errno?: unknown;
+	};
+	const refusedLogin = typeof errno === 'string' && errno.startsWith('28');
+	const message = refusedLogin
+		? `the server refused the login, SQLSTATE ${errno}`
+		: error instanceof Error
+			? error.message
+			: String(error);
+	const line = `✗ migration failed: ${message}`;
+	const where = databaseTarget(databaseUrl);
+	const target =
+		where === null
+			? 'DATABASE_URL could not be parsed safely: percent-encode any `/`, `?`, `#`, `\\` or `@` in its user name or password'
+			: `DATABASE_URL points at ${where}`;
+	if (typeof code === 'string' && code.startsWith('ERR_POSTGRES_CONNECTION')) {
+		return `${line} (${target}). Start Postgres with \`bun run db:up\`, or check DATABASE_URL.`;
 	}
-	await pg.close();
+	if (refusedLogin) {
+		return `${line} (${target}). Check the user and password in DATABASE_URL; the Postgres log says why it refused them.`;
+	}
+	if (errno === '3D000') {
+		return `${line} (${target}). Check DATABASE_URL.`;
+	}
+	return line;
+}
+
+// Only when run as the script (`bun run src/migrate.ts`): migrate.test.ts imports this file.
+if (import.meta.main) {
+	let lock: Awaited<ReturnType<typeof pg.reserve>> | null = null;
+	try {
+		lock = await pg.reserve();
+		await lock`select pg_advisory_lock(${MIGRATION_LOCK_KEY})`;
+		await migrate(db, { migrationsFolder: join(import.meta.dir, '../drizzle') });
+		// Drizzle's migrator compares each file against the *single newest* applied `when`, so a
+		// migration whose journal timestamp is older than one already applied (what merging a branch
+		// produces) is skipped permanently while `migrate()` still resolves. Verify inside the lock,
+		// where nothing else can be applying: anything still pending means a green deploy against a
+		// schema the new code does not match.
+		const status = await migrationStatus();
+		if (status.pending.length > 0) {
+			throw new Error(
+				`still pending after the run: ${status.pending.join(', ')}. Drizzle skipped them because their journal timestamp is older than the newest applied migration — regenerate them so they sort last, or apply them by hand.`,
+			);
+		}
+		console.log(`✓ migrations applied (${status.applied} of ${status.shipped})`);
+	} catch (error) {
+		// One line, then a non-zero exit: this runs as a deployment step, and a half-applied schema
+		// must stop the rollout rather than let the new code start against the old tables.
+		console.error(failureMessage(error, env.DATABASE_URL));
+		process.exitCode = 1;
+	} finally {
+		if (lock) {
+			await lock`select pg_advisory_unlock(${MIGRATION_LOCK_KEY})`.catch(() => {});
+			lock.release();
+		}
+		await pg.close();
+	}
 }

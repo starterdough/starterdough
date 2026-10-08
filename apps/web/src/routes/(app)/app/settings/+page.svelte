@@ -1,10 +1,11 @@
 <script lang="ts">
 	import { Alert, Button, Input, Label } from '@repo/ui';
 	import { toast } from 'svelte-sonner';
-	import { authClient } from '$lib/auth';
-	import LocaleSwitcher from '$lib/components/LocaleSwitcher.svelte';
-	import { messageOf } from '$lib/forms';
-	import { m } from '$lib/paraglide/messages';
+	import { returnUrl } from '#lib/api.js';
+	import { authClient } from '#lib/auth.js';
+	import LocaleSwitcher from '#lib/components/LocaleSwitcher.svelte';
+	import { messageOf } from '#lib/forms.js';
+	import { m } from '#lib/paraglide/messages.js';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -70,7 +71,8 @@
 		emailNotice = null;
 		const result = await authClient.changeEmail({
 			newEmail: target,
-			callbackURL: `${location.origin}/app/settings`,
+			// Emailed, so it must open in a browser even when the request came from a shell.
+			callbackURL: returnUrl('/app/settings'),
 		});
 		emailBusy = false;
 		if (result.error) {
@@ -147,7 +149,8 @@
 		if (!canDelete) return;
 		deleteBusy = true;
 		deleteNotice = null;
-		const result = await authClient.deleteUser({ callbackURL: `${location.origin}/` });
+		// The confirmation link is emailed: `returnUrl()`, not this page's (possibly shell) origin.
+		const result = await authClient.deleteUser({ callbackURL: returnUrl('/') });
 		deleteBusy = false;
 		if (result.error) {
 			deleteNotice = { variant: 'error', text: messageOf(result.error) };

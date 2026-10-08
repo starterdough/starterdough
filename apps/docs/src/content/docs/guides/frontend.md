@@ -3,7 +3,7 @@ title: Frontend platform
 description: What every screen is built from. The component kit, forms, data fetching, the app shell, PWA and offline, dark mode, i18n, and the deployment switches.
 ---
 
-`apps/web` is a SvelteKit 2 / Svelte 5 application and a **thin client** of the API: no database
+`apps/web` is a SvelteKit 3 / Svelte 5 application and a **thin client** of the API: no database
 access, no server-only business logic. `load` functions and components call the API through
 `@repo/api-client`. Auth goes through `@repo/auth/client`. Everything below works on every target:
 SSR on Node or Cloudflare, and the static SPA inside the Tauri shells.
@@ -51,7 +51,7 @@ recomputes every contrast ratio from `theme.css` and fails when one drifts. It i
 `sveltekit-superforms` in **SPA mode with Zod 4**. There are no form actions, because the API is
 the backend on every target and the static build has no server. Schemas come from the contract
 where a procedure exists and from `apps/web/src/lib/schemas.ts` otherwise (auth, account).
-`spaForm` in `$lib/forms.ts` carries
+`spaForm` in `#lib/forms.js` carries
 the shared options, and `applyApiError` maps an oRPC failure back onto fields or the form. Submit
 buttons stay disabled until hydration, because a native POST to a page without actions is a 405.
 
@@ -74,14 +74,15 @@ banners for unverified email and active impersonation.
 ## Feature flags
 
 The `(app)` layout load fetches `system.flags`. Components read
-`flag('key')` from `$lib/flags`. Flags are created on `/admin/flags` (see [Admin](/guides/admin/)).
+`flag('key')` from `#lib/flags.js`. Flags are created on `/admin/flags` ([Admin](/guides/admin/)).
 
 ## PWA and offline
 
-`static/manifest.webmanifest` and `theme-color` make the app installable. `src/service-worker.ts`
-precaches exactly the build manifest (the immutable build output, the static folder and the
-prerendered public pages, `/offline` among them) and serves only those from a cache. **No
-navigation is ever cached.** A navigation to `/app` or `/admin` is one signed-in user's HTML, and on
+`static/manifest.webmanifest` and `theme-color` make the app installable.
+`src/service-worker/index.ts` precaches exactly the build manifest (the immutable build output, the
+static folder and the prerendered public pages, `/offline` among them) and serves only those from a
+cache. **No navigation is ever cached.** A navigation to `/app` or `/admin` is one signed-in user's
+HTML, and on
 a single-origin deployment `/api/*` is a same-origin GET as well. A cached
 copy would hand the next person at that machine another user's page. Everything outside the
 manifest reaches the network untouched. Only a navigation that fails offline is answered, with
@@ -139,6 +140,9 @@ required contrast.
    imported by `apps/web` or `apps/site`. Browser-safe surfaces: `@repo/auth/client`,
    `@repo/auth/permissions`, `@repo/api-client`, `@repo/ui`.
 - Forms validate the contract's schema, never a copy.
+- Every environment variable the app reads is declared in `apps/web/src/env.ts` and imported from
+  `$app/env/public` (`public: true`, reaches the browser) or `$app/env/private`. SvelteKit 3 hands
+  the app nothing that is not declared there, so a new variable starts with a line in that file.
 - Components added later must be exported from `packages/ui/src/index.ts`.
 - `apps/web` typechecks with `noUncheckedIndexedAccess`, `.svelte` files included, so an index
   access yields `T | undefined`. It cannot extend `packages/tsconfig/base.json`, because SvelteKit

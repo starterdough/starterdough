@@ -3,11 +3,12 @@
 	import { isAdmin } from '@repo/auth/permissions';
 	import { Alert, Button, cn, Dialog, Input, Label, Select } from '@repo/ui';
 	import { onMount, untrack } from 'svelte';
+	import { IMPERSONATION_AVAILABLE } from '#lib/api.js';
+	import { authClient } from '#lib/auth.js';
+	import { messageOf } from '#lib/forms.js';
+	import { formatDate, formatNumber } from '#lib/i18n.js';
+	import { m } from '#lib/paraglide/messages.js';
 	import { goto } from '$app/navigation';
-	import { authClient } from '$lib/auth';
-	import { messageOf } from '$lib/forms';
-	import { formatDate, formatNumber } from '$lib/i18n';
-	import { m } from '$lib/paraglide/messages';
 	import type { PageData, PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -229,7 +230,7 @@
 		}
 		// The browser's cookie now belongs to the target user; the app shell shows the banner with
 		// the Stop button that restores this admin session.
-		await goto('/app', { invalidateAll: true });
+		await goto('/app', { refreshAll: true });
 	}
 </script>
 
@@ -287,6 +288,11 @@
 	</form>
 
 	<div class="flex flex-col gap-4">
+		<!-- A shell could start impersonating but never stop (`IMPERSONATION_AVAILABLE`), so it has
+		     no Impersonate button and says where to find one. -->
+		{#if !IMPERSONATION_AVAILABLE}
+			<Alert>{m.admin_users_impersonate_web_only()}</Alert>
+		{/if}
 		{#if notice}
 			<Alert variant={notice.variant}>{notice.text}</Alert>
 		{/if}
@@ -383,16 +389,18 @@
 														<option value={user.role}>{user.role}</option>
 													{/if}
 												</Select>
-												<Button
-													variant="outline"
-													size="sm"
-													disabled={rowBusy || isAdmin(user.role)}
-													onclick={() => (confirmingImpersonate = user)}
-												>
-													{isBusy(user, 'impersonate')
-														? m.admin_users_impersonating()
-														: m.admin_users_impersonate()}
-												</Button>
+												{#if IMPERSONATION_AVAILABLE}
+													<Button
+														variant="outline"
+														size="sm"
+														disabled={rowBusy || isAdmin(user.role)}
+														onclick={() => (confirmingImpersonate = user)}
+													>
+														{isBusy(user, 'impersonate')
+															? m.admin_users_impersonating()
+															: m.admin_users_impersonate()}
+													</Button>
+												{/if}
 												<Button
 													variant="outline"
 													size="sm"

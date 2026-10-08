@@ -45,7 +45,13 @@ docker compose config --services | grep -x demo-api >/dev/null || refuse "no dem
 # a branch of its own.
 if [ -n "${GIT_REF:-}" ]; then
 	echo "▸ checking out $GIT_REF"
-	git fetch --quiet origin
+	# The Deploy workflow pushes every release into this checkout (and passes GIT_REF=''), so a commit
+	# it delivered needs no fetch, and no credential for a private repository on this box. A branch
+	# name, or a commit that is not here yet, still fetches from origin. The same rule as deploy.sh.
+	case "$GIT_REF" in
+	*[!0-9a-f]*) git fetch --quiet origin ;;
+	*) git cat-file -e "$GIT_REF^{commit}" 2>/dev/null || git fetch --quiet origin ;;
+	esac
 	for path in infra/scripts/operation-lock.sh infra/scripts/deployment-recovery.py infra/scripts/deployment-recovery.sh infra/scripts/recover-deployment.sh; do
 		git cat-file -e "$GIT_REF:$path" || {
 			echo "ref $GIT_REF predates deployment recovery safeguards" >&2

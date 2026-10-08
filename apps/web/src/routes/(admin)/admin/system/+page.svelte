@@ -2,10 +2,10 @@
 	import { type SystemStatus, safe } from '@repo/api-client';
 	import { Alert, Button, cn } from '@repo/ui';
 	import { onMount, untrack } from 'svelte';
-	import { api } from '$lib/api';
-	import { messageOf } from '$lib/forms';
-	import { formatDateTime, formatNumber } from '$lib/i18n';
-	import { m } from '$lib/paraglide/messages';
+	import { api } from '#lib/api.js';
+	import { messageOf } from '#lib/forms.js';
+	import { formatDateTime, formatNumber } from '#lib/i18n.js';
+	import { m } from '#lib/paraglide/messages.js';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();

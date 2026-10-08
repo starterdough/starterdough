@@ -19,6 +19,9 @@ apps/native/src-tauri/target/
 apps/native/src-tauri/gen/schemas/
 *.tsbuildinfo
 apps/api/openapi.json
+# `bun build --compile` (the API's build) can leave its scratch file, `.<hash>-00000000.bun-build`,
+# in the package directory
+*.bun-build
 
 # Generated i18n (Paraglide compiles apps/web/messages/** on dev/build/check)
 apps/web/src/lib/paraglide/
@@ -36,9 +39,6 @@ test-results/
 playwright-report/
 coverage/
 
-# Local storage driver (uploaded documents when S3_BUCKET is unset)
-apps/api/data/
-data/uploads/
 
 # Logs
 *.log

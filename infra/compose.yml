@@ -1,8 +1,8 @@
 # Self-hosted production stack (VPS / home server). Run `docker compose` from the REPOSITORY ROOT:
 #   cp .env.example .env               # COMPOSE_FILE=infra/compose.yml is set in there → no -f needed
-#                                      # then fill POSTGRES_PASSWORD, SERVICE_TOKEN, BETTER_AUTH_SECRET:
-#                                      # they ship empty and `${VAR:?…}` below refuses to start without
-#                                      # them (infra/scripts/provision.sh generates all three)
+#                                      # then fill POSTGRES_PASSWORD and BETTER_AUTH_SECRET: they ship
+#                                      # empty and `${VAR:?…}` below refuses to start without them
+#                                      # (infra/scripts/provision.sh generates both)
 #   docker compose up -d --build       # build here; or `docker compose pull && docker compose up -d`
 #                                      # for the images CI pushes (IMAGE_REGISTRY / IMAGE_TAG)
 #   docker compose --profile backup up -d        # optional services; or COMPOSE_PROFILES=backup,… in .env
@@ -18,7 +18,7 @@
 #                app.DOMAIN → web:3000     api.DOMAIN → api:3000
 #              (or path-based routing on a single origin: see caddy/single-origin.Caddyfile)
 #   web     ── SvelteKit (adapter-node), thin client of api
-#   migrate ── one-shot: applies packages/db/drizzle, then api and worker start
+#   migrate ── one-shot: applies packages/db/drizzle; the services that use the database wait for it
 #   api     ── Hono on Bun: auth and RPC/REST
 #   postgres
 #   backup  ── optional (`--profile backup`): nightly pg_dump to the `backups` volume and to S3/R2
@@ -41,7 +41,7 @@ x-logging: &logging
     max-size: '10m'
     max-file: '5'
 
-# api, worker and migrate run the same image with different commands.
+# Every service built from apps/api (api, migrate, …) runs the same image with its own command.
 # The `image:` defaults across this file are a neutral LOCAL namespace on purpose: with IMAGE_REGISTRY
 # unset (how .env.example ships) `up -d --build` tags `starterdough/api:local` and `docker compose pull`
 # fails loudly with "pull access denied" instead of quietly fetching a stranger's build.
@@ -51,7 +51,7 @@ x-api-image: &api-image
     dockerfile: apps/api/Dockerfile
   image: ${IMAGE_REGISTRY:-starterdough}/api:${IMAGE_TAG:-local}
 
-# Applied to every long-running service (api, worker, web, ai, caddy): no privilege escalation and
+# Applied to every long-running service (api, web, caddy, …): no privilege escalation and
 # no Linux capabilities. caddy adds back NET_BIND_SERVICE because it binds 80/443 in the container.
 # The pid cap cannot live in this anchor: Compose folds `pids_limit` into
 # `deploy.resources.limits.pids` and rejects a service that sets both, so services with a `deploy`
@@ -72,7 +72,7 @@ x-api-env: &api-env
   # env_file would hand the API an empty value and it would fall back to localhost origins.
   API_URL: ${API_URL:-https://api.${DOMAIN:-localhost}}
   WEB_URL: ${WEB_URL:-https://app.${DOMAIN:-localhost}}
-  # Set per service, not from .env: one env_file feeds api, worker and migrate, so an
+  # Set per service, not from .env: one env_file feeds every service built from apps/api, so an
   # OTEL_SERVICE_NAME row there would collapse them into a single service in the traces.
   OTEL_SERVICE_NAME: starterdough-api
 
@@ -87,8 +87,8 @@ services:
       POSTGRES_USER: starterdough
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: starterdough
-    # Defaults (max_connections=100) fit one api (DATABASE_POOL_MAX, 10) + one worker + migrate +
-    # backup with room to spare. Raise both together if you add replicas.
+    # Defaults (max_connections=100) fit one of each service here at DATABASE_POOL_MAX (10 per
+    # process), plus migrate and backup, with room to spare. Raise both together if you add replicas.
     # Docker's 64 MB default /dev/shm is where Postgres puts parallel-query workers' shared memory;
     # a large parallel scan needs the room and fails with "could not resize shared
     # memory segment" on 64 MB. 1 GB is the size the official image documents.
@@ -105,8 +105,9 @@ services:
       retries: 10
       start_period: 10s
 
-  # Applies pending migrations, exits, and gates api/worker (service_completed_successfully). It runs
-  # on every `up`; when nothing is pending it is a no-op that takes a second.
+  # Applies pending migrations, exits, and gates the services that use the database
+  # (service_completed_successfully). It runs on every `up`; when nothing is pending it is a no-op
+  # that takes a second.
   migrate:
     <<: *api-image
     command: ['bun', 'run', 'packages/db/src/migrate.ts']
@@ -166,8 +167,9 @@ services:
       NODE_ENV: production
       PORT: '3000'
       HOST: 0.0.0.0
-      # Public URL of the app (SvelteKit needs it for form actions / redirects)
-      ORIGIN: ${WEB_URL:-https://app.${DOMAIN:-localhost}}
+      # No ORIGIN: adapter-node 6 dropped it and takes the origin from the Host header Caddy
+      # passes through, over https. The app has no form actions for SvelteKit's CSRF origin check
+      # to guard; the API checks its own callers (apps/api/src/middleware/csrf.ts, rpc/handler.ts).
       # Browser-facing API origin
       PUBLIC_API_URL: ${API_URL:-https://api.${DOMAIN:-localhost}}
       # Internal API origin for SSR (skips the public hop)
@@ -183,11 +185,11 @@ services:
       PUBLIC_POSTHOG_KEY: ${PUBLIC_POSTHOG_KEY:-}
       PUBLIC_POSTHOG_HOST: ${PUBLIC_POSTHOG_HOST:-}
       # Demo mode's browser half (the banner and noindex). Read at run time through
-      # $env/dynamic/public, so unlike the PUBLIC_* build args above it needs no build arg: it is not
-      # part of the page's Content-Security-Policy.
+      # $app/env/public (apps/web/src/env.ts), so unlike the PUBLIC_* build args above it needs no
+      # build arg: it is not part of the page's Content-Security-Policy.
       PUBLIC_DEMO_MODE: ${PUBLIC_DEMO_MODE:-}
-      # Browser-visible origin of the presigned upload URLs, so the app's own CSP can allow it.
-      # Empty = the local disk driver, whose URLs are on the API origin already.
+      # An object-storage origin the browser talks to directly, so the app's own CSP can allow it.
+      # Empty = none.
       PUBLIC_STORAGE_ORIGIN: ${PUBLIC_STORAGE_ORIGIN:-}
     depends_on:
       api:
@@ -282,7 +284,7 @@ services:
         condition: service_healthy
 
   # Uptime checks + alerting (mail, Slack, Telegram, …) from inside the network: monitor
-  # http://api:3000/readyz, http://web:3000/healthz, http://ai:8000/health and your public URLs.
+  # http://api:3000/readyz, http://web:3000/healthz and your public URLs.
   # Bound to loopback; reach it over Tailscale (`tailscale serve --bg --https=3001 3001`) or SSH.
   uptime-kuma:
     image: louislam/uptime-kuma:2
@@ -294,7 +296,8 @@ services:
     volumes:
       - uptime_kuma:/app/data
 
-  # Traces from api/worker/ai land here when OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318.
+  # Traces from the API and every service it calls land here when
+  # OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318.
   # Grafana on 127.0.0.1:3030 (admin/admin); Tempo, Loki and Prometheus are pre-wired inside.
   lgtm:
     # Pinned: `latest` here would change the whole observability stack under you on a `compose pull`.

@@ -9,9 +9,9 @@
 	email "{$ACME_EMAIL}"
 	servers {
 		# See single-origin.Caddyfile for the reasoning: read_header bounds a slowloris header trickle,
-		# read_body covers a 25 MiB document upload on a slow link (the *size* is bounded by
+		# read_body lets the largest allowed body arrive over a slow link (the *size* is bounded by
 		# `request_body` on the api site below), and there is deliberately no `write` timeout: it
-		# would cut the jobs.stream SSE response mid-flight.
+		# would cut a server-sent event stream mid-flight.
 		timeouts {
 			read_header 15s
 			read_body 5m
@@ -71,7 +71,7 @@
 		format filter {
 			wrap json
 			fields {
-				# Signed upload URLs carry `sig` (/uploads/*) and Better Auth's email links carry
+				# Signed URLs carry `sig` and Better Auth's email links carry
 				# `token` / `code` / `state` (/api/auth/*): live credentials that would otherwise sit
 				# in `docker compose logs` and in whatever ships stdout onwards. Filtered site-wide
 				# because one `log` block covers a site and these names appear nowhere else. `email`
@@ -162,22 +162,15 @@ api.{$DOMAIN} {
 	import logs
 
 	# Bounded at the edge so an oversized or endless body never reaches the api container (1 GB memory
-	# limit) or the host disk `pgdata` shares. /uploads/* is the local storage driver's bucket and
-	# carries the document itself: Caddy reads `32MB` as 32 000 000 bytes, which clears the
-	# 26 214 400-byte MAX_UPLOAD_BYTES default with room to spare. Every other route is JSON.
-	# Raise MAX_UPLOAD_BYTES and this has to move with it.
-	@uploads path /uploads/*
-	@bounded not path /uploads/*
-	request_body @uploads {
-		max_size 32MB
-	}
-	request_body @bounded {
+	# limit) or the host disk `pgdata` shares.
+	# Every route is JSON.
+	request_body {
 		max_size 1MB
 	}
 
 	# Compression per content type, not site-wide: the default matcher includes `text/*`, which would
-	# buffer the text/event-stream response of jobs.stream. application/json covers the RPC/REST
-	# payloads and leaves SSE (and binary downloads from /uploads/*) untouched.
+	# buffer a text/event-stream response. application/json covers the RPC/REST payloads and leaves
+	# server-sent events and binary downloads untouched.
 	encode {
 		zstd
 		gzip
@@ -191,7 +184,7 @@ api.{$DOMAIN} {
 		import resilient
 		# Ready = database reachable (not just the process up), so a broken deploy is held, not served.
 		health_uri /readyz
-		# Server-sent events (jobs.stream): pass chunks through as they arrive.
+		# Server-sent events: pass chunks through as they arrive.
 		flush_interval -1
 	}
 }

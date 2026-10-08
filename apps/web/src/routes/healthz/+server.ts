@@ -1,5 +1,3 @@
-import { json } from '@sveltejs/kit';
-
 /**
  * Liveness probe for the container HEALTHCHECK and Caddy's active health checks. Prerendered, so
  * it is a static file in every build (node, Cloudflare, static) and costs nothing per poll; it
@@ -7,4 +5,4 @@ import { json } from '@sveltejs/kit';
  */
 export const prerender = true;
 
-export const GET = () => json({ status: 'ok' });
+export const GET = () => Response.json({ status: 'ok' });

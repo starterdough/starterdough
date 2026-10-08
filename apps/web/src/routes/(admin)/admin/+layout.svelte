@@ -4,11 +4,11 @@
 	import ServerIcon from '@lucide/svelte/icons/server';
 	import UsersIcon from '@lucide/svelte/icons/users';
 	import { cn } from '@repo/ui';
+	import { authClient } from '#lib/auth.js';
+	import ThemeToggle from '#lib/components/ThemeToggle.svelte';
+	import { m } from '#lib/paraglide/messages.js';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { authClient } from '$lib/auth';
-	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
-	import { m } from '$lib/paraglide/messages';
 	import type { LayoutProps } from './$types';
 
 	let { data, children }: LayoutProps = $props();

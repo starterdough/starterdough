@@ -31,7 +31,7 @@ apps/native/src-tauri/gen
 **/.turbo
 **/.wrangler
 
-# Uploaded documents and backups from a local run
+# Local data and backups from a local run
 apps/api/data
 data
 backups

@@ -120,6 +120,7 @@
 	"admin_users_impersonate": "Impersonate",
 	"admin_users_impersonate_confirm_description": "You act as this user until you stop impersonating.",
 	"admin_users_impersonate_confirm_title": "Sign in as {email}?",
+	"admin_users_impersonate_web_only": "Impersonating a user works only in the web app in your browser: this app could not take you back to your own account afterwards.",
 	"admin_users_impersonating": "Impersonating…",
 	"admin_users_loading": "Loading users…",
 	"admin_users_range_empty": "No users",

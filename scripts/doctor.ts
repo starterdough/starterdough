@@ -1,9 +1,19 @@
-import { readFile, stat } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { readFile, realpath, stat } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 import { parseEnv as parseDotEnv } from 'node:util';
 
 const MINIMUM_BUN = [1, 4, 0] as const;
+/**
+ * SvelteKit 3's floor. Node is optional, but `bun run dev` and `bun run build` start Vite through
+ * its `#!/usr/bin/env node` shebang, so a `node` on PATH is what runs it; only without one does
+ * Bun run Vite itself.
+ */
+const MINIMUM_NODE = [22, 17, 0] as const;
 const COMMAND_TIMEOUT_MS = 5_000;
+
+/** What every failed Docker check offers instead of Docker: a Postgres you already run. */
+const OWN_POSTGRES = 'Postgres 17';
+const WITHOUT_DOCKER = `or rerun with \`bun run doctor -- --database=external\` to use your own ${OWN_POSTGRES}`;
 
 export type DatabaseMode = 'docker' | 'external';
 
@@ -28,6 +38,11 @@ export interface DoctorDependencies {
 	bunVersion: string;
 	env: Record<string, string | undefined>;
 	exists(path: string): Promise<boolean>;
+	/**
+	 * What `node --version` prints for the `node` first on PATH: `null` when there is none, an empty
+	 * string when it would not run.
+	 */
+	nodeVersion(timeoutMs: number): Promise<string | null>;
 	read(path: string): Promise<string>;
 	run(argv: string[], timeoutMs: number): Promise<boolean>;
 }
@@ -139,6 +154,26 @@ function meetsMinimum(version: string, minimum: readonly number[]): boolean {
 	return true;
 }
 
+function nodeCheck(printed: string | null): DoctorCheck {
+	if (printed === null) {
+		return { name: 'Node.js', ok: true, detail: 'not on PATH; Bun runs Vite itself' };
+	}
+	// Only the parsed digits are shown: the doctor prints no raw subprocess output.
+	const version = parseVersion(printed.trim().replace(/^v/, ''))?.join('.');
+	if (version && meetsMinimum(version, MINIMUM_NODE)) {
+		return {
+			name: 'Node.js',
+			ok: true,
+			detail: `Node ${version} satisfies SvelteKit 3's >=22.17.0 requirement`,
+		};
+	}
+	return {
+		name: 'Node.js',
+		ok: false,
+		detail: `Node ${version ?? 'of an unreadable version'} is on your PATH; SvelteKit 3 needs 22.17 or newer (bun run starts Vite with it). Upgrade Node or remove it from PATH`,
+	};
+}
+
 function rootEnvironmentProblems(
 	environment: Record<string, string | undefined>,
 	databaseMode: DatabaseMode,
@@ -154,7 +189,7 @@ function rootEnvironmentProblems(
 	else if (!isPostgresUrl(databaseUrl)) {
 		problems.push('DATABASE_URL must be an absolute postgres:// or postgresql:// URL');
 	}
-	if (!authSecret) problems.push('BETTER_AUTH_SECRET is missing');
+	if (!authSecret) problems.push('BETTER_AUTH_SECRET is missing; `bun run setup` generates one');
 	else if (authSecret.length < 32) {
 		problems.push('BETTER_AUTH_SECRET must contain at least 32 characters');
 	}
@@ -229,7 +264,7 @@ function siteEnvironmentProblems(
 ): string[] {
 	const problems: string[] = [];
 	const siteUrl = value(environment, 'SITE_URL');
-	if (!siteUrl) problems.push('SITE_URL is missing');
+	if (!siteUrl) problems.push('SITE_URL is missing; `bun run setup` sets the local origin');
 	else if (!isHttpUrl(siteUrl)) problems.push('SITE_URL must be an absolute http(s) URL');
 	else if (isPlaceholderHost(siteUrl))
 		problems.push('SITE_URL still uses a reserved placeholder host');
@@ -257,7 +292,7 @@ function environmentCheck(
 		return {
 			name,
 			ok: false,
-			detail: `missing ${requiredPath}; copy ${requiredPath}.example and fill the required values`,
+			detail: `missing ${requiredPath}; run \`bun run setup\` to create it from ${requiredPath}.example`,
 		};
 	}
 	const allProblems = [...file.errors, ...problems];
@@ -304,6 +339,7 @@ export async function runDoctor(
 			? `Bun ${dependencies.bunVersion} satisfies the >=1.4.0 requirement`
 			: `Bun ${dependencies.bunVersion} is too old; install Bun 1.4.0 or newer`,
 	});
+	checks.push(nodeCheck(await dependencies.nodeVersion(COMMAND_TIMEOUT_MS)));
 
 	const dependencyPaths = [
 		'bun.lock',
@@ -412,7 +448,9 @@ export async function runDoctor(
 		checks.push({
 			name: 'Docker CLI',
 			ok: dockerCli,
-			detail: dockerCli ? 'Docker CLI is available' : 'Docker CLI is unavailable; install Docker',
+			detail: dockerCli
+				? 'Docker CLI is available'
+				: `Docker CLI is unavailable; install Docker, ${WITHOUT_DOCKER}`,
 		});
 		const compose = await dependencies.run(['docker', 'compose', 'version'], COMMAND_TIMEOUT_MS);
 		checks.push({
@@ -420,7 +458,7 @@ export async function runDoctor(
 			ok: compose,
 			detail: compose
 				? 'the `docker compose` plugin is available'
-				: 'the `docker compose` plugin is unavailable; install Docker Compose v2',
+				: `the \`docker compose\` plugin is unavailable; install Docker Compose v2, ${WITHOUT_DOCKER}`,
 		});
 		const daemon = await dependencies.run(
 			['docker', 'info', '--format', '{{.ServerVersion}}'],
@@ -431,7 +469,7 @@ export async function runDoctor(
 			ok: daemon,
 			detail: daemon
 				? 'the Docker daemon is reachable'
-				: 'the Docker daemon is not reachable; start Docker and try again',
+				: `the Docker daemon is not reachable; start Docker and try again, ${WITHOUT_DOCKER}`,
 		});
 	}
 
@@ -478,6 +516,7 @@ export function parseDoctorArgs(
 export const HELP = `Usage: bun run doctor [-- --build] [-- --database=external]
 
 Checks the local app setup by default, including Docker for the shipped development database.
+\`bun run setup\` creates and completes the environment files it checks.
   --build              also validate marketing-site and documentation build origins
   --database=external  use DATABASE_URL for an existing PostgreSQL and skip Docker checks
 
@@ -495,6 +534,32 @@ function defaultDependencies(rootDir: string): DoctorDependencies {
 				return true;
 			} catch {
 				return false;
+			}
+		},
+		async nodeVersion(timeoutMs) {
+			// The same lookup the shebang does, so this is the Node that `bun run dev` would start.
+			const node = Bun.which('node');
+			if (!node) return null;
+			try {
+				// Without a real Node, `bun run` puts Bun itself on PATH under that name, in a temporary
+				// `bun-node-*` directory, and that one answers `--version` with an error. Where it is a
+				// link the path gives it away too.
+				if (basename(dirname(node)).startsWith('bun-node')) return null;
+				if ((await realpath(node)) === (await realpath(process.execPath))) return null;
+				const child = Bun.spawn([node, '--version'], {
+					cwd: rootDir,
+					killSignal: 'SIGKILL',
+					stderr: 'ignore',
+					stdout: 'pipe',
+					timeout: timeoutMs,
+				});
+				const [printed, code] = await Promise.all([
+					new Response(child.stdout).text(),
+					child.exited,
+				]);
+				return code === 0 ? printed : '';
+			} catch {
+				return '';
 			}
 		},
 		read: (path) => readFile(path, 'utf8'),

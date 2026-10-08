@@ -1,10 +1,8 @@
 # Backups
 
-Nightly `pg_dump` of the compose Postgres, plus a tarball of the uploads directory when the API
-uses the local storage driver. Copies go to the `backups` volume and, when a bucket is configured,
-to S3/R2. Old sets are pruned. A heartbeat URL is pinged after each complete run, and its `/fail`
-endpoint is pinged when the uploads archive is known to be incomplete, so you hear about backups
-that stop or lose files.
+Nightly `pg_dump` of the compose Postgres. Copies go to the `backups` volume and, when a bucket is
+configured, to S3/R2. Old sets are pruned. A heartbeat URL is pinged after each complete run, so
+you hear about backups that stop.
 
 The tool is `@repo/backup`, Bun built-ins only (`Bun.spawn`, `Bun.S3Client`, `Bun.cron`,
 `Bun.SQL`). The image is `oven/bun:1.4-alpine` plus Alpine's `postgresql17-client` package (and GNU
@@ -20,12 +18,7 @@ Logs are one JSON object per line: `info` on stdout, `warn` and `error` on stder
 docker compose run --rm backup bun src/cli.ts backup
 docker compose run --rm backup bun src/cli.ts list                            # exit 1 = stale
 docker compose run --rm backup bun src/cli.ts restore latest --drill
-docker compose run --rm backup bun src/cli.ts restore latest --yes            # live, after `docker compose stop api worker`
-
-# Uploads too: the service mounts /data/uploads read-only and that mount wins over a `run -v` on the
-# same path, so mount the volume somewhere else and point STORAGE_DIR at it for the one-shot.
-docker compose run --rm -v starterdough_uploads:/restore/uploads -e STORAGE_DIR=/restore/uploads \
-  backup bun src/cli.ts restore <stamp> --yes --uploads
+docker compose run --rm backup bun src/cli.ts restore latest --yes            # live, after `docker compose stop api`
 
 # The scheduled container (what `docker compose --profile backup up -d` starts)
 # runs `bun src/cli.ts schedule` and exits cleanly on SIGTERM.
@@ -33,13 +26,12 @@ docker compose run --rm -v starterdough_uploads:/restore/uploads -e STORAGE_DIR=
 
 | Command | What |
 | --- | --- |
-| `backup` | take the lock, pre-flight, dump (`--format=custom --compress=6 --no-privileges`; ownership is dropped at restore time by `pg_restore --no-owner`), verify the archive, optional uploads tarball, row counts, manifest, upload **and verify the objects against the bucket**, prune, heartbeat |
+| `backup` | take the lock, pre-flight, dump (`--format=custom --compress=6 --no-privileges`; ownership is dropped at restore time by `pg_restore --no-owner`), verify the archive, row counts, manifest, upload **and verify the objects against the bucket**, prune, heartbeat |
 | `list` | sets on disk and in the bucket, plus the pre-restore dumps nothing prunes. Freshness and `restore latest` use the newest set with both a dump and manifest on the same source (local directory or bucket); partial newer sets do not shadow an older complete set. **Exits 1 when the newest complete set is older than `--max-age` (default `BACKUP_MAX_AGE`, `36h`).** This is the command a monitor runs |
 | `list --no-max-age` | list without the freshness check, so browsing a fresh box exits 0 |
-| `restore <stamp\|latest> --drill` | restore into a uniquely named scratch database, compare its table list and row counts against the live database and manifest, extract and verify the uploads archive, then drop it |
+| `restore <stamp\|latest> --drill` | restore into a uniquely named scratch database, compare its table list and row counts against the live database and manifest, then drop it |
 | | The drill name includes a random suffix and does not drop a database before creating its own. A database left by an interrupted drill has a different name from the next run. |
 | `restore <stamp\|latest> --yes` | restore into the live database (`--clean --if-exists --single-transaction --exit-on-error`). Refused without `--yes` |
-| `restore … --uploads` | also restore the tarball into `STORAGE_DIR` (never by default). The archive is located, checksum-verified and fully extracted into staging on the uploads filesystem *before* `pg_restore`; see the one-shot command above for the writable mount |
 | `restore … --database <name>` | target database (live) or base name of the drill database; defaults to the one in `DATABASE_URL` |
 | `restore … --no-safety-dump` | skip the pre-restore dump (below). Only for a target you are certain you never want back |
 | `restore … --force-database-mismatch` | restore even though the manifest says the dump came from another database. Without it a staging dump cannot be restored into production by accident |
@@ -52,11 +44,9 @@ Exit codes: `0` ok, `1` failure or refused, `2` usage. Durations (`--max-age`, `
 `BACKUP_LOCK_TIMEOUT`) are one number and one unit: `90s`, `45m`, `36h`, `2d`. A bare number is
 rejected.
 
-
-Artifacts: `starterdough_<YYYYMMDDTHHMMSSZ>.dump`, `.uploads.tar.gz` (local driver only), `.json`
-(manifest: stamp, file sizes and SHA-256s, `pg_dump` version, the `TABLE DATA` entry count of the
-dump, the row count of every `public` table at dump time, whether uploads were included and whether
-the archive was incomplete, the source database and the warnings that were in force).
+Artifacts: `starterdough_<YYYYMMDDTHHMMSSZ>.dump` and `.json` (manifest: stamp, file sizes and
+SHA-256s, `pg_dump` version, the `TABLE DATA` entry count of the dump, the row count of every
+`public` table at dump time, the source database and the warnings that were in force).
 
 `<db>_<stamp>_pre_restore.dump` files are the pre-restore dumps described below. They sit outside
 the artifact naming on purpose, so nothing prunes them, uploads them or lists them as a set. Delete
@@ -69,13 +59,12 @@ them yourself once you are sure the restore was the right one.
   refuses with exit 1 if another process holds it. Known ceiling: the lock lives in one pooled
   connection, so a Postgres restart releases it while the work continues. It prevents the accident,
   not a race.
-- **Pre-flight, before `pg_dump`.** `BACKUP_DIR` exists and is writable; with the local storage
-  driver `STORAGE_DIR` is a directory; there is free space on the backups filesystem (`df`, skipped
-  on Windows; under 64 MiB fails the run, less than 1.5× the last dump warns); and, when a bucket
-  is configured, **the credential is proved to work** by writing, `HEAD`-ing and deleting a tiny
-  `<prefix>.preflight` object. A revoked key or a deleted bucket then fails in a second instead of
-  after an hour of dumping. A denied *delete* is reported, not fatal: a write-only credential is the
-  shape this bucket should have.
+- **Pre-flight, before `pg_dump`.** `BACKUP_DIR` exists and is writable; there is free space on the
+  backups filesystem (`df`, skipped on Windows; under 64 MiB fails the run, less than 1.5× the last
+  dump warns); and, when a bucket is configured, **the credential is proved to work** by writing,
+  `HEAD`-ing and deleting a tiny `<prefix>.preflight` object. A revoked key or a deleted bucket then
+  fails in a second instead of after an hour of dumping. A denied *delete* is reported, not fatal:
+  a write-only credential is the shape this bucket should have.
 - **The archive is opened.** `pg_restore --list` runs against the finished dump while it is still
   the `.part` file. A `pg_dump` that exits 0 can still leave a file no `pg_restore` will read (a
   disk that filled up, a broken compression stream), and zero `TABLE DATA` entries means the
@@ -85,18 +74,10 @@ them yourself once you are sure the restore was the right one.
   per query) goes into the manifest, so a drill can assert that the data came back. The counts are
   taken just after the dump, not inside its snapshot, so a database still taking writes drifts by a
   few rows; a drill allows 5 %. Failing to count is a warning, not a failed backup.
-- **A local backup does not pause writes.** The built-in schedule runs `pg_dump` while the app may be
-  changing the database and uploads. PostgreSQL's dump is internally consistent, but the uploads
-  archive is captured separately, so database references and files can reflect different moments.
-  Use a coordinated host backup that quiesces the API/worker across both captures when that
-  cross-resource consistency fence is required.
 - **The off-box copy is verified against the bucket.** After each `put` the object is `HEAD`ed and
   the size the *bucket* reports is compared with the local file's. A mismatch deletes the bad
   object and retries once. A second mismatch fails the run, so the heartbeat stays silent and the
   local copy remains the good one.
-- **A degraded uploads archive pages the monitor.** Tar exit code 1 keeps the useful database dump
-  and readable upload files, and the manifest records why the archive is incomplete. The heartbeat
-  goes to `<BACKUP_HEARTBEAT_URL>/fail` instead of the success URL for that set.
 - **Housekeeping runs either way.** Retention pruning and the sweep of stale `.part` files happen
   after every attempt and once when the scheduler starts, so a container that crash-loops or a
   schedule that never fires still gets tidied. The set just written is never a pruning candidate.
@@ -162,10 +143,7 @@ A live restore is destructive. Before `pg_restore --clean --if-exists` drops a s
    with rows pointing at objects that were dropped underneath it, and `--single-transaction` with
    `--clean` cannot take its locks while another session holds them. `--terminate-connections`
    disconnects them instead (they come back if their service is still running, so stop it).
-5. With `--uploads`, the verified tarball is fully extracted into a unique hidden staging directory
-   inside `STORAGE_DIR`. This consumes capacity on the actual uploads volume and catches corrupt
-   data, insufficient space and extraction I/O errors before PostgreSQL changes.
-6. The current contents of the target database are dumped to `<db>_<stamp>_pre_restore.dump` in
+5. The current contents of the target database are dumped to `<db>_<stamp>_pre_restore.dump` in
    `BACKUP_DIR`, and the path is logged with the `pg_restore` command that puts it back.
    `--no-safety-dump` skips this.
 
@@ -182,15 +160,6 @@ on a lock. Two trade-offs to know:
   carry on, so a restore whose data entries nearly all failed would still exit 0 with an identical
   table list. The drill also compares the restored row counts against the manifest's (5 %
   tolerance, and a table the manifest says has rows may not come back empty).
-
-`--uploads` extracts into staging before the database restore, then promotes the staged files with
-same-filesystem renames after PostgreSQL commits. Promotion **merges** into `STORAGE_DIR`: it
-restores what the archive holds and leaves everything else alone. Documents deleted after the
-backup was taken reappear, and documents added since survive. Nothing is deleted. For an exact copy
-of the backup's state, empty `STORAGE_DIR` first. PostgreSQL and the filesystem still cannot commit
-atomically. If promotion fails after PostgreSQL succeeds, the command exits 1, keeps the remaining
-staged files, and reports both their path and the pre-restore safety dump so the operator can finish
-or roll back. Interrupted staging directories are excluded from later upload archives.
 
 `restore latest` compares the newest complete set on disk with the newest complete set in the bucket
 and takes the newer of the two (a tie goes to the local copy, which needs no download). It never
@@ -217,9 +186,6 @@ docker compose run --rm backup bun src/cli.ts list --no-max-age
 
 # 4. Restore. `latest`, or the stamp you want.
 docker compose run --rm backup bun src/cli.ts restore <stamp> --yes
-#    With the local storage driver, the documents as well:
-docker compose run --rm -v starterdough_uploads:/restore/uploads -e STORAGE_DIR=/restore/uploads \
-  backup bun src/cli.ts restore <stamp> --yes --uploads
 
 # 5. Everything else, migrations included (`migrate` runs on every `up`).
 docker compose up -d
@@ -247,18 +213,12 @@ docker compose up -d
 | `BACKUP_MAX_AGE` | `36h` | `list` exits 1 when the newest restorable set is older than this. A day and a half: one missed nightly run is a warning, two are an outage. `--max-age` overrides it per run. |
 | `BACKUP_COMMAND_TIMEOUT_MINUTES` | `360` | Ceiling on `pg_dump`, `pg_restore` and `tar`. Raise it if a real dump takes longer than 6 h. |
 | `BACKUP_LOCK_TIMEOUT` | `60s` | `lock_timeout` for a restore session (`PGOPTIONS`), so a live restore fails instead of waiting forever for a leftover reader's lock. |
-| `STORAGE_DIR` | empty | Local storage driver: archive this directory. Skipped when `S3_BUCKET` is set (objects already live in S3) or when unset. Set but missing (mount gone, typo) fails the run in the pre-flight, before `pg_dump`, so the heartbeat stays silent. |
 | `BACKUP_S3_BUCKET` + `BACKUP_S3_ENDPOINT` / `BACKUP_S3_REGION` / `BACKUP_S3_ACCESS_KEY_ID` / `BACKUP_S3_SECRET_ACCESS_KEY` | empty | Off-box copy. `BACKUP_S3_REGION` defaults to `auto`, which is only valid together with an endpoint (R2 and other S3-compatible services); with no endpoint a real AWS region is required. Key id and secret must be set together. |
 | `BACKUP_S3_PREFIX` | `backups/` | Key prefix inside the bucket. One prefix per deployment; see below. |
-| `BACKUP_HEARTBEAT_URL` | empty | `GET` after a complete backup; `GET <url>/fail` when a scheduled run fails or the uploads archive is known to be incomplete (10 s timeout, best effort, logged). Healthchecks.io, Uptime Kuma push and Better Stack heartbeats all accept a plain GET. |
-| `S3_BUCKET` (and the other `S3_*`) | empty | Fallback: when `BACKUP_S3_BUCKET` is empty and the uploads bucket is set, copies go there under `BACKUP_S3_PREFIX`. |
+| `BACKUP_HEARTBEAT_URL` | empty | `GET` after a complete backup; `GET <url>/fail` when a scheduled run fails (10 s timeout, best effort, logged). Healthchecks.io, Uptime Kuma push and Better Stack heartbeats all accept a plain GET. |
 
-With neither bucket, backups stay on the same box. The tool logs a warning. That is not a backup.
-
-**With the S3 storage driver (`S3_BUCKET` set) the documents are not backed up at all.** A set then
-covers the database only; the tool warns on every run. Turn on **object versioning** and a
-**lifecycle rule** (expire noncurrent versions after, say, 30 days) on the uploads bucket, or an
-overwritten or deleted document has no copy anywhere.
+Without `BACKUP_S3_BUCKET`, backups stay on the same box. The tool logs a warning. That is not a
+backup.
 
 **One prefix per deployment.** Pruning deletes every artifact under `BACKUP_S3_PREFIX` that is past
 retention, whichever machine wrote it, so two stacks sharing `bucket/backups/` prune each other's
@@ -267,21 +227,12 @@ sets and their stamps collide. Give each deployment its own prefix
 
 ## Compose
 
-`infra/compose.yml` service `backup`, profile `backup`. It mounts the `uploads` volume read-only
-and the `backups` volume at `/backups`. The scheduled container is what `up -d` starts; `run --rm`
-is for one-shots (backup, list, drill, restore).
+`infra/compose.yml` service `backup`, profile `backup`. It mounts the `backups` volume at
+`/backups`. The scheduled container is what `up -d` starts; `run --rm` is for one-shots (backup,
+list, drill, restore).
 
-A real restore writes to the live database. Stop the writers first (`docker compose stop api
-worker`), restore, then start them again. The drill never touches the live database.
-
-Restoring the uploads needs a writable mount, and
-`docker compose run -v starterdough_uploads:/data/uploads` does **not** get one: Compose keeps the
-service's `:ro` mode for that target path, even if the flag says `:rw`. Mount the volume at another
-path for the one-shot and point `STORAGE_DIR` at it
-(`-v starterdough_uploads:/restore/uploads -e STORAGE_DIR=/restore/uploads`, as in the commands
-above; the compose project is `starterdough`, so the volume is `starterdough_uploads`). A plain
-`docker run -v starterdough_uploads:/data/uploads …` is writable too, but then the network, `.env`
-and the other service settings are yours to pass.
+A real restore writes to the live database. Stop the writer first (`docker compose stop api`),
+restore, then start it again. The drill never touches the live database.
 
 The database password never goes on the `pg_dump`/`pg_restore` command line. It is passed as
 `PGPASSWORD`, and the URL on argv has it stripped.
@@ -291,7 +242,7 @@ is not a restore.
 
 ## S3 / R2 / B2
 
-Create a bucket and put its name and credentials in `BACKUP_S3_*` (or reuse the uploads bucket).
+Create a bucket and put its name and credentials in `BACKUP_S3_*`.
 The bucket and valid credentials must already exist; configure its name, endpoint or AWS region,
 access key ID and secret access key in the environment. Do not put credential values in
 documentation or logs.
@@ -322,7 +273,7 @@ deletes the backups before the data. Configure the bucket so it cannot:
 - **A separate write-only credential for this bucket.** Give the backup box `PutObject` and
   `GetObject`/`HeadObject` only (the pre-flight probe needs `HEAD`, and it treats a denied delete as
   a warning, not a failure) and run retention pruning from somewhere else, or let a lifecycle rule
-  do it. Never reuse the uploads bucket's credential.
+  do it.
 - **A lifecycle rule for `AbortIncompleteMultipartUpload`** after 1 to 7 days. A dump interrupted
   mid-upload leaves parts that are invisible to `list` and billed indefinitely.
 - **A separate prefix per deployment** (above), and a bucket that is not public in any way.

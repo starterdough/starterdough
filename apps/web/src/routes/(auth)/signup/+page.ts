@@ -1,6 +1,6 @@
 import { redirect } from '@sveltejs/kit';
-import { afterSignUp, safeNext } from '$lib/utils/redirect';
-import { sessionFor } from '$lib/utils/session';
+import { afterSignUp, safeNext } from '#lib/utils/redirect.js';
+import { sessionFor } from '#lib/utils/session.js';
 import type { PageLoad } from './$types';
 
 /** Already signed in? Skip the form and continue to where the user was heading. */

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { createApiClient } from './index';
 
 describe('createApiClient', () => {
-	it('sends bearer tokens and targets the /rpc prefix', async () => {
+	it('sends bearer tokens, the CSRF header and targets the /rpc prefix', async () => {
 		let seen: Request | undefined;
 		const client = createApiClient({
 			baseUrl: 'http://api.test/',
@@ -20,5 +20,7 @@ describe('createApiClient', () => {
 		expect(seen).toBeDefined();
 		expect(seen?.url.startsWith('http://api.test/rpc/system/health')).toBe(true);
 		expect(seen?.headers.get('authorization')).toBe('Bearer token-123');
+		// What the API's SimpleCsrfProtectionHandlerPlugin checks on every /rpc call.
+		expect(seen?.headers.get('x-csrf-token')).toBe('orpc');
 	});
 });

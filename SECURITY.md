@@ -57,11 +57,10 @@ the documentation tells a buyer to use:
 - **Vulnerabilities in third-party dependencies.** Report those upstream. Tell us if we use one in
   a way that makes an upstream issue exploitable here, or if we are pinned to a version with a
   known advisory.
-- **Missing hardening that is a documented decision**, such as the AI service having no
-  authentication beyond `X-Service-Token` (it is never internet-facing) or the plaintext database
-  dump (recorded in the backup tool's README).
+- **Missing hardening that is a documented decision**, such as the plaintext database dump
+  (recorded in the backup tool's README).
 - **Anything requiring a platform administrator's credentials.** An admin can impersonate users by
-  design, and it is audited.
+  design, and the session records who is impersonating.
 - Missing security headers with no demonstrated impact, automated-scanner output without a working
   proof, denial of service through sheer volume, social engineering, and physical attacks.
 

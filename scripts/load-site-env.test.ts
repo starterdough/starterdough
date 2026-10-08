@@ -102,4 +102,43 @@ describe('Astro canonical environment loading', () => {
 			).toThrow('SITE_URL is not set');
 		}
 	});
+
+	it('builds the shipped local origin, but refuses to publish it', () => {
+		/**
+		 * The docs config reads SITE_URL when it is first imported, and this process already imported
+		 * it above, so each case runs the guard in a fresh process with that case's environment.
+		 */
+		function guard(configPath: string, env: Record<string, string>): string {
+			const script = `
+				const config = (await import(${JSON.stringify(pathToFileURL(resolve(configPath)).href)})).default;
+				const hook = config.integrations.find((i) => i.name === 'require-canonical-site').hooks['astro:config:setup'];
+				try {
+					hook({ command: 'build', config: { site: new URL(process.env.SITE_URL) } });
+					console.log('built');
+				} catch (error) {
+					console.log(error.message);
+				}`;
+			const child = Bun.spawnSync([process.execPath, '--no-env-file', '-e', script], {
+				env: { PATH: process.env.PATH ?? '', ...env },
+				stderr: 'pipe',
+			});
+			return child.stdout.toString().trim() || child.stderr.toString();
+		}
+
+		for (const [configPath, origin] of [
+			['apps/site/astro.config.mjs', 'http://localhost:4321'],
+			['apps/docs/astro.config.mjs', 'http://localhost:4322'],
+		] as const) {
+			expect(guard(configPath, { SITE_URL: origin, npm_lifecycle_event: 'build' })).toBe('built');
+			expect(
+				guard(configPath, { SITE_URL: origin, npm_lifecycle_event: 'deploy:cloudflare' }),
+			).toContain('deploy:cloudflare publishes this build');
+			expect(
+				guard(configPath, {
+					SITE_URL: 'https://www.customer.test',
+					npm_lifecycle_event: 'deploy:cloudflare',
+				}),
+			).toBe('built');
+		}
+	});
 });

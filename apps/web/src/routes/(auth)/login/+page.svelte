@@ -1,15 +1,16 @@
 <script lang="ts">
 	import { Alert, Button, FormField, Input } from '@repo/ui';
 	import { defaults, setError, superForm } from 'sveltekit-superforms';
-	import { browser } from '$app/environment';
+	import { PASSKEYS_AVAILABLE, returnUrl, SOCIAL_SIGN_IN_AVAILABLE } from '#lib/api.js';
+	import { authClient } from '#lib/auth.js';
+	import { spaForm, zodForm } from '#lib/forms.js';
+	import { formatList } from '#lib/i18n.js';
+	import { m } from '#lib/paraglide/messages.js';
+	import { SignInSchema } from '#lib/schemas.js';
+	import { routable, safeNext } from '#lib/utils/redirect.js';
+	import { browser } from '$app/env';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { RETURN_URLS_AVAILABLE, returnUrl } from '$lib/api';
-	import { authClient } from '$lib/auth';
-	import { spaForm, zodForm } from '$lib/forms';
-	import { m } from '$lib/paraglide/messages';
-	import { SignInSchema } from '$lib/schemas';
-	import { safeNext } from '$lib/utils/redirect';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -23,9 +24,10 @@
 	let authError = $state<string | null>(null);
 	let passkeyBusy = $state(false);
 
-	// WebAuthn is browser-only: decide after mount so the server-rendered markup is stable.
+	// WebAuthn is browser-only: decide after mount so the server-rendered markup is stable. Never
+	// inside a shell, whose origin cannot use a passkey made for the web app (`PASSKEYS_AVAILABLE`).
 	$effect(() => {
-		passkeys = 'PublicKeyCredential' in window;
+		passkeys = PASSKEYS_AVAILABLE && 'PublicKeyCredential' in window;
 	});
 
 	const sf = superForm(defaults(zodForm(SignInSchema)), {
@@ -44,7 +46,7 @@
 			// Password accepted but the account has 2FA: the client plugin already sent us to /two-factor.
 			if (result.data && 'twoFactorRedirect' in result.data && result.data.twoFactorRedirect)
 				return;
-			await goto(next);
+			await goto(await routable(next));
 		},
 	});
 	const { form, errors, enhance, submitting } = sf;
@@ -66,10 +68,19 @@
 		resend = 'sent';
 	}
 
-	// The provider redirects the *system* browser back to `callbackURL`, so it must be an address
-	// that browser can reach: `RETURN_URLS_AVAILABLE` is false in a shell build without
-	// `PUBLIC_WEB_URL`, and the buttons are not rendered at all rather than dead-ending the user.
-	const social = $derived(RETURN_URLS_AVAILABLE ? data.authConfig.socialProviders : []);
+	// A provider round trip signs in the browser that made it, never a shell, so the shells offer
+	// email and password only (`SOCIAL_SIGN_IN_AVAILABLE`) rather than buttons that cannot finish.
+	const social = $derived(SOCIAL_SIGN_IN_AVAILABLE ? data.authConfig.socialProviders : []);
+
+	// Someone who signed up with one of those providers has no password to type here. Resetting it
+	// gives them one (Better Auth adds the password to the account), so the shell says so rather
+	// than leave them at a form they cannot use.
+	const providerNames = { github: 'GitHub', google: 'Google' } as const;
+	const hiddenProviders = $derived(
+		SOCIAL_SIGN_IN_AVAILABLE
+			? []
+			: data.authConfig.socialProviders.map((provider) => providerNames[provider]),
+	);
 
 	async function signInWithSocial(provider: 'github' | 'google') {
 		authError = null;
@@ -89,7 +100,7 @@
 			authError = result.error.message ?? m.auth_login_error_passkey();
 			return;
 		}
-		await goto(next);
+		await goto(await routable(next));
 	}
 </script>
 
@@ -161,6 +172,14 @@
 		{$submitting ? m.auth_login_submitting() : m.common_sign_in()}
 	</Button>
 </form>
+
+{#if hiddenProviders.length > 0}
+	<p class="text-muted-foreground text-sm">
+		{m.auth_login_shell_no_password({
+			providers: formatList(hiddenProviders, { type: 'disjunction' }),
+		})}
+	</p>
+{/if}
 
 {#if social.length > 0 || passkeys}
 	<div class="flex flex-col gap-2">

@@ -22,9 +22,9 @@
 		trusted_proxies_strict
 		timeouts {
 			# Slowloris budget. read_header is short (headers arrive in one packet); read_body is
-			# generous because it also covers a 25 MiB document upload on a slow link; the size is
-			# bounded by `request_body` below, not by this. No `write` timeout on purpose: it would cut
-			# the jobs.stream SSE response mid-flight (an active stream is never "idle", so `idle` is safe).
+			# generous so the largest body `request_body` below allows still arrives over a slow link;
+			# the size is bounded there, not by this. No `write` timeout on purpose: it would cut a
+			# server-sent event stream mid-flight (an active stream is never "idle", so `idle` is safe).
 			read_header 15s
 			read_body 5m
 			idle 5m
@@ -66,7 +66,7 @@
 		format filter {
 			wrap json
 			fields {
-				# Signed upload URLs carry `sig` (/uploads/*) and Better Auth's email links carry
+				# Signed URLs carry `sig` and Better Auth's email links carry
 				# `token` / `code` / `state` (/api/auth/*): live credentials that would otherwise sit
 				# in `docker compose logs` and in whatever ships stdout onwards. Filtered site-wide
 				# because one `log` block covers a site and these names appear nowhere else. `email`
@@ -102,26 +102,19 @@
 	import logs
 
 	# Request bodies are bounded here, at the edge, so an oversized or endless body never reaches the
-	# api container (1 GB memory limit) or the host disk `pgdata` shares. /uploads/* is the local
-	# storage driver's bucket and carries the document itself: Caddy reads `32MB` as 32 000 000 bytes,
-	# which clears the 26 214 400-byte MAX_UPLOAD_BYTES default with room to spare. Everything else is
-	# JSON. Raise MAX_UPLOAD_BYTES and this has to move with it.
-	@uploads path /uploads/*
-	@bounded not path /uploads/*
-	request_body @uploads {
-		max_size 32MB
-	}
-	request_body @bounded {
+	# api container (1 GB memory limit) or the host disk `pgdata` shares.
+	# Every route is JSON.
+	request_body {
 		max_size 1MB
 	}
 
-	# API surface: auth, RPC, REST, presigned uploads (local storage driver), probes.
-	@api path /api/* /rpc/* /uploads/* /healthz /readyz
+	# API surface: auth, RPC, REST, probes.
+	@api path /api/* /rpc/* /healthz /readyz
 	handle @api {
 		# `encode` is per handler, not site-wide. On the API it must also be per *content type*: the
-		# default matcher includes `text/*`, which would buffer the text/event-stream response of
-		# jobs.stream. Matching application/json only compresses the RPC/REST payloads and leaves SSE
-		# (and any binary download from /uploads/*) untouched.
+		# default matcher includes `text/*`, which would buffer a text/event-stream response. Matching
+		# application/json only compresses the RPC/REST payloads and leaves server-sent events and
+		# binary downloads untouched.
 		encode {
 			zstd
 			gzip

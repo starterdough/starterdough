@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { cn } from '@repo/ui';
+	import { m } from '#lib/paraglide/messages.js';
 	import { page } from '$app/state';
-	import { m } from '$lib/paraglide/messages';
 
 	let { children } = $props();
 

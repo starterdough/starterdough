@@ -22,6 +22,9 @@ Optional subsystems switch on when their variables are present and stay off othe
 sign-in, a real email provider, error tracking, analytics. The kit runs with the defaults from
 the example files.
 
+`bun run setup` creates each file from the `.env.example` next to it, generates the secrets and
+fills the local origins. It completes an existing file without replacing a value that is set.
+
 | File | Read by |
 | --- | --- |
 | `.env` (repository root, from `.env.example`) | the API, database tooling, Docker Compose |
@@ -35,10 +38,11 @@ validation belongs to the API at startup. It never applies migrations or confirm
 
 ### Local app versus complete build
 
-`dev:app` needs the root and web settings. `build` also requires **each site's own** canonical URL:
-set `SITE_URL=http://localhost:4321` in `apps/site/.env` and `SITE_URL=http://localhost:4322` in
-`apps/docs/.env` for local builds. Keep their public API/app targets consistent with your ports.
-Before deployment, replace local origins with your public URLs.
+`dev:app` needs the root and web settings. `build` also requires **each site's own** canonical URL.
+The templates, and so `bun run setup`, give `apps/site/.env` `SITE_URL=http://localhost:4321` and
+`apps/docs/.env` `SITE_URL=http://localhost:4322`, which is right for local builds. Keep their
+public API/app targets consistent with your ports. Before deployment, replace local origins with
+your public URLs: `deploy:cloudflare` refuses a localhost `SITE_URL`.
 
 Astro's canonical setting uses a nonempty explicit process `SITE_URL` first, then its own
 `.env.local`, then `.env`. Blank canonical entries fall through to the next source. A nonempty
@@ -50,7 +54,8 @@ placeholder.
 Never commit `.env` files. Only the `.env.example` files are tracked. In production the API refuses
 the example placeholders: any `change-me…` value (`BETTER_AUTH_SECRET`, the OAuth secrets,
 `RESEND_API_KEY`) and a `DATABASE_URL` whose password is `starterdough`,
-`postgres` or `change-me…`. Generate every secret you fill in:
+`postgres` or `change-me…`. `bun run setup` generates the development secrets; generate every
+production secret you fill in:
 
 ```sh
 bun -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
@@ -72,7 +77,7 @@ it is empty.
 | `WEB_URL` | `http://localhost:5173` | Public origin of the web app. Used for CORS, auth redirects, trusted origins and the passkey `rpID`. |
 | `TRUSTED_ORIGINS` | `tauri://localhost,http://tauri.localhost` | Extra origins allowed to call the API (comma-separated): Tauri shells, LAN devices, tailnet hosts, the public site if its contact form should reach the API. |
 | `COOKIE_DOMAIN` | empty | Parent domain the session cookie is scoped to (e.g. `.example.com`) when web and API live on sibling subdomains. A **bare hostname**, never a URL. The value goes verbatim into `Set-Cookie`'s `Domain`, and both `WEB_URL` and `API_URL` must sit under it; anything else is refused at start-up. Single-origin deployments leave it empty. |
-| `PUBLIC_WEB_URL` | empty | Deployed origin of the web app as the *browser* sees it. Only the Tauri shells need it: their own origin is `tauri.localhost`, which no external provider can return to, so OAuth and similar round trips go here instead. Unset, the buttons that start them are hidden. Set it where the shell is built (a repository variable for the Desktop workflow, `apps/web/.env` for a hand build). A browser deployment leaves it empty, and the compose stack does not pass it to the `web` container. |
+| `PUBLIC_WEB_URL` | empty | Deployed origin of the web app as the *browser* sees it. Only the Tauri shells need it: their own origin is `tauri://localhost` or `http://tauri.localhost`, which no browser outside the shell can open, so emailed links go here instead. `build:desktop` refuses to start without it; in a dev shell without it the actions that need a return address are disabled. The shells offer no OAuth sign-in (see `apps/native/README.md`). Set it where the shell is built (a repository variable for the Desktop workflow, `apps/web/.env` for a hand build). A browser deployment leaves it empty, and the compose stack does not pass it to the `web` container. |
 | `PUBLIC_DEMO_MODE` | empty (off) | Public demo deployment. `true` shows a banner in the app and adds `noindex` to every page. The web app reads the same variable (`apps/web/.env`, or the web container's environment). |
 
 ### Database

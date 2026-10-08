@@ -3,10 +3,10 @@
 	import { Alert, Button, Dialog, EmptyState, Skeleton } from '@repo/ui';
 	import { untrack } from 'svelte';
 	import { toast } from 'svelte-sonner';
-	import { authClient } from '$lib/auth';
-	import { messageOf } from '$lib/forms';
-	import { formatDateTime } from '$lib/i18n';
-	import { m } from '$lib/paraglide/messages';
+	import { authClient } from '#lib/auth.js';
+	import { messageOf } from '#lib/forms.js';
+	import { formatDateTime } from '#lib/i18n.js';
+	import { m } from '#lib/paraglide/messages.js';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();

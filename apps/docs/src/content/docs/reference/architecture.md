@@ -108,7 +108,7 @@ infra/
   env/                  production .env, encrypted (SOPS + age)
   loadtest/k6/          smoke.js
 scripts/                licenses.ts (dependency-licence audit) · rename.ts (rename the kit)
-docs/DECISIONS.md       architecture decision records (D1 to D30)
+docs/DECISIONS.md       architecture decision records
 LICENSE.md · THIRD-PARTY.md · CHANGELOG.md · UPGRADING.md · SECURITY.md · CONTRIBUTING.md
 ```
 
@@ -123,7 +123,7 @@ Vite compiles Svelte from the workspace. Versions of shared dependencies are pin
 | Runtime · package manager · test runner | **Bun** | One tool for installs, scripts, the API runtime and tests |
 | Task orchestration | **Turborepo** | Cached, graph-aware `build/check/test` |
 | Lint · format | **Biome** | One config for TS/JSON/CSS + Svelte/Astro |
-| Application UI | **SvelteKit 2 + Svelte 5** | Every route works as SSR *and* SPA |
+| Application UI | **SvelteKit 3 + Svelte 5** | Every route works as SSR *and* SPA |
 | Public sites | **Astro 7** (+ Starlight) | Content, SEO, docs; static output |
 | Styling | **Tailwind v4** | Shared tokens in `packages/ui/theme.css` as `light-dark()` pairs |
 | UI kit | **shadcn-svelte** on **bits-ui** | Generated into `packages/ui`, one copy for every surface |

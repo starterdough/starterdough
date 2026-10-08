@@ -33,7 +33,13 @@ deployment_refuse_pending || exit 1
 
 if [ -n "${GIT_REF:-}" ]; then
 	echo "▸ checking out $GIT_REF"
-	git fetch --quiet origin
+	# The Deploy workflow pushes every release it deploys into this checkout, so rolling back to one
+	# of those needs no fetch, and no credential for a private repository on this box. A branch name,
+	# or a commit this checkout has never seen, still comes from origin.
+	case "$GIT_REF" in
+	*[!0-9a-f]*) git fetch --quiet origin ;;
+	*) git cat-file -e "$GIT_REF^{commit}" 2>/dev/null || git fetch --quiet origin ;;
+	esac
 	for path in infra/scripts/operation-lock.sh infra/scripts/deployment-recovery.py infra/scripts/deployment-recovery.sh infra/scripts/recover-deployment.sh; do
 		git cat-file -e "$GIT_REF:$path" || {
 			echo "ref $GIT_REF predates deployment recovery safeguards" >&2

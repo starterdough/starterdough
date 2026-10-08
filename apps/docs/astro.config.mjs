@@ -15,8 +15,14 @@ loadSiteEnv(import.meta.url);
 /** What `astro dev` / `astro check` use when `SITE_URL` is unset; a build refuses to guess. */
 const DEV_SITE_URL = 'http://localhost:4322';
 
-/** RFC 2606 reserved domains: what the example files ship, never a real deployment. */
+/** RFC 2606 reserved domains: never a real deployment. */
 const PLACEHOLDER_HOST = /(^|\.)example\.(com|org|net)$/;
+
+/**
+ * The example file ships the `astro dev` origin so a local build works, but `deploy:cloudflare`
+ * publishes what it builds, and there a loopback origin can only be the forgotten default.
+ */
+const LOOPBACK_HOST = /^(localhost|127(\.\d{1,3}){3}|\[::1\])$/;
 
 /**
  * Public repository this copy of the documentation is edited in, if there is one: the header's
@@ -57,6 +63,15 @@ function requireCanonicalSite() {
 					throw new Error(
 						`SITE_URL is still the placeholder ${raw}. Set it to the origin these docs are served ` +
 							'from before building for production.',
+					);
+				}
+				if (
+					process.env.npm_lifecycle_event === 'deploy:cloudflare' &&
+					LOOPBACK_HOST.test(site.hostname)
+				) {
+					throw new Error(
+						`SITE_URL is the local origin ${raw}, and deploy:cloudflare publishes this build. ` +
+							'Set it to the origin these docs are served from (apps/docs/.env).',
 					);
 				}
 			},

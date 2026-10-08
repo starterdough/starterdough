@@ -8,10 +8,11 @@ the app consumes: **feature flags**. It already crosses the contract, API, admin
 browser regression and the generated free edition. Start from these files instead of creating a
 parallel example domain.
 
+
 ## The path
 
 ```text
-packages/db  →  packages/api-contract  →  apps/api/src/rpc  →  apps/web admin form  →  $lib/flags
+packages/db  →  packages/api-contract  →  apps/api/src/rpc  →  apps/web admin form  →  #lib/flags.js
  persistence          schema                   authorization         Superforms           feature gate
 ```
 
@@ -75,7 +76,7 @@ upsert: adminOnly.admin.flags.upsert.handler(async ({ input }) => {
 ### 4. Use the shared Superforms adapter in the browser
 
 `apps/web/src/routes/(admin)/admin/flags/+page.svelte` initializes the form with the contract
-schema. `$lib/forms.ts` supplies the standard SPA options and `zodForm()`, which maps Zod issues to
+schema. `#lib/forms.js` supplies the standard SPA options and `zodForm()`, which maps Zod issues to
 Paraglide messages at validation time. `FormField` connects the label, error, invalid state and
 description for each input.
 
