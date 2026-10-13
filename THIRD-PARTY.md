@@ -55,7 +55,8 @@ after each release. It is not an OSI-approved open-source licence.
   tooling: no part of it is served to a browser or linked into an End Product.
 - **What you must do.** Nothing, unless you are building a competitor to Sentry's error-monitoring
   product. If you are, remove `@sentry/sveltekit`; error tracking is already optional in this kit
-  and stays dormant until `PUBLIC_SENTRY_DSN` is set.
+  and stays dormant until `PUBLIC_SENTRY_DSN` is set. `@sentry/node` in `apps/api` can stay: it is
+  MIT, does not pull `@sentry/cli`, and stays dormant until `SENTRY_DSN` is set.
 - **What you must not do.** Ship `@sentry/cli` inside a product that competes with Sentry.
 
 ## Notice 2: `sharp` bundles LGPL-3.0 libvips

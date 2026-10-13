@@ -17,6 +17,10 @@ export {
 	FeatureFlagUpsertInputSchema,
 	FlagKeySchema,
 } from '@repo/api-contract';
+// Your product's schemas and types, without a line here for each: everything
+// `packages/api-contract/src/product.ts` exports. A kit export above wins over one of yours with the
+// same name, without an error, so give yours names of their own.
+export * from '@repo/api-contract/product';
 
 /** Fully typed client: `await api.account.me()`. */
 export type ApiClient = ContractRouterClient<Contract>;

@@ -1,14 +1,28 @@
-import { BackupError, runBackup, runHousekeeping, sendFailureHeartbeat } from './backup';
-import { type BackupConfig, ConfigError, configFromEnv, parseDuration } from './config';
+import {
+	BackupError,
+	databaseIsEmpty,
+	runBackup,
+	runHousekeeping,
+	sendFailureHeartbeat,
+} from './backup';
+import {
+	type BackupConfig,
+	ConfigError,
+	configFromEnv,
+	parseDuration,
+	releaseConfig,
+	SCHEDULED_LOCK_WAIT_MS,
+} from './config';
 import { listBackups } from './list';
 import { createLogger, errorMessage, type Logger } from './log';
 import { CommandError } from './proc';
 import { RestoreError, type RestoreOptions, restore } from './restore';
 
+/** `release: true` is `--release`: work on the release sets in `BACKUP_DIR/release`. */
 export type Command =
-	| { command: 'backup' }
+	| { command: 'backup'; release?: true }
 	/** `undefined`: use `BACKUP_MAX_AGE`. `null`: `--no-max-age`, do not check freshness at all. */
-	| { command: 'list'; maxAgeMs?: number | null }
+	| { command: 'list'; maxAgeMs?: number | null; release?: true }
 	| { command: 'schedule' }
 	| { command: 'help' }
 	| ({ command: 'restore' } & Required<
@@ -25,7 +39,7 @@ export type Command =
 				| 'terminateConnections'
 			>
 	  > &
-			Pick<RestoreOptions, 'database'>);
+			Pick<RestoreOptions, 'database'> & { release?: true });
 
 export type ParseResult = { ok: true; command: Command } | { ok: false; error: string };
 
@@ -34,11 +48,17 @@ export const USAGE = `Usage: bun src/cli.ts <command> [options]
 Commands:
   backup                         dump the database (and the uploads directory with the local
                                  storage driver), copy the set to S3 when configured, verify the
-                                 off-box copy, prune, then ping BACKUP_HEARTBEAT_URL
+                                 off-box copy, prune, then ping BACKUP_HEARTBEAT_URL; refuses at
+                                 once while another backup or restore holds the lock
+  backup --release               the restore point a deploy takes: the database only, into
+                                 BACKUP_DIR/release, never copied off the box, no heartbeat, the
+                                 newest 4 sets kept; waits up to 10 min for the lock, and exits 0
+                                 without a dump when the database has no tables yet
   restore <name|latest> [flags]  restore a dump; <name> is a stamp (20260909T023000Z) or file
+      --release                  from the release sets instead of the nightly ones
       --drill                    restore into a scratch database, report, drop it (safe)
       --database <name>          target database (live) or schema source for a drill
-      --yes                      required to restore into the live database (--clean --if-exists)
+      --yes                      required to restore into the live database, which it clears first
       --uploads                  also install the uploads archive into STORAGE_DIR (live only;
                                  drills always verify the archive without installing it)
       --no-safety-dump           skip the pre-restore dump a live restore takes by default
@@ -49,10 +69,13 @@ Commands:
   list [--max-age <duration>]    show backup sets on disk and in the bucket; exits 1 when the
                                  newest set is older than --max-age (default BACKUP_MAX_AGE, 36h)
       --no-max-age               list without the freshness check
+      --release                  the release sets, on disk only; no freshness check unless
+                                 --max-age is given
   schedule                       run backups on BACKUP_SCHEDULE (cron, UTC) until SIGTERM;
                                  BACKUP_CATCHUP=true (the default) runs one at start when the
                                  newest set is older than one schedule interval, and
-                                 BACKUP_ON_START=true runs one at start unconditionally
+                                 BACKUP_ON_START=true runs one at start unconditionally; each run
+                                 waits up to 30 min for the lock
 
 Durations are one number and one unit: 90s, 45m, 36h, 2d.
 
@@ -68,6 +91,7 @@ const FLAGS = new Set([
 	'--no-manifest-check',
 	'--no-single-transaction',
 	'--terminate-connections',
+	'--release',
 ]);
 
 export function parseArgs(argv: string[]): ParseResult {
@@ -79,6 +103,11 @@ export function parseArgs(argv: string[]): ParseResult {
 		case '-h':
 			return { ok: true, command: { command: 'help' } };
 		case 'backup':
+			if (rest.length === 1 && rest[0] === '--release') {
+				return { ok: true, command: { command, release: true } };
+			}
+			if (rest.length > 0) return { ok: false, error: 'backup takes no arguments but --release' };
+			return { ok: true, command: { command } };
 		case 'schedule':
 			if (rest.length > 0) return { ok: false, error: `${command} takes no arguments` };
 			return { ok: true, command: { command } };
@@ -97,9 +126,15 @@ export function parseArgs(argv: string[]): ParseResult {
  */
 function parseList(args: string[]): ParseResult {
 	let maxAgeMs: number | null | undefined;
+	let release = false;
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i] as string;
 		const [flag, inlineValue] = arg.startsWith('--') ? splitFlag(arg) : [undefined, undefined];
+		if (flag === '--release') {
+			if (inlineValue !== undefined) return { ok: false, error: '--release takes no value' };
+			release = true;
+			continue;
+		}
 		if (flag === '--no-max-age') {
 			if (inlineValue !== undefined) return { ok: false, error: '--no-max-age takes no value' };
 			maxAgeMs = null;
@@ -119,7 +154,10 @@ function parseList(args: string[]): ParseResult {
 		}
 		return { ok: false, error: flag ? `unknown option "${flag}"` : `unexpected argument "${arg}"` };
 	}
-	return { ok: true, command: { command: 'list', maxAgeMs } };
+	return {
+		ok: true,
+		command: { command: 'list', maxAgeMs, ...(release ? { release: true as const } : {}) },
+	};
 }
 
 function parseRestore(args: string[]): ParseResult {
@@ -133,6 +171,7 @@ function parseRestore(args: string[]): ParseResult {
 	let noManifestCheck = false;
 	let noSingleTransaction = false;
 	let terminateConnections = false;
+	let release = false;
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i] as string;
 		const [flag, inlineValue] = arg.startsWith('--') ? splitFlag(arg) : [undefined, undefined];
@@ -158,9 +197,17 @@ function parseRestore(args: string[]): ParseResult {
 		else if (flag === '--no-manifest-check') noManifestCheck = true;
 		else if (flag === '--no-single-transaction') noSingleTransaction = true;
 		else if (flag === '--terminate-connections') terminateConnections = true;
+		else if (flag === '--release') release = true;
 		else uploads = true;
 	}
 	if (!name) return { ok: false, error: 'restore needs a backup name or "latest"' };
+	// Said here, because the restore would otherwise blame STORAGE_DIR or a missing archive.
+	if (release && uploads) {
+		return {
+			ok: false,
+			error: '--uploads cannot be used with --release: release sets hold the database only',
+		};
+	}
 	return {
 		ok: true,
 		command: {
@@ -175,6 +222,7 @@ function parseRestore(args: string[]): ParseResult {
 			noManifestCheck,
 			noSingleTransaction,
 			terminateConnections,
+			...(release ? { release: true as const } : {}),
 		},
 	};
 }
@@ -182,6 +230,21 @@ function parseRestore(args: string[]): ParseResult {
 function splitFlag(arg: string): [string, string | undefined] {
 	const eq = arg.indexOf('=');
 	return eq === -1 ? [arg, undefined] : [arg.slice(0, eq), arg.slice(eq + 1)];
+}
+
+/**
+ * The configuration a command runs with. `--release` points it at the release sets. `schedule`
+ * waits for the lock while a manual `backup` refuses at once: whoever ran a manual one learns why,
+ * but the scheduler has nobody to tell, and a nightly run that meets a release backup should queue
+ * behind it.
+ */
+export function commandConfig(command: Command, config: BackupConfig): BackupConfig {
+	if (command.command === 'schedule') return { ...config, lockWaitMs: SCHEDULED_LOCK_WAIT_MS };
+	if (!('release' in command && command.release)) return config;
+	if (command.command === 'backup') return releaseConfig(config);
+	// The release ceiling bounds the dump a deploy waits for. Nobody waits on a restore of the same
+	// set, and a pg_restore that rebuilds every index can take longer than the dump did.
+	return { ...releaseConfig(config), commandTimeoutMs: config.commandTimeoutMs };
 }
 
 export async function main(
@@ -204,7 +267,7 @@ export async function main(
 
 	let config: BackupConfig;
 	try {
-		config = configFromEnv(env);
+		config = commandConfig(command, configFromEnv(env));
 	} catch (error) {
 		log.error(error instanceof ConfigError ? error.message : errorMessage(error));
 		return 1;
@@ -216,13 +279,23 @@ export async function main(
 	try {
 		switch (command.command) {
 			case 'backup': {
+				if (command.release && (await databaseIsEmpty(config))) {
+					log.info('release backup skipped: the database has no tables yet (first deploy)');
+					return 0;
+				}
 				const summary = await runBackup(config, log);
 				log.info('backup complete', { ...summary });
 				return 0;
 			}
 			case 'restore': {
-				const { command: _, ...options } = command;
-				const result = await restore(config, options, log);
+				const { command: _, release, ...options } = command;
+				// A release set is the schema from before its deploy's migrations, so a drill of it must
+				// not fail on the tables they have created since.
+				const result = await restore(
+					config,
+					{ ...options, newerLiveTablesExpected: release === true },
+					log,
+				);
 				log[result.ok ? 'info' : 'error'](
 					result.ok ? `restore ${result.mode} complete` : `restore ${result.mode}`,
 					{ ...result, report: undefined },

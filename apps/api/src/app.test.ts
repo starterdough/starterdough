@@ -1,6 +1,8 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { CLIENT_IP_HEADER } from '@repo/auth/server';
+import { email } from '@repo/email';
 import { app, singleFlight, withClientIp } from './app';
+import * as reporting from './error-reporting';
 
 describe('api', () => {
 	it('answers the liveness probe', async () => {
@@ -261,6 +263,44 @@ describe('api', () => {
 			});
 			expect(bot.status).toBe(200);
 			expect(await bot.json()).toEqual({ ok: true });
+		});
+
+		// Before the throttle test below, which spends the rest of this client's contact budget.
+		it('reports a failing procedure to error tracking, and nothing a procedure answered', async () => {
+			const report = spyOn(reporting, 'reportError').mockImplementation(() => {});
+			const send = spyOn(email, 'send').mockRejectedValue(new Error('provider unreachable'));
+			try {
+				const failed = await post({
+					email: 'visitor@example.com',
+					message: 'Hello from the error reporting test.',
+				});
+				expect(failed.status).toBe(500);
+				expect(report).toHaveBeenCalledTimes(1);
+				expect(report.mock.calls[0]?.[0]).toMatchObject({ message: 'provider unreachable' });
+				expect(report.mock.calls[0]?.[1]).toMatchObject({
+					procedure: 'contact.send',
+					method: 'POST',
+					path: '/api/v1/contact',
+				});
+
+				// A body that does not decode (400, before any procedure runs) and a refusal (401).
+				const malformed = await app.request('/rpc/system/health', {
+					method: 'POST',
+					headers: { 'content-type': 'application/json', 'x-csrf-token': 'orpc' },
+					body: '{not json',
+				});
+				expect(malformed.status).toBe(400);
+				const refused = await app.request('/api/v1/admin/flags/reporting-probe', {
+					method: 'PUT',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify({ enabled: true }),
+				});
+				expect(refused.status).toBe(401);
+				expect(report).toHaveBeenCalledTimes(1);
+			} finally {
+				report.mockRestore();
+				send.mockRestore();
+			}
 		});
 
 		it('is throttled per client well below the general limiter', async () => {

@@ -6,7 +6,10 @@ import {
 	detachPassword,
 	normalizePrefix,
 	parseDuration,
+	RELEASE_COMMAND_TIMEOUT_MS,
+	RELEASE_LOCK_WAIT_MS,
 	redactUrl,
+	releaseConfig,
 	withDatabase,
 } from './config';
 
@@ -32,6 +35,8 @@ describe('configFromEnv', () => {
 		expect(config.maxAgeMs).toBe(36 * 3_600_000);
 		expect(config.commandTimeoutMs).toBe(6 * 3_600_000);
 		expect(config.lockTimeoutMs).toBe(60_000);
+		// A run refuses at once while the lock is held; only `schedule` and `--release` wait.
+		expect(config.lockWaitMs).toBeUndefined();
 		expect(config.warnings).toHaveLength(2);
 		// A backup nobody is told about when it stops is the failure mode the first one warns about.
 		expect(config.warnings[0]).toContain('BACKUP_HEARTBEAT_URL');
@@ -251,6 +256,52 @@ describe('configFromEnv', () => {
 			'database name',
 		);
 		expect(() => configFromEnv({ DATABASE_URL: 'not a url' })).toThrow('not a valid URL');
+	});
+});
+
+describe('releaseConfig', () => {
+	const nightly = configFromEnv({
+		DATABASE_URL,
+		BACKUP_DIR: '/backups',
+		BACKUP_RETENTION_DAYS: '30',
+		BACKUP_ON_START: 'true',
+		BACKUP_HEARTBEAT_URL: 'https://hc-ping.com/abc',
+		BACKUP_S3_BUCKET: 'starterdough-backups',
+		BACKUP_S3_ENDPOINT: 'https://acct.r2.cloudflarestorage.com',
+		BACKUP_S3_ACCESS_KEY_ID: 'backup-key',
+		BACKUP_S3_SECRET_ACCESS_KEY: 'backup-secret',
+		STORAGE_DIR: '/data/uploads',
+	});
+
+	it('keeps the database and drops the bucket, the heartbeat and the uploads', () => {
+		const release = releaseConfig(nightly);
+		expect(release.databaseUrl).toBe(nightly.databaseUrl);
+		expect(release.database).toBe('starterdough');
+		expect(release.lockTimeoutMs).toBe(nightly.lockTimeoutMs);
+		expect(release.backupDir).toBe('/backups/release');
+		expect(release.s3).toBeNull();
+		expect(release.heartbeatUrl).toBeUndefined();
+		expect(release.uploads).toEqual({
+			kind: 'none',
+			reason: 'a release set holds the database only',
+		});
+		// Zero days leaves the retention floor: the newest complete sets besides the new one.
+		expect(release.retentionDays).toBe(0);
+		expect(release.runOnStart).toBe(false);
+		expect(release.catchUp).toBe(false);
+		expect(release.maxAgeMs).toBe(Number.POSITIVE_INFINITY);
+		expect(release.commandTimeoutMs).toBe(RELEASE_COMMAND_TIMEOUT_MS);
+		expect(release.lockWaitMs).toBe(RELEASE_LOCK_WAIT_MS);
+		expect(RELEASE_LOCK_WAIT_MS).toBe(10 * 60_000);
+		expect(release.warnings).toEqual([]);
+		// The nightly configuration is untouched.
+		expect(nightly.backupDir).toBe('/backups');
+		expect(nightly.s3?.bucket).toBe('starterdough-backups');
+	});
+
+	it('keeps a command ceiling lower than its own', () => {
+		const short = configFromEnv({ DATABASE_URL, BACKUP_COMMAND_TIMEOUT_MINUTES: '5' });
+		expect(releaseConfig(short).commandTimeoutMs).toBe(5 * 60_000);
 	});
 });
 

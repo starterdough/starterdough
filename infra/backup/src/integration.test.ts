@@ -1,13 +1,27 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runBackup, sha256 } from './backup';
-import { type BackupConfig, configFromEnv, withDatabase } from './config';
+import { main } from './cli';
+import {
+	type BackupConfig,
+	configFromEnv,
+	RELEASE_DIR,
+	releaseConfig,
+	withDatabase,
+} from './config';
 import { listBackups } from './list';
 import { acquireLock, advisoryKey } from './lock';
 import { createLogger } from './log';
-import { latestDumpStamp, type Manifest, manifestName, uploadsName } from './names';
+import {
+	dumpName,
+	latestDumpStamp,
+	type Manifest,
+	manifestName,
+	newestCompleteStamps,
+	uploadsName,
+} from './names';
 import { run } from './proc';
 import { drillDatabaseName, quoteIdentifier, restore } from './restore';
 import { BackupBucket, type S3ClientLike } from './s3';
@@ -440,5 +454,293 @@ describe.skipIf(!databaseUrl)('backup + drill against a live Postgres', () => {
 		}
 		// Released again, so the next run is not blocked by the one that finished.
 		expect(advisoryKey(config.database)).toBe(advisoryKey(config.database));
+	});
+
+	it('waits for the lock when given a wait, and takes it once it is released', async () => {
+		const held = await acquireLock(config.databaseUrl, config.database, 'test', log);
+		const released = Bun.sleep(1_500).then(() => held.release());
+		const before = lines.length;
+		try {
+			const summary = await runBackup({ ...config, lockWaitMs: 5_000 }, log);
+			expect(summary.files.length).toBeGreaterThan(0);
+			const messages = lines.slice(before).map((line) => JSON.parse(line).msg);
+			expect(messages).toContain('waiting for the backup lock');
+		} finally {
+			await released;
+		}
+	}, 30_000);
+
+	it('refuses after waiting when the lock stays held', async () => {
+		const held = await acquireLock(config.databaseUrl, config.database, 'test', log);
+		const started = performance.now();
+		try {
+			await expect(runBackup({ ...config, lockWaitMs: 1_000 }, log)).rejects.toThrow(
+				/another backup or restore is already working on \S+ after waiting 1s/,
+			);
+			// It did wait, rather than only saying so.
+			expect(performance.now() - started).toBeGreaterThanOrEqual(900);
+		} finally {
+			await held.release();
+		}
+	}, 30_000);
+
+	describe('release sets', () => {
+		// Stands in for both the bucket's endpoint and the heartbeat monitor. A release run must reach
+		// neither, so every request it records is a failure.
+		const requests: string[] = [];
+		let server: ReturnType<typeof Bun.serve>;
+		let env: Record<string, string>;
+
+		beforeAll(() => {
+			server = Bun.serve({
+				port: 0,
+				fetch(request) {
+					requests.push(`${request.method} ${new URL(request.url).pathname}`);
+					return new Response('not expected', { status: 500 });
+				},
+			});
+			env = {
+				DATABASE_URL: databaseUrl as string,
+				BACKUP_DIR: config.backupDir,
+				STORAGE_DIR: join(root, 'uploads'),
+				BACKUP_S3_BUCKET: 'release-sets-stay-local',
+				BACKUP_S3_ENDPOINT: server.url.origin,
+				BACKUP_S3_ACCESS_KEY_ID: 'test',
+				BACKUP_S3_SECRET_ACCESS_KEY: 'test',
+				BACKUP_HEARTBEAT_URL: new URL('/ping', server.url).toString(),
+			};
+		});
+
+		afterAll(async () => {
+			await server.stop(true);
+		});
+
+		const entriesSince = (start: number) =>
+			lines.slice(start).map((line) => JSON.parse(line) as Record<string, unknown>);
+
+		it('keeps the newest four, never leaves the box and never pings the heartbeat', async () => {
+			const releaseDir = join(config.backupDir, RELEASE_DIR);
+			await mkdir(config.backupDir, { recursive: true });
+			const nightly = (await readdir(config.backupDir)).filter((name) => name !== RELEASE_DIR);
+			const before = lines.length;
+			for (let run = 0; run < 6; run++) {
+				// A stamp has one-second resolution, so each run starts in a second of its own.
+				await Bun.sleep(1_000 - (Date.now() % 1_000));
+				expect(await main(['backup', '--release'], env, log)).toBe(0);
+			}
+
+			expect(requests).toEqual([]);
+			const runs = entriesSince(before).filter((entry) => entry.msg === 'backup complete');
+			expect(runs).toHaveLength(6);
+			for (const summary of runs) {
+				expect(summary).toMatchObject({
+					bucket: null,
+					heartbeat: 'skipped',
+					uploadsIncluded: false,
+					// STORAGE_DIR is set above; the log must not claim otherwise.
+					uploadsSkipped: 'a release set holds the database only',
+				});
+			}
+			// Zero days of retention plus the floor of three: the set just written and three more.
+			const kept = await readdir(releaseDir);
+			expect([...newestCompleteStamps(kept, Number.POSITIVE_INFINITY)].sort()).toEqual(
+				runs
+					.slice(2)
+					.map((summary) => summary.stamp as string)
+					.sort(),
+			);
+			expect(kept).toHaveLength(8);
+			expect((await readdir(config.backupDir)).filter((name) => name !== RELEASE_DIR)).toEqual(
+				nightly,
+			);
+
+			const listed = lines.length;
+			expect(await main(['list', '--release'], env, log)).toBe(0);
+			expect(entriesSince(listed).find((entry) => entry.msg === 'backup sets')).toMatchObject({
+				count: 4,
+				dir: releaseDir,
+				bucket: null,
+			});
+		}, 60_000);
+
+		it('restores the newest release set in a drill', async () => {
+			const before = lines.length;
+			expect(await main(['restore', 'latest', '--release', '--drill'], env, log)).toBe(0);
+			const newest = latestDumpStamp(await readdir(join(config.backupDir, RELEASE_DIR)));
+			expect(
+				entriesSince(before).find((entry) => entry.msg === 'restore drill complete'),
+			).toMatchObject({ ok: true, source: 'local', stamp: newest });
+			expect(requests).toEqual([]);
+		}, 30_000);
+
+		it('drills a release set without failing on the tables its deploy has added since', async () => {
+			// A database of its own: this suite never writes to the one it is given.
+			const migrated = `${config.database}_release_migrated`;
+			const migratedUrl = withDatabase(config.databaseUrl, migrated);
+			const releaseEnv = { DATABASE_URL: migratedUrl, BACKUP_DIR: join(root, 'migrated-release') };
+			const admin = new Bun.SQL(withDatabase(config.databaseUrl, 'postgres'), { max: 1 });
+			try {
+				await admin.unsafe(`DROP DATABASE IF EXISTS ${quoteIdentifier(migrated)} WITH (FORCE)`);
+				await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(migrated)} TEMPLATE template0`);
+				const sql = new Bun.SQL(migratedUrl, { max: 1 });
+				try {
+					await sql.unsafe('create table before_deploy (id int primary key)');
+					await sql.unsafe('insert into before_deploy values (1)');
+					expect(await main(['backup', '--release'], releaseEnv, log)).toBe(0);
+					// What the deploy's migrations do once its restore point is taken.
+					await sql.unsafe('create table added_by_deploy (id int primary key)');
+
+					const before = lines.length;
+					expect(await main(['restore', 'latest', '--release', '--drill'], releaseEnv, log)).toBe(
+						0,
+					);
+					expect(
+						entriesSince(before).find(
+							(entry) => entry.msg === 'drill: the live database has tables this set predates',
+						),
+					).toMatchObject({ level: 'warn', tables: ['added_by_deploy'] });
+					// Drilled the way a nightly set is, the same set fails on that table.
+					const strict = await restore(
+						releaseConfig(configFromEnv(releaseEnv)),
+						{ name: 'latest', drill: true },
+						log,
+					);
+					expect(strict.ok).toBe(false);
+					expect(strict.report?.missingTables).toEqual(['added_by_deploy']);
+				} finally {
+					await sql.close();
+				}
+			} finally {
+				await admin.unsafe(`DROP DATABASE IF EXISTS ${quoteIdentifier(migrated)} WITH (FORCE)`);
+				await admin.close();
+			}
+		}, 30_000);
+
+		it('rolls a migrated database back to its release set, or leaves it as it was', async () => {
+			// A database of its own: this suite never writes to the one it is given.
+			const migrated = `${config.database}_release_rollback`;
+			const migratedUrl = withDatabase(config.databaseUrl, migrated);
+			const releaseEnv = { DATABASE_URL: migratedUrl, BACKUP_DIR: join(root, 'rollback-release') };
+			const releaseDir = join(releaseEnv.BACKUP_DIR, RELEASE_DIR);
+			// A connection per call, closed again: a live restore refuses while anything is connected.
+			const query = async <T = unknown[]>(...statements: string[]): Promise<T> => {
+				const sql = new Bun.SQL(migratedUrl, { max: 1 });
+				try {
+					let last: unknown;
+					for (const statement of statements) last = await sql.unsafe(statement);
+					return last as T;
+				} finally {
+					await sql.close();
+				}
+			};
+			// What a release's migrations do once the deploy's restore point is taken: a table with a
+			// foreign key into one the set holds, which `pg_restore --clean` alone cannot drop around,
+			// plus a column, a type, a function, a schema and the journal's row.
+			const migrate = () =>
+				query(
+					"create type child_kind as enum ('new')",
+					'create table child (id text primary key, parent_id text not null references parent (id), kind child_kind)',
+					"insert into child values ('c1', 'p1', 'new')",
+					'alter table parent add column archived boolean',
+					'create function queue_child() returns trigger language plpgsql as $$ begin return new; end $$',
+					'create trigger child_queue after insert on child for each row execute function queue_child()',
+					'create schema reports',
+					'create table reports.by_parent (parent_id text references public.parent (id))',
+					"insert into drizzle.journal (hash) values ('0012')",
+					"update parent set name = 'after'",
+				);
+			const state = async () => ({
+				name: (await query<{ name: string }[]>('select name from parent'))[0]?.name,
+				journal: (await query<{ n: number }[]>('select count(*)::int as n from drizzle.journal'))[0]
+					?.n,
+				filler: (await query<{ n: number }[]>('select count(*)::int as n from filler'))[0]?.n,
+				added: (
+					await query<{ name: string }[]>(
+						`select relname as name from pg_class where relname in ('child', 'by_parent')
+						 union all select proname from pg_proc where proname = 'queue_child'
+						 union all select typname from pg_type where typname = 'child_kind'
+						 union all select nspname from pg_namespace where nspname = 'reports'
+						 order by 1`,
+					)
+				).map((row) => row.name),
+			});
+			const admin = new Bun.SQL(withDatabase(config.databaseUrl, 'postgres'), { max: 1 });
+			try {
+				await admin.unsafe(`DROP DATABASE IF EXISTS ${quoteIdentifier(migrated)} WITH (FORCE)`);
+				await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(migrated)} TEMPLATE template0`);
+				await query(
+					'create table parent (id text primary key, name text not null)',
+					"insert into parent values ('p1', 'before')",
+					'create schema drizzle',
+					'create table drizzle.journal (id serial primary key, hash text not null)',
+					"insert into drizzle.journal (hash) values ('0011')",
+					// Enough rows that a dump cut short still lists, and fails part-way through its data.
+					'create table filler (id int primary key, note text not null)',
+					'insert into filler select g, md5(g::text) from generate_series(1, 50000) g',
+				);
+				expect(await main(['backup', '--release'], releaseEnv, log)).toBe(0);
+				await migrate();
+				const migratedState = {
+					name: 'after',
+					journal: 2,
+					filler: 50000,
+					added: ['by_parent', 'child', 'child_kind', 'queue_child', 'reports'],
+				};
+				expect(await state()).toEqual(migratedState);
+
+				const stamp = latestDumpStamp(await readdir(releaseDir)) as string;
+				const dumpPath = join(releaseDir, dumpName(stamp));
+				const manifestPath = join(releaseDir, manifestName(stamp));
+				const original = await Bun.file(dumpPath).bytes();
+				try {
+					// A set that fails half-way through its data: nothing it cleared or replaced stays.
+					await Bun.write(dumpPath, original.subarray(0, Math.floor(original.length * 0.6)));
+					await rename(manifestPath, `${manifestPath}.aside`);
+					const restoreCut = ['restore', stamp, '--release', '--yes', '--no-manifest-check'];
+					expect(await main([...restoreCut, '--no-safety-dump'], releaseEnv, log)).toBe(1);
+					expect(await state()).toEqual(migratedState);
+				} finally {
+					await Bun.write(dumpPath, original);
+					await rename(`${manifestPath}.aside`, manifestPath);
+				}
+
+				expect(await main(['restore', stamp, '--release', '--yes'], releaseEnv, log)).toBe(0);
+				expect(await state()).toEqual({ name: 'before', journal: 1, filler: 50000, added: [] });
+				const columns = await query<{ name: string }[]>(
+					"select column_name as name from information_schema.columns where table_name = 'parent' order by 1",
+				);
+				expect(columns.map((column) => column.name)).toEqual(['id', 'name']);
+				// The database is the set again, so the same migrations can run over it a second time.
+				await migrate();
+				expect(await state()).toEqual(migratedState);
+			} finally {
+				await admin.unsafe(`DROP DATABASE IF EXISTS ${quoteIdentifier(migrated)} WITH (FORCE)`);
+				await admin.close();
+			}
+		}, 60_000);
+
+		it('skips a database with no tables yet, the first deploy, and exits 0', async () => {
+			const empty = `${config.database}_release_empty`;
+			const dir = join(root, 'empty-release');
+			const admin = new Bun.SQL(withDatabase(config.databaseUrl, 'postgres'), { max: 1 });
+			try {
+				await admin.unsafe(`DROP DATABASE IF EXISTS ${quoteIdentifier(empty)} WITH (FORCE)`);
+				await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(empty)} TEMPLATE template0`);
+				const before = lines.length;
+				const code = await main(
+					['backup', '--release'],
+					{ DATABASE_URL: withDatabase(config.databaseUrl, empty), BACKUP_DIR: dir },
+					log,
+				);
+				expect(code).toBe(0);
+				expect(entriesSince(before).map((entry) => entry.msg)).toContain(
+					'release backup skipped: the database has no tables yet (first deploy)',
+				);
+				expect(await readdir(dir).catch(() => [])).toEqual([]);
+			} finally {
+				await admin.unsafe(`DROP DATABASE IF EXISTS ${quoteIdentifier(empty)} WITH (FORCE)`);
+				await admin.close();
+			}
+		});
 	});
 });

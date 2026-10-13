@@ -282,6 +282,42 @@ describe('env', () => {
 		expect(stderr).toContain('COOKIE_DOMAIN');
 	});
 
+	it('refuses `null` in TRUSTED_ORIGINS, in any spelling, naming the variable', () => {
+		for (const value of ['null', 'https://app.example.com, NULL', ' "null" ,tauri://localhost']) {
+			const { code, stderr } = importEnv({ TRUSTED_ORIGINS: value });
+			expect(code).not.toBe(0);
+			expect(stderr).toContain('TRUSTED_ORIGINS');
+			expect(stderr).toContain('sandboxed iframes');
+		}
+	});
+
+	it('refuses `null` in TRUSTED_ORIGINS outside production and under SKIP_ENV_VALIDATION too', () => {
+		// The most lenient start there is: no production-only rules and no cross-field rules.
+		const { code, stderr } = importEnv({
+			NODE_ENV: 'development',
+			SKIP_ENV_VALIDATION: '1',
+			TRUSTED_ORIGINS: 'null',
+		});
+		expect(code).not.toBe(0);
+		expect(stderr).toContain('TRUSTED_ORIGINS');
+		expect(stderr).toContain('sandboxed iframes');
+	});
+
+	it('takes a host that only contains the word `null`', () => {
+		const { code, stderr } = importEnv({
+			TRUSTED_ORIGINS: 'https://null.example.com,https://nullable.dev',
+		});
+		expect(stderr).toBe('');
+		expect(code).toBe(0);
+	});
+
+	it('takes the empty SENTRY_DSN row .env.example ships, and refuses one that is not a URL', () => {
+		expect(importEnv({ SENTRY_DSN: '', SENTRY_ENVIRONMENT: '' }).code).toBe(0);
+		const { code, stderr } = importEnv({ SENTRY_DSN: 'o123.ingest.sentry.io/456' });
+		expect(code).not.toBe(0);
+		expect(stderr).toContain('SENTRY_DSN');
+	});
+
 	it('loads in production with real secrets', () => {
 		expect(importEnv({}).code).toBe(0);
 	});

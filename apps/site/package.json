@@ -9,6 +9,7 @@
 		"build": "astro build",
 		"preview": "astro preview",
 		"check": "astro check",
+		"test": "bun test src",
 		"astro": "astro",
 		"deploy:cloudflare": "astro build && wrangler deploy",
 		"clean": "rm -rf dist .astro"
@@ -23,6 +24,7 @@
 	"devDependencies": {
 		"@astrojs/check": "^0.9.10",
 		"@tailwindcss/vite": "catalog:",
+		"@types/bun": "catalog:",
 		"tailwindcss": "catalog:",
 		"typescript": "catalog:"
 	}

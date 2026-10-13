@@ -1,0 +1,93 @@
+# A read-only look at the server, for an owner without a shell on it: containers, disk, memory, the
+# deployment journal, the server's SSH host key and the last lines of the API containers' logs. It
+# takes no lock and changes nothing (infra/scripts/ops.sh, `status`).
+#
+# It uses Deploy's variables and secret (DEPLOY_HOST, DEPLOY_USER, DEPLOY_PATH, DEPLOY_KNOWN_HOSTS,
+# DEPLOY_SSH_KEY, DEMO_PATH for the demo, COMPOSE_PROJECT_NAME, DEPLOY_VIA_TAILSCALE; deploy.yml's
+# header lists them), runs only while DEPLOY_ENABLED is `true`, and runs in the `production`
+# environment, so that environment's required reviewers, if you set any, approve it too. Before it
+# reads anything, the checkout must run this product's Compose project.
+#
+# Everything it prints lands in this run's log, which everyone who can read the repository can open.
+# In a public repository it therefore leaves out the log lines, which carry client addresses, paths
+# and ids; in a private one every collaborator can read them.
+name: Server status
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Which checkout to inspect: production (DEPLOY_PATH) or the public demo (DEMO_PATH).'
+        type: choice
+        options: [production, demo]
+        default: production
+      lines:
+        description: 'Log lines per service (none in a public repository).'
+        type: choice
+        options: ['50', '200', '1000']
+        default: '200'
+
+permissions:
+  contents: read
+
+# Not Deploy's group: GitHub cancels a run waiting in the same group, so a status check could cancel
+# a queued release. It takes no lock either; it only reads.
+concurrency:
+  group: server-status
+  cancel-in-progress: false
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    # Everything a `run:` needs comes through env, never `${{ }}` inside the script.
+    env:
+      DEPLOY_ENABLED: ${{ vars.DEPLOY_ENABLED }}
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER || 'deploy' }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+      DEMO_PATH: ${{ vars.DEMO_PATH }}
+    steps:
+      # The scripts and the compose files that name the expected project; ops.sh runs from here, not
+      # from the server's checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: |
+            .github/scripts
+            infra
+      - uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
+        if: vars.DEPLOY_VIA_TAILSCALE == 'true'
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+      - name: SSH to the server, host key pinned
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: bash .github/scripts/ssh-target.sh
+      - name: Server clock against the runner's
+        run: bash .github/scripts/check-clock.sh warn
+      - name: Status
+        env:
+          TARGET: ${{ inputs.target }}
+          LINES: ${{ inputs.lines }}
+          COMPOSE_PROJECT: ${{ vars.COMPOSE_PROJECT_NAME }}
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          set -euo pipefail
+          if [ "$REPOSITORY_PRIVATE" != true ]; then
+            echo "::notice title=No log lines::This repository is public, so anyone can read this run's log. Read the logs on the server, or make the repository private."
+            LINES=0
+          fi
+          case "$TARGET" in
+            production) export OPS_CHECKOUT="$DEPLOY_PATH" OPS_COMPOSE_FILE=infra/compose.yml ;;
+            demo)
+              [ -n "$DEMO_PATH" ] || { echo "::error title=No demo::Set the repository variable DEMO_PATH to inspect the demo."; exit 1; }
+              # COMPOSE_PROJECT_NAME renames production's project only.
+              export OPS_CHECKOUT="$DEMO_PATH" OPS_COMPOSE_FILE=infra/demo/compose.yml COMPOSE_PROJECT=
+              ;;
+            *) exit 1 ;;
+          esac
+          bash .github/scripts/run-ops.sh status "$LINES"

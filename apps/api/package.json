@@ -30,6 +30,7 @@
 		"@repo/db": "workspace:*",
 		"@repo/email": "workspace:*",
 		"@repo/env": "workspace:*",
+		"@sentry/node": "^10.74.0",
 		"hono": "catalog:",
 		"zod": "catalog:"
 	},

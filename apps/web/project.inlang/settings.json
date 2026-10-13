@@ -14,7 +14,8 @@
 			"./messages/{locale}/shell.json",
 			"./messages/{locale}/app.json",
 			"./messages/{locale}/account.json",
-			"./messages/{locale}/admin.json"
+			"./messages/{locale}/admin.json",
+			"./messages/{locale}/product.json"
 		],
 		"sort": "asc"
 	}

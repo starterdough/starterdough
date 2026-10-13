@@ -10,7 +10,7 @@
 	 * The page renders this in development builds only: your users never see it.
 	 *
 	 * The guides link to the kit's own repository, readable without running the docs site
-	 * (`bun run dev:docs` serves the same pages on :4322). `bun run rename` leaves that path alone.
+	 * (`bun run dev:manual` serves the same pages on :4322). `bun run rename` leaves that path alone.
 	 */
 	const GUIDES =
 		'https://github.com/starterdough/starterdough/blob/main/apps/docs/src/content/docs/guides';

@@ -758,3 +758,349 @@ write forged).
 browser page that writes to `/api/v1` with the cookie must be on `WEB_URL` or in `TRUSTED_ORIGINS`.
 A server-side caller that forwards a cookie and sends neither `Origin` nor `Sec-Fetch-Site` passes,
 as does every request without a cookie.
+
+## D33 · Two migration histories: the kit's and the product's
+
+**Context.** Drizzle's migrator applies a migration only when its journal `when` is newer than the
+newest one already applied. Until 1.1.0 a product's `db:generate` wrote into the kit's own history,
+`packages/db/drizzle`, so a kit release that added a migration collided with every product that had
+generated one. The merge conflicted on the journal and, add/add, on the snapshot. The resolution
+that looks right, renumbering the product's migration after the kit's and keeping its `when`, left
+the kit's migration older than one every product database had already applied: `drizzle-kit
+generate` said "No schema changes", and `db:migrate` stopped with the kit's migration pending.
+Every kit release with a migration would have needed each product to rebase its history.
+
+**Decision.** Two Drizzle histories, applied inside the one advisory lock, the kit's first.
+
+- **The kit's** is `packages/db/drizzle`, generated from `src/schema/index.ts` through
+  `drizzle.kit.config.ts` and recorded in `drizzle.__drizzle_migrations`. Only kit releases write
+  it: the seller generates a kit migration with `bun run --cwd packages/db generate:kit`, and a
+  product never runs that.
+- **The product's** is `packages/db/drizzle-product`, generated from `src/schema/product.ts`
+  through `drizzle.config.ts` and recorded in `drizzle.__product_migrations`. Being the default
+  config, it is what `db:generate` and any bare `drizzle-kit` command (`drop`, `check`) act on. The
+  kit ships it empty and never changes it.
+- **A product's change to a kit table** (a Better Auth plugin or extra field, an index of its own)
+  is a custom migration in the product's history. `bun run db:kit-drift` prints the SQL Drizzle
+  would write for it, minus what a product migration already holds, and `kit-drift.test.ts` fails
+  while any is outstanding; in the kit's own repository the same test catches a forgotten
+  `generate:kit`. `schema-coverage.test.ts` checks every declared column against a migrated
+  database, and `migration-files.test.ts` checks both histories' files without one.
+- **A product with migrations from before 1.1.0** moves them once, while the 1.1.0 merge is open,
+  with `bun run db:move-product-migrations`, which keeps their SQL, hash and `when`. `migrate.ts`
+  then moves their history rows to the product's table (`rehomeProductMigrations`) before either
+  history runs, so a production database changes only through the deploy's migrate step. Both are
+  one-shot tooling, to remove in 2.0.
+
+This amends D6 (migrations are committed under `packages/db/drizzle/` and, for a product's own,
+`packages/db/drizzle-product/`), D22 (`admin.system.status` reports both histories) and D28 (the
+`migrate` one-shot applies both).
+
+**Alternatives.** One history and a migrator that applies whatever is unapplied, whatever its
+order, plus a rebase of the product's migrations at each kit release that adds one (a fork of
+Drizzle's migrator, a conflict at every such merge, and no way across to the full edition for a
+free database with migrations of its own). One schema split between the generators with
+`tablesFilter` (`drizzle-kit generate` is offline and diffs exactly what its schema file exports; a
+filter cannot say whose a table is). One journal with index ranges reserved for each side (Drizzle
+orders by `when`, not by index). `drizzle-kit check` as the merge check (it exited 0 on a naively
+merged product branch that `migration-files.test.ts` rejects).
+
+**Consequences.** The order differs between a fresh database, which runs every kit migration and
+then every product one, and an existing one, which runs a new release's kit migrations after the
+product's. Kit migrations never reference product tables. A product migration must not depend on
+kit state a later release changes, or it fails on fresh databases, and a later kit migration that
+takes a name a product already used fails on existing ones. Changing a kit table takes a
+hand-placed custom migration, which is less automatic than `db:generate` was. Two of a product's
+own branches that each generate a migration still collide the usual Drizzle way:
+`migration-files.test.ts` catches the naive merge and UPGRADING.md's "Migrations" gives the
+remedy. Once `rehomeProductMigrations` has moved a database's rows, a build from before 1.1.0
+cannot migrate it any more (it would run the moved migrations again), so rolling back across
+1.1.0 means restoring the dump taken before it. In the kit's own repository a bare `drizzle-kit`
+command now acts on the empty product history; `db:generate` there says "No schema changes",
+which is harmless, and kit migrations come only from `generate:kit`.
+
+## D34 · Product files: one per registry, never edited by the kit, marker-free when shared
+
+**Context.** Until 1.1.0 a product's feature lived partly in kit files. Its procedures were spread
+into `contract` in `packages/api-contract/src/index.ts`, its router was mounted in `router.ts`, its
+messages went into the kit's catalogues and its links into the app shell's lists, and each of those
+files changes in most kit releases. "Put your code in new files" (`UPGRADING.md`) cannot cover a
+registry: something has to list the new file, and that line sat in a kit file. Every such line was
+a conflict waiting for the next release that touched the same hunk.
+
+**Decision.** Each registry a product extends has one product-owned file, next to the kit code that
+reads it. The kit created each in 1.1.0 as an empty stub, edited its reader once to take the file's
+entries last, and never changes the file again; a later extension point arrives as a new file.
+
+- **Shared by both editions, without markers, byte for byte:** `packages/db/src/schema/product.ts`,
+  `packages/db/src/product.ts` and `packages/db/drizzle-product/` (D33);
+  `packages/api-contract/src/product.ts`, spread last into `contract` and re-exported whole by
+  `@repo/api-client`; `apps/api/src/rpc/product.ts`, spread last into the router;
+  `apps/web/messages/{en,de}/product.json`, one more Paraglide catalogue; and
+  `apps/web/src/lib/product.ts`, whose `productNavLinks` the sidebar and the command palette show
+  before Settings.
+- **A product file imports kit modules, never the kit file that imports it**, which would be a
+  cycle: a contract file of the product's builds on `procedures.ts`, never on `index.ts`.
+- **The names are the product's.** `product.ts`, `product-*.ts`, `product.json` and anything in
+  `drizzle-product/` are never the kit's own files.
+
+**Alternatives.** A registry filled at runtime, where product modules register procedures and
+links with the kit (the contract would lose the static types the client and the OpenAPI document
+are built from). One `product/` directory per app (the files would sit away from the code that
+reads them, which still needs the same one-line hook). A product's additions inside the kit files
+between agreed markers (a merge still conflicts on lines both sides touch). Edition markers inside
+the shared product files (the free and paid stubs would differ, so moving a free product to the
+full edition could not simply keep the product's side of each file).
+
+**Consequences.** A product's feature edits no kit file, so a kit release merges without touching
+it, and moving from the free edition to the full one keeps the product's side of every shared
+product file while the paid-only ones arrive as new files. A key the product shares with a kit
+procedure fails `bun run check`, because the product's entries come last; a schema of the
+product's with the name of a kit export is shadowed in `@repo/api-client` without an error. Some
+changes still mean editing a kit file, as the docs' "Where your code goes" lists: Better Auth's
+configuration and the self-hosted stack.
+The kit's own changes to a registry's shape ship as new files or as new kit code around the
+product file, never as an edit to it.
+
+## D35 · `kitVersion` is the kit's release, `version` is the product's
+
+**Context.** Until 1.1.0 the root `package.json` `version` was the kit's release, and D30 made it
+the one source every surface reads: `/health`, `/admin/system`, the OpenAPI document, the telemetry
+resource, the site and the desktop builds. A product built on the kit has releases of its own and
+reports them through those same surfaces. A product that bumped `version` conflicted with every kit
+release that bumped it too, and one that did not reported the kit's release as its own.
+
+**Decision.** Two fields in the root `package.json`.
+
+- **`version` is the product's.** The kit ships 0.1.0 there, in `apps/native/package.json` and in
+  `apps/native/src-tauri/Cargo.toml`, and never changes it again. Every surface D30 lists reads it.
+- **`kitVersion` is the kit's release**, and only kit releases change it. It sits after
+  `packageManager`, lines away from `version`, so a release's bump and a product's merge without a
+  conflict. `/admin/system` shows it to platform admins. The public `/health` leaves it out: there
+  it would tell anyone which kit release, and so which of its published issues, a deployment runs.
+  Bug and vulnerability reports about the kit ask for it.
+- **The free edition** carries both fields as the kit does, and each of its releases is named and
+  tagged from `kitVersion`.
+- **`bun run rename` leaves `version` alone.** Every kit snapshot from 1.1.0 on already carries
+  0.1.0, and a rename run on a `main` with a version of its own would lose it.
+
+This amends D30's "Version has one source": the product's version still has one, `version`, and
+the kit's release is the separate `kitVersion`.
+
+**Alternatives.** Keep `version` as the kit's and give the product a field of its own (every
+surface would report the kit's release, and a product would have to change each one). A version
+file of the kit's outside `package.json` (one more root file, read by tooling that already reads
+`package.json`). The kit release on `/health` as well (it fingerprints every product built on the
+kit). A reset of `version` in `rename` (it would wipe a real version on a renamed `main`).
+
+**Consequences.** The one change from 1.0.0's `version` to 0.1.0 conflicts for a product that set
+its own, and UPGRADING.md says to keep theirs; a product that never set one starts at 0.1.0. From
+then on neither side edits the other's line. A deployment that is the kit itself, such as the
+seller's demo, sets `version` to the kit's release on every release, or it reports 0.1.0.
+
+
+## D37 · What a renamed product publishes
+
+**Context.** `bun run rename` rewrote the kit's name, but a product built on it still published the
+kit. Its marketing site served the kit's release notes for 0.1.0 to 1.0.0, licence-sale terms
+included, and the kit's two blog posts. Its docs site served the kit's developer manual, and the
+site's buttons linked into manual-only pages. The legal templates went live with their
+`**[placeholders]**` and review note. The demo banner linked to the seller's site, and
+`provision.sh` cloned the kit's repository when `REPO_URL` was unset. After the rename, the deploy
+scripts' variables (`<SLUG>_STATE_DIR` and the like) kept the kit's slug, and the first `bun add`
+re-sorted every renamed dependency map, so each later renamed release conflicted inside those maps.
+
+**Decision.** What a deploy publishes is the product's by default, and the kit's own material stays
+in the repository.
+
+- **The site's changelog and blog are product-owned.** Each ships one sample marked `draft: true`,
+  which `astro dev` shows and every build, the RSS feed, the OG images and the sitemap leave out
+  (`published()` in `apps/site/src/lib/content.ts`, Astro's draft convention). The pages say "No
+  releases yet." and "No posts yet." until there is an entry. The kit's history is `CHANGELOG.md`
+  only, and no release after 1.1.0 adds or changes a file in either folder.
+- **`apps/docs` has two content sets, chosen at build time by `DOCS_CONTENT`.** `product`, the
+  default, is `src/content/product`: a splash page, a getting-started guide and the interactive API
+  reference, with a sidebar generated from its folders so a product adds pages without editing
+  `astro.config.mjs`. `kit` is the developer manual, left at `src/content/docs` so every reference
+  to its path keeps working, with the sidebar it had. `content-set.mjs` decides for both the config
+  and the collection's loader, and Astro's content cache is kept per set. `DOCS_CONTENT` is never an
+  `.env` row: `loadSiteEnv` loads every row into the build, so a stored `kit` would publish the
+  manual from every local build and every `deploy:cloudflare`. It is set per command
+  (`bun run dev:manual`), per CI step and per Docker build arg. CI and the free edition's publish
+  gate build the manual too, so a broken page still fails somewhere. The site links into the docs
+  only at pages both sets have: the home and the API reference.
+- **Legal templates are refused where they would be published.** `getStaticPaths` of
+  `legal/[slug].astro` checks the documents it renders (`apps/site/src/lib/legal.ts`): a production
+  build for a real origin fails while one holds a bold `**[...]**` placeholder or the "Template:
+  review with counsel" note, outside HTML comments, and names each file. Loopback and the reserved
+  `.invalid`, `.test`, `.localhost` and `.example` names are never checked, so CI, the publish gate
+  and local builds are unchanged. `ALLOW_LEGAL_PLACEHOLDERS=1` opts out, from the build
+  environment, `apps/site/.env`, the caddy and demo-static build args or a repository variable.
+- **The rename finishes the job.** An uppercase rule rewrites `<SLUG>_` in variable names (a dash
+  becomes an underscore); it matches only a prefix followed by `_` and runs before the name rule, so
+  a product named in capitals keeps prose and variable names apart on a second rename. Dependency
+  maps in a rewritten `package.json` are sorted in the order `bun add` keeps. "Starterdough kit"
+  joins the verbatim strings, for pages that say what the product is built on. The kit itself keeps
+  its variable names.
+- **What the rename cannot rewrite is named.** `bun run doctor` gains a warning level (`!`), which
+  never fails a run, for `.env` rows that still name the product renamed away from; it names rows,
+  never values. The demo banner links to `PUBLIC_DEMO_CTA_URL`, and nowhere while it is empty.
+  `infra/demo/.env.example` ships its domain, sender and registry empty, and `provision.sh` requires
+  `REPO_URL`.
+
+**Alternatives.** Hiding the changelog and blog navigation when they are empty (more code for a page
+that says so itself). Moving the manual out of `apps/docs` (every repository reference to its path
+would break). Leaving the docs out of a deploy (it would drop the API reference, which is product
+documentation, and leave `docs.<domain>` dangling). A `DOCS_CONTENT` row in `apps/docs/.env`
+(above). The legal check in `astro.config.mjs` (it would check files the build does not render, and
+the reference demo renders a collection of its own). Renaming the kit's own variables (a
+compatibility read in the kit and in every deployment, for a name only the rename needs to change).
+A blocking doctor check (keeping the old database role and Compose project is right for a volume
+kept on purpose, so it would fail for ever).
+
+**Consequences.** After a rename, `docs.<domain>` serves a two-page skeleton until the product
+writes its docs, and a buyer who wants no docs site still has the vhost. A product that edited the
+kit's notes or posts meets a modify/delete conflict on its 1.1.0 merge, and a renamed fork sees the
+variable prefix and the dependency maps change once; `UPGRADING.md` covers both. The legal check
+knows only the templates' bold grammar: a placeholder a product writes unbolded passes, and a
+deliberately bold bracketed phrase in a real policy is flagged. The doctor's sender heuristic flags
+a display name without the product's name, such as "Support Team", which is why it only warns. The
+kit's own reference deployment builds the manual and opts out of the legal check explicitly.
+
+## D38 · Operating a product without a shell: release backups, pinned hosts, ops workflows, API errors
+
+**Context.** By 1.0.0 the kit deployed from CI, but running a product still took an SSH session on
+its server: to back up, read logs, create the first administrator, or get past a migration that
+failed. Migrations are forward-only, yet `deploy.sh` ran them with no restore point, and the deploy
+job had no timeout. Every SSH connection used `StrictHostKeyChecking accept-new`, which on a hosted
+runner, whose `known_hosts` is empty in every job, accepted whatever key answered. `DEPLOY_PATH`
+defaulted to `/opt/starterdough` and nothing checked that the checkout it named was this product's,
+so one product could deploy into another's checkout after overwriting its `.env`. The off-site
+backup credentials reached every container built from the API image, the API reported its errors
+nowhere but its logs, base images floated on tags such as `oven/bun:1.4`, and CI spent macOS and
+Windows minutes on installers a product might never ship.
+
+**Decision.** The owner operates the product from GitHub Actions, and reaches the box with a shell
+only to break glass.
+
+- **A release backup before every deploy.** `deploy.sh` runs the backup tool's `backup --release`
+  under the deploy's host lock, after the pull and the pre-deploy hooks and before anything stops:
+  the tool's restore format (manifest, checksum, drill), not a second script. Release sets are
+  online and hold the database only, since `pg_dump` reads one consistent snapshot and migrations
+  never touch files. They stay on the box in `release/`, ping no heartbeat and are pruned to the
+  newest four: they guard against a bad migration, not against losing the box, and a bucket outage
+  must not block a deploy. A first deploy, whose database has no tables, skips it, and
+  `RELEASE_BACKUP=off` is the one switch, for provider snapshots or a database too large to dump
+  each time.
+- **Backups wait for each other.** A release backup waits up to 10 minutes for the backup tool's
+  advisory lock and a scheduled one up to 30; a manual backup and every restore still refuse at
+  once. Refusing would fail a deploy that lands during the nightly run, and page someone when the
+  nightly run met a release backup.
+- **Four ops workflows**: Server status, Server logs, Server backup and Admin bootstrap, each run by
+  hand in the `production` environment and gated on `DEPLOY_ENABLED` like Deploy. They ship
+  `infra/scripts/ops.sh` from the runner on every run, so they work against a checkout of any age,
+  and take the host lock only to change something, waiting up to 10 minutes for it. None joins
+  Deploy's concurrency group, where GitHub would cancel a release waiting its turn. Recover
+  deployment skips the `DEPLOY_ENABLED` gate, so switching deploys off in an incident cannot lock
+  the owner out. In a public repository Server logs refuses to run and Server status leaves out log
+  lines, because anyone can read those runs. Admin bootstrap hands the password to the script on
+  its standard input, never on a command line or into the container's environment. A live restore
+  is not among them: it stays a deliberate act on the box.
+- **`abandon` in Recover deployment** drops a forward-only journal after a migration that fails
+  every time, which would otherwise block every deploy, the fix included. It needs the first 7
+  characters of the journal's revision and the recorded checkout, and starts nothing.
+- **Identity before any change.** `DEPLOY_PATH` is required. Before the server's `.env` is
+  replaced, its checkout must share history with the release (`git merge-base`) and resolve to the
+  expected Compose project: the `name:` in `infra/compose.yml`, or the repository variable
+  `COMPOSE_PROJECT_NAME`. The Deploy step checks the project again under the lock, and every ops
+  command checks it too. History alone cannot tell two products built from the kit apart, since
+  both carry the kit's. The recovery journal, now version 2, records the project Compose resolves
+  and a kind (`stack`, `demo`) in place of the hard-coded project names.
+- **Pinned host keys.** `DEPLOY_KNOWN_HOSTS` holds the server's host key, every connection runs
+  `StrictHostKeyChecking yes` under one `HostKeyAlias`, and `provision.sh` prints the key with its
+  fingerprint.
+- **Backup credentials only where backups run.** `x-api-env` blanks the off-site keys and the
+  heartbeat URL for every service built from the API image (`environment` wins over `env_file`),
+  and CI checks the resolved configuration with sentinel values.
+- **API errors to Sentry** through `@sentry/node`, loaded only while `SENTRY_DSN` is set. Errors
+  only: OpenTelemetry keeps the traces and `lifecycle.ts` the fatal path, so Sentry's own handlers
+  and its HTTP, fetch, console and local-variable integrations are off. Reports come from explicit
+  call sites, and a `Failed query:` message is withheld, because Drizzle's carries the statement
+  and every bound value.
+- **Pinned images, and minutes spent where they count.** Base and service images are pinned to the
+  patch release their floating tag pointed to (the same digest), `oven/bun` to `packageManager`,
+  and `infra/scripts/image-pins.test.ts` holds both.
+  Desktop builds wait for `DESKTOP_ENABLED`, CI's Rust job runs only while `apps/native` exists,
+  and a pull request builds only the images whose inputs it changed.
+  The server keeps its three newest local builds, and a weekly registry cleanup keeps version tags,
+  `latest`, `main` and the 20 newest builds of each image.
+- **Hooks for a product's own deploy steps**, in `infra/scripts/hooks/{pre,post}-deploy.d/`, which
+  the kit never writes to, so a product's operations never edit `deploy.sh`.
+- **One product per server**, with the setup a second product on the box needs documented rather
+  than shipped: its own Linux user, ports, a shared Caddy over the proxy network and memory caps on
+  both databases differ from box to box.
+- **A 180-minute deploy job timeout**: the waits a legitimate rollout can meet before `deploy.sh`
+  stops a writer add up to about 140 minutes, so the timeout only ever catches a hang.
+
+This amends D28. Its consequence that `create-admin` downloads the Better Auth CLI through `bunx`,
+and so runs from the checkout on the box rather than inside the API container, no longer holds: the
+script uses the kit's own auth configuration, and Admin bootstrap runs it inside the running API
+container.
+
+**Alternatives.** A release backup with the writers stopped first (it adds the dump's duration to
+every deploy's outage). The reference deployment's own `release-backup.sh` (a second script and
+set format beside the tool's). Release sets copied off the box (a bucket outage would block
+deploys, for a copy the nightly run makes anyway). A generic coordinated, writers-paused backup
+mode (about 350 lines and a crash journal of its own where the reference deployment built one; the
+online set and the drill's database-to-file check say what they cover). Refusing instead of
+waiting on the backup lock, and trust on first use for host keys (above). A logger sink that
+forwards errors to Sentry (every log call would become a report path nobody sees at the call).
+`@sentry/bun` (it adds the `@apm-js-collab` instrumentation packages, where `@sentry/node` was
+already in the lockfile through `@sentry/sveltekit` and captures and flushes on Bun 1.4.2). Ops
+workflows in Deploy's concurrency group (above). A shipped overlay for a second product on a box
+(every box differs).
+
+**Consequences.** The two required variables stop every existing deploy until they are set; it
+fails in the plan job, before anything is built. A release backup costs a dump's time and disk on
+every deploy, with four sets kept on the box. It is online, so writes made while it runs are not in
+it, and restoring it after the new release has served traffic loses that traffic's writes. A
+nightly backup that runs longer than 10 minutes still fails a deploy that lands during it, which is
+then run again. `abandon` lets an owner deploy old code over a newer schema, so the runbook restores
+the release set first, and it cannot drop a journal a 1.0.0 deploy wrote. In a private repository
+every collaborator can read the ops workflows' output. Promoting an account in Admin bootstrap needs
+no secret, so whoever can run workflows can promote one; they can deploy code already, and required
+reviewers on `production` close it. `@sentry/node` is not Sentry's documented SDK for Bun, so a
+future major may need `@sentry/bun`, and the fatal path waits up to 2 s for Sentry before it exits.
+Bun moves by hand with `packageManager`. A rollback to a build older than the newest 20 deploys a
+version tag. The project check is the only guard between two products that both kept the kit's
+name, so sharing a box starts with a rename.
+
+## D39 · Platform primitives: email in the user's language
+
+**Context.** Every email the API sent was English: D24 left the API's emails out of scope,
+because a stored language would need a Better Auth field and a migration. A product's own
+template sat in the kit's `packages/email/src/index.ts`, next to the kit's, where any release
+that changed that file could conflict with it.
+
+**Decision.** A product adds to each primitive in a product file the kit's code reads (D34), never
+in a kit file.
+
+- **Email in the user's language, taken from the request.** Each template is
+  `defineTemplate({ en, de })`, a record over `EMAIL_LOCALES`, the app's own locales (a test keeps
+  them equal), so a missing translation fails `bun run check`. Escaping stays structural: the
+  `html` tag escapes every value. The web app's auth client sends the language it shows as
+  `Accept-Language`, Better Auth hands every email callback the request, and `localeOf` picks the
+  best language the kit writes email in, English otherwise. Nothing is stored per account.
+- **Product files** (D34). `packages/email/src/product.ts` holds a product's templates in both
+  editions, merged with the kit's, and a name the kit already uses stops the API at start-up.
+
+This amends D24: the API's emails follow the user's language, without a stored preference.
+
+**Alternatives.** A language stored per account (a Better Auth field and a migration, when the
+request already says which language the person is using). Email copy in the app's Paraglide
+catalogues (the API would read the web app's build output).
+
+**Consequences.** An email no request causes, such as a digest sent on a schedule, has no language
+to follow, so a product that sends one stores the person's choice itself. The German copy is
+machine-drafted, like the app's (D24), and needs a native review before a launch.
+

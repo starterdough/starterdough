@@ -61,12 +61,14 @@
 	"admin_system_health_down": "Ausgefallen",
 	"admin_system_health_ok": "OK",
 	"admin_system_health_unreachable": "Nicht erreichbar",
+	"admin_system_kit_version": "Kit-Version",
 	"admin_system_latency": "{ms} ms",
 	"admin_system_loading": "Status wird geladen…",
-	"admin_system_migrations": "Migrationen",
 	"admin_system_migrations_applied": "{applied} von {shipped} angewendet",
+	"admin_system_migrations_kit": "Kit-Migrationen",
 	"admin_system_migrations_latest": "zuletzt {name}",
 	"admin_system_migrations_pending": "Ausstehend",
+	"admin_system_migrations_product": "Produkt-Migrationen",
 	"admin_system_migrations_unknown": "Unbekannt",
 	"admin_system_migrations_unknown_detail": [
 		{

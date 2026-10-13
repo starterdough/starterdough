@@ -1,0 +1,90 @@
+# Backups without a shell on the server (infra/scripts/ops.sh, `backup`): take one now, list the
+# sets, or drill the newest one, which restores it into a scratch database, checks it and drops it
+# without touching the live database. `release` works on the restore points deploy.sh takes before
+# each release instead of the nightly sets (infra/backup/README.md).
+#
+# A live restore is not offered here on purpose: it replaces production's data, so it stays a
+# deliberate act on the box (infra/README.md, "Backups and the restore drill").
+#
+# It uses Deploy's variables and secret (deploy.yml's header lists them), runs only while
+# DEPLOY_ENABLED is `true`, and runs in the `production` environment, so that environment's required
+# reviewers, if you set any, approve it too. Before it runs anything, the checkout must run this
+# product's Compose project. It works on production only: the demo has no backups. It runs under the
+# host operation lock deploys hold, waiting up to 10 minutes for it, so never during a deploy.
+name: Server backup
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'backup takes one now; list shows the sets; drill restores the newest set into a scratch database and checks it.'
+        type: choice
+        options: [backup, list, drill]
+        default: list
+      set:
+        description: 'nightly: the scheduled sets (and the bucket); release: the restore points taken before each deploy.'
+        type: choice
+        options: [nightly, release]
+        default: nightly
+
+permissions:
+  contents: read
+
+# Not Deploy's group: GitHub cancels a run waiting in the same group, so a backup could cancel a
+# queued release. The host lock keeps the two apart instead.
+concurrency:
+  group: server-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    environment: production
+    # A large database dumps and restores for a while. BACKUP_COMMAND_TIMEOUT_MINUTES bounds each
+    # command on the box.
+    timeout-minutes: 120
+    # Everything a `run:` needs comes through env, never `${{ }}` inside the script.
+    env:
+      DEPLOY_ENABLED: ${{ vars.DEPLOY_ENABLED }}
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER || 'deploy' }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+      DEMO_PATH: ${{ vars.DEMO_PATH }}
+    steps:
+      # The scripts and the compose file that names the expected project; ops.sh runs from here, not
+      # from the server's checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: |
+            .github/scripts
+            infra
+      - uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
+        if: vars.DEPLOY_VIA_TAILSCALE == 'true'
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+      - name: SSH to the server, host key pinned
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: bash .github/scripts/ssh-target.sh
+      - name: Server clock against the runner's
+        env:
+          ACTION: ${{ inputs.action }}
+        run: |
+          # A backup's copy to the bucket fails once request signatures are 15 minutes out, and its
+          # stamp would be wrong; listing and drilling only read.
+          if [ "$ACTION" = backup ]; then
+            bash .github/scripts/check-clock.sh
+          else
+            bash .github/scripts/check-clock.sh warn
+          fi
+      - name: Backup
+        env:
+          ACTION: ${{ inputs.action }}
+          SET: ${{ inputs.set }}
+          COMPOSE_PROJECT: ${{ vars.COMPOSE_PROJECT_NAME }}
+        run: |
+          OPS_CHECKOUT="$DEPLOY_PATH" OPS_COMPOSE_FILE=infra/compose.yml \
+            bash .github/scripts/run-ops.sh backup "$ACTION" "$SET"

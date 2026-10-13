@@ -209,7 +209,18 @@ function edits(repo: string) {
 	const text = readFileSync(app, 'utf8');
 	writeFileSync(app, text.replace("'Hello'", "'Howdy'").replace("'Goodbye'", "'See you'"));
 	write(join(repo, 'product.md'), '# Our product\n');
+	// `version` is the product's own: the buyer releases on it, and a kit release never touches it.
+	const manifest = join(repo, 'package.json');
+	const before = readFileSync(manifest, 'utf8');
+	writeFileSync(manifest, before.replace('"version": "0.1.0"', '"version": "0.2.0"'));
 	run(repo, 'git add -A && git commit -qm "Make it ours"');
+}
+
+/** The buyer's `version` and the release's `kitVersion`, both kept by the merge. */
+function expectVersions(repo: string) {
+	const manifest = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
+	expect(manifest.version).toBe('0.2.0');
+	expect(manifest.kitVersion).toBe('1.1.0');
 }
 
 function releaseNext() {
@@ -226,10 +237,11 @@ function releaseNext() {
 	);
 	write(join(seller, 'src/worker.ts'), "export const worker = 'sourkit-worker';\n");
 	run(seller, 'git rm -q old.txt');
+	// A release moves only `kitVersion`; `version` stays the placeholder every product starts from.
 	const manifest = readFileSync(join(seller, 'package.json'), 'utf8');
 	writeFileSync(
 		join(seller, 'package.json'),
-		manifest.replace('"version": "1.0.0"', '"version": "1.1.0"'),
+		manifest.replace('"kitVersion": "1.0.0"', '"kitVersion": "1.1.0"'),
 	);
 	run(seller, 'git add -A && git commit -qm "1.1.0" && git tag -a v1.1.0 -m 1.1.0');
 	write(join(seller, 'unreleased.txt'), 'work in progress\n');
@@ -257,7 +269,9 @@ function expectUpgraded(repo: string, base: string) {
 	expect(readFileSync(join(repo, 'src/worker.ts'), 'utf8')).toContain("'acme-worker'");
 	expect(existsSync(join(repo, 'old.txt'))).toBe(false);
 	expect(existsSync(join(repo, 'unreleased.txt'))).toBe(false);
+	expectVersions(repo);
 	expect(run(repo, `git diff --name-only ${base} main`).split('\n')).toEqual([
+		'package.json',
 		'product.md',
 		'src/app.ts',
 	]);
@@ -271,7 +285,9 @@ beforeEach(() => {
 	run(root, `git clone --quiet ${upstream} ${seller}`);
 	write(
 		join(seller, 'package.json'),
-		'{\n\t"name": "sourkit",\n\t"version": "1.0.0",\n\t"private": true,\n\t"scripts": {\n' +
+		'{\n\t"name": "sourkit",\n\t"private": true,\n\t"version": "0.1.0",\n' +
+			'\t"description": "A miniature kit.",\n\t"packageManager": "bun@1.4.2",\n' +
+			'\t"kitVersion": "1.0.0",\n\t"scripts": {\n' +
 			'\t\t"rename": "bun scripts/rename.ts",\n\t\t"lint:fix": "bun -e 0"\n\t}\n}\n',
 	);
 	write(join(seller, '.gitignore'), 'node_modules/\n');
@@ -322,7 +338,7 @@ describe('UPGRADING.md', () => {
 			const { dir, origin } = buyer('renamed');
 			const repo = follow(block('git clone --no-tags'), dir, origin);
 			expect(existsSync(join(repo, 'wip.txt'))).toBe(false);
-			follow(block('git switch -c kit-renamed', '-s ours'), repo, origin);
+			follow(block('git switch --no-track -c kit-renamed', '-s ours'), repo, origin);
 			edits(repo);
 
 			releaseNext();
@@ -447,7 +463,9 @@ describe('UPGRADING.md', () => {
 			expect(app).toContain("'Howdy'");
 			expect(existsSync(join(repo, 'old.txt'))).toBe(false);
 			expect(existsSync(join(repo, 'unreleased.txt'))).toBe(false);
+			expectVersions(repo);
 			expect(run(repo, 'git diff --name-only kit/v1.1.0 main').split('\n')).toEqual([
+				'package.json',
 				'product.md',
 				'src/app.ts',
 			]);
@@ -474,6 +492,7 @@ describe('UPGRADING.md', () => {
 			expect(app).toContain("import { db, sql } from '@sk/db';");
 			expect(app).toContain("'Howdy'");
 			expect(existsSync(join(repo, 'unreleased.txt'))).toBe(false);
+			expectVersions(repo);
 			expect(run(repo, 'git tag')).toBe('kit/v1.0.0\nkit/v1.1.0');
 			expect(run(repo, 'git ls-remote origin main')).toContain(run(repo, 'git rev-parse main'));
 		},
@@ -485,7 +504,7 @@ describe('UPGRADING.md', () => {
 		() => {
 			const { dir, origin } = buyer('walk-away');
 			const repo = follow(block('git clone --no-tags'), dir, origin);
-			follow(block('git switch -c kit-renamed', '-s ours'), repo, origin);
+			follow(block('git switch --no-track -c kit-renamed', '-s ours'), repo, origin);
 			edits(repo);
 			const before = run(repo, 'git rev-parse main kit-renamed');
 
@@ -517,6 +536,65 @@ describe('UPGRADING.md', () => {
 		},
 		TIMEOUT,
 	);
+
+	it(
+		'creates kit-renamed without an upstream, even from a branch',
+		() => {
+			const creations = page
+				.split('\n')
+				.filter((line) => /\bgit (switch|checkout)\b.*\s-[bBcC] kit-renamed\b/.test(line));
+			expect(creations.length).toBeGreaterThan(0);
+			for (const line of creations) expect(line).toContain('--no-track');
+
+			// From a tag, as the page does, no branch gets an upstream anyway; from a branch, such as
+			// the `kit/main` an older clone starts from, it would, and `git pull` there would merge it.
+			const { dir, origin } = buyer('no-track');
+			const repo = follow(block('git clone --no-tags'), dir, origin);
+			run(repo, (creations[0] ?? '').trim().replace('kit/v1.0.0', 'kit/main'));
+			expect(sh(repo, 'git config branch.kit-renamed.merge').exitCode).not.toBe(0);
+		},
+		TIMEOUT,
+	);
+
+	// A script the page names but the manifest lacks fails on the buyer's machine, in the middle of an
+	// upgrade. The free edition's manifest drops the paid-only ones, so the page must too.
+	it('names only scripts the root package.json has', () => {
+		const manifest = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'));
+		const scripts = Object.keys(manifest.scripts as Record<string, string>);
+		// Named as the script 1.0.0 removed.
+		const removed = ['db:push'];
+		const named = [...page.matchAll(/\bbun run ([\w:-]+)/g)]
+			.map((match) => match[1] ?? '')
+			.filter((name) => !name.startsWith('-'));
+		expect(named.length).toBeGreaterThan(0);
+		const missing = named.filter((name) => !scripts.includes(name) && !removed.includes(name));
+		expect([...new Set(missing)]).toEqual([]);
+	});
+
+	// The page and the changelog reach a renamed fork as they are (`rename` keeps both verbatim), but
+	// `rename` rewrote the old default checkout path in its provision.sh and deploy.yml to
+	// `/opt/<slug>`. Naming `/opt/starterdough` as that default sent its first 1.1.0 deploy to a path
+	// with no checkout.
+	it("gives a renamed fork the DEPLOY_PATH its own rename chose, not the kit's", () => {
+		const changelog = readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf8');
+		const release = changelog.slice(0, changelog.indexOf('\n## [1.0.0]'));
+		const heading = '\n### Deploys and operations (1.1.0)\n';
+		const deploys = page.slice(page.indexOf(heading)).split('\n### ')[1] ?? '';
+		expect(deploys).toStartWith('Deploys and operations (1.1.0)');
+		for (const text of [deploys, release]) {
+			expect(text).toContain('`/opt/<your slug>`');
+			expect(text).not.toMatch(/DEPLOY_PATH` no longer defaults to `\/opt\/starterdough`/);
+		}
+	});
+
+	// A failed deploy prints migrate.ts's message and nothing else, so the section it names must be
+	// there to find under that heading.
+	it('points failed migrations at a section that exists', () => {
+		const migrate = readFileSync(join(repoRoot, 'packages/db/src/migrate.ts'), 'utf8');
+		const named = [...migrate.matchAll(/UPGRADING\.md, "([^"]+)"/g)].map((match) => match[1]);
+		expect(named.length).toBeGreaterThan(0);
+		for (const section of named) expect(page).toContain(`\n## ${section}\n`);
+	});
 });
 
 describe('UPGRADING.md under a git hook', () => {

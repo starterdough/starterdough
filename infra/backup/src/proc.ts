@@ -54,17 +54,63 @@ export interface RunOptions {
 export async function run(cmd: string[], options: RunOptions = {}): Promise<RunResult> {
 	const started = performance.now();
 	const timeoutMs = options.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
-	const proc = Bun.spawn(cmd, {
-		stdin: 'ignore',
+	const proc = Bun.spawn(cmd, { ...spawnOptions(options, timeoutMs), stdin: 'ignore' });
+	return collect(proc, proc.stdout, started, timeoutMs);
+}
+
+/**
+ * Runs `producer | consumer`: the producer's stdout is the consumer's stdin, a pipe between the two
+ * processes that never passes through this one. Each gets the same environment and timeout, and
+ * each result is returned for the caller to judge, since which failure matters depends on the
+ * pair. A consumer that exits early closes the pipe, so the producer fails on its next write
+ * rather than blocking until its timeout.
+ */
+export async function runPipeline(
+	producerCmd: string[],
+	consumerCmd: string[],
+	options: RunOptions = {},
+): Promise<{ producer: RunResult; consumer: RunResult }> {
+	const started = performance.now();
+	const timeoutMs = options.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
+	const producer = Bun.spawn(producerCmd, { ...spawnOptions(options, timeoutMs), stdin: 'ignore' });
+	const consumer = Bun.spawn(consumerCmd, {
+		...spawnOptions(options, timeoutMs),
+		stdin: producer.stdout,
+	});
+	const [producerResult, consumerResult] = await Promise.all([
+		// Its stdout went to the consumer, so there is nothing of it to read here.
+		collect(producer, null, started, timeoutMs),
+		collect(consumer, consumer.stdout, started, timeoutMs),
+	]);
+	return { producer: producerResult, consumer: consumerResult };
+}
+
+function spawnOptions(options: RunOptions, timeoutMs: number) {
+	return {
 		stdout: 'pipe',
 		stderr: 'pipe',
 		env: { ...process.env, ...options.env },
 		cwd: options.cwd,
 		timeout: timeoutMs,
 		killSignal: 'SIGKILL',
-	});
+	} as const;
+}
+
+interface Spawned {
+	readonly stderr: ReadableStream<Uint8Array>;
+	readonly exited: Promise<number>;
+	readonly exitCode: number | null;
+	readonly signalCode: string | null;
+}
+
+async function collect(
+	proc: Spawned,
+	stdoutStream: ReadableStream<Uint8Array> | null,
+	started: number,
+	timeoutMs: number,
+): Promise<RunResult> {
 	const [stdout, stderr, code] = await Promise.all([
-		new Response(proc.stdout).text(),
+		stdoutStream ? new Response(stdoutStream).text() : '',
 		new Response(proc.stderr).text(),
 		proc.exited,
 	]);

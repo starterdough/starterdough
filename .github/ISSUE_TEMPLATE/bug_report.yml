@@ -13,9 +13,11 @@ body:
   - type: input
     id: version
     attributes:
-      label: Version
-      description: The `version` in the root `package.json`, or the commit you are on.
-      placeholder: 1.0.0 (or 375834e)
+      label: Kit version
+      description: >-
+        The `kitVersion` in the root `package.json` (`version` before 1.1.0), or the commit you are
+        on. Not `version`, which is your product's own and what `/api/v1/health` reports.
+      placeholder: 1.1.0 (or 375834e)
     validations:
       required: true
 

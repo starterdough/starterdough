@@ -79,7 +79,7 @@ its own, `kit-renamed`, which holds each release you take, renamed. Your `main` 
 branch, never the tags, and a merge only ever sees what the kit changed between two releases.
 
 ```sh
-git switch -c kit-renamed kit/v1.0.0
+git switch --no-track -c kit-renamed kit/v1.0.0
 bun run rename --name Acme --slug acme --identifier com.acme.desktop --scope @acme --write
 bun install
 bun run lint:fix
@@ -89,11 +89,15 @@ git merge kit-renamed
 git push origin main kit-renamed
 ```
 
-`bun install` records the renamed workspace packages in `bun.lock`, and `lint:fix` re-sorts the
-imports and re-wraps the lines whose length the rename changed. The snapshot is then exactly what
-your `main` will hold, and a fresh `main` fast-forwards to it. Push `kit-renamed` with `main`: the
-next upgrade starts from it, on whichever machine runs it. `bun install` also installed the git
-hooks, so this push runs `bun run verify` first. It needs no `.env` and no database.
+`--no-track` keeps `kit-renamed` from tracking whatever it starts from, even a branch: it is a
+branch of your own, pushed to your repository. `bun install` records the renamed workspace packages
+in `bun.lock`, and `lint:fix` re-sorts the imports and re-wraps the lines whose length the rename
+changed. `rename` itself leaves every dependency map in a `package.json` it rewrites in the order
+`bun add` keeps, so your first `bun add` on `main` moves no renamed line, and the next snapshot
+agrees with `main` about where each one goes. The snapshot is then exactly what your `main` will
+hold, and a fresh `main` fast-forwards to it. Push `kit-renamed` with `main`: the next upgrade
+starts from it, on whichever machine runs it. `bun install` also installed the git hooks, so this
+push runs `bun run verify` first. It needs no `.env` and no database.
 
 Use exactly these arguments at every upgrade. A different `--slug` makes every slug line a
 conflict again. If you forget them, they are in your own tree: the slug is `name` in the root
@@ -106,7 +110,7 @@ changing a line. Only the merge differs from the commands above, and a `kit-rena
 over from an earlier version of this page has to go first: `git branch -D kit-renamed`.
 
 ```sh
-git switch -c kit-renamed kit/v1.0.0
+git switch --no-track -c kit-renamed kit/v1.0.0
 bun run rename --name Acme --slug acme --identifier com.acme.desktop --scope @acme --write
 bun install
 bun run lint:fix
@@ -125,9 +129,9 @@ true only for the release you really started from, so name that one. If you star
 ## Every upgrade
 
 Start from a clean `git status`. `git switch` carries uncommitted changes from one branch to the
-next, and the snapshot must hold only the release. A clone of your own repository that has never
-had the `kit` remote, a teammate's or a second machine's, needs the four commands for a
-downloaded archive above once.
+next, and the snapshot must hold only the release.
+A clone of your own repository that has never had the `kit` remote, a teammate's or a second
+machine's, needs the four commands for a downloaded archive above once.
 
 **If you renamed the kit**, rename the new release on `kit-renamed`, then merge it on a branch:
 
@@ -164,15 +168,17 @@ Then, in order:
    lines. For `bun.lock`, take the release's side and regenerate it:
    `git checkout --theirs bun.lock`. Then run `bun install` whether or not anything conflicted,
    and commit. The next `bun run build:desktop` refreshes `Cargo.lock`.
+   Upgrading from 1.0.0 with migrations of your own? If the merge stops on
+   `packages/db/drizzle/meta`, run `bun run db:move-product-migrations` now, before you resolve
+   anything in that folder (1.1.0, under "Release by release"). It is the one release step that
+   runs while the merge is still open: it reads the journal your side had before the merge.
 2. **Diff `.env.example` against your `.env`.** New variables land there first.
    `git diff main -- .env.example` shows what this upgrade changed.
-3. **Apply migrations.** Run `bun run db:migrate` against a copy of production first. The command
-   exits 1 when a migration is still pending after the run. Drizzle skips a migration whose
-   timestamp sorts before the newest applied one, which a merge can produce. Read the journal
-   (`packages/db/drizzle/meta/_journal.json`), regenerate those migrations so they sort last, or
-   apply them by hand. A migration may also fail on purpose instead of deleting rows to fit a new
-   constraint. It names the offending key, and its header comment carries the query that finds
-   the duplicates.
+3. **Apply migrations.** Run `bun run db:migrate` against a copy of production first. It applies
+   the release's kit migrations, then yours, and exits 1 when one of either is still pending after
+   the run; "Migrations" below says what to do then. A kit release never changes your migrations.
+   A migration may also fail on purpose instead of deleting rows to fit a new constraint. It names
+   the offending key, and its header comment carries the query that finds the duplicates.
 4. **`bun run verify`.** Lint, typecheck and tests, the same three gates CI runs.
    `bun run licenses --strict` is the fourth gate. It notices a dependency licence the release
    added that you now have to comply with.
@@ -193,13 +199,187 @@ Then, in order:
 rename. It also leaves `LICENSE.md`, `THIRD-PARTY.md`, `CHANGELOG.md` and `UPGRADING.md` as they
 are, so those four merge cleanly at every upgrade.
 
+## Migrations
+
+Your database has two migration histories. The kit's is `packages/db/drizzle`, recorded in
+`drizzle.__drizzle_migrations`, and only kit releases add to it. Yours is
+`packages/db/drizzle-product`, recorded in `drizzle.__product_migrations`: `bun run db:generate`
+writes it from the tables `packages/db/src/schema/product.ts` exports. `bun run db:migrate` applies
+the kit's history, then yours, so a kit release that adds a migration never conflicts with yours.
+
+The order differs between databases. A fresh one runs every kit migration before any of yours; an
+existing one runs a new release's kit migrations after yours. Kit migrations never touch your
+tables. Yours must not depend on something in a kit table that a later release may change, such
+as an index on a kit column the kit later drops: it would fail on a fresh database.
+
+**The kit's tables.** Rather than changing one, add a table of your own keyed by its id, such as
+`user_profile (user_id primary key references "user")`. When a kit table itself has to change (a
+Better Auth plugin after `bun run auth:schema`, an index of yours on a kit table),
+`bun run db:kit-drift` prints the SQL; put it in `bun run db:generate --custom --name=<name>` and
+check that it drops nothing. `bun run test` fails while any of that SQL is still outstanding.
+
+**`db:migrate` says a migration is still pending after the run.** Drizzle applies a migration only
+when its timestamp is newer than the newest one applied from the same history, and skips it for
+good otherwise. The message names each one with its history:
+
+- `(product)`: two branches of yours each generated a migration, and the merge put an older one
+  after a newer one that has already run. If the older one has not run anywhere you keep, delete
+  its `.sql` file, its snapshot and its journal entry, and run `bun run db:generate` on the merged
+  tree. Otherwise apply it by hand (`psql -1 "$DATABASE_URL" -f <file>`) and record it in
+  `drizzle.__product_migrations`: `hash` is the file's `shasum -a 256`, `created_at` its `when` in
+  the journal.
+- `(kit)`: a migration of yours still sits in `packages/db/drizzle`, generated before 1.1.0 or left
+  there by resolving the 1.1.0 merge the old way. Run
+  `bun run db:move-product-migrations --kit <the release you merged>`, which also works after the
+  merge is committed as long as the kit's journal still lists your migration, commit, and deploy
+  again. The database recovers by itself: once your migration's row has moved to your history, the
+  kit migration Drizzle skipped applies.
+
+`/admin/system` shows both histories. An `unknown` count there means rows that no migration in the
+running build accounts for: a newer build has migrated this database.
+
 ## Release by release
 
 Some releases ask for more than the steps above: a change to your own code, a setting, a command
 to run once. Each has a section here, named after the release that brought it. Work through it
-after step 1, once the merge is committed, and before step 4, which checks it. Commit what it
-changes on the upgrade branch: step 6 merges commits, not your working tree. Skipping releases?
-Work through the sections of every release you skip, oldest first.
+after step 1, once the merge is committed, and before step 4, which checks it; the one step that
+runs during step 1 instead, while the merge is open, says so. Commit what it changes on the upgrade
+branch: step 6 merges commits, not your working tree. Skipping releases? Work through the sections
+of every release you skip, oldest first.
+
+### Product files, migrations and versions (1.1.0)
+
+1. **Migrations of your own in `packages/db/drizzle`.** On 1.0.0 `bun run db:generate` wrote your
+   migrations into the kit's history; from 1.1.0 they live in `packages/db/drizzle-product`
+   ("Migrations" above). Run `bun run db:move-product-migrations` during step 1, while the merge is
+   still open: it moves each of yours with the same SQL and timestamp, makes the kit's folder
+   exactly the release's, and stages both. If that folder merged without a conflict, run it once
+   the merge is committed instead, naming what you merged: `--kit kit-renamed` if you renamed the
+   kit, `--kit kit/v1.1.0` if you did not. Then export your tables from
+   `packages/db/src/schema/product.ts` instead of `schema/index.ts`; the command names each one
+   `schema/index.ts` still exports, which `db:generate` would otherwise propose to drop. Run
+   `bun run db:generate`, which must say "No schema changes", and commit. Each database prints
+   `✓ moved N migration(s) of yours to the product history` at its next `bun run db:migrate`. From
+   then on a build from before 1.1.0 cannot migrate it (it would run your migrations again), so
+   roll back across this release by restoring the dump you took before step 3.
+2. **Optional: move your additions out of kit files.** Procedures you spread into `contract`,
+   routers you mounted in `router.ts`, your messages in the kit's catalogues and your links in the
+   app shell each have a product file now:
+   [Where your code goes](apps/docs/src/content/docs/guides/product-files.md) lists them. Moved
+   there, they stop conflicting with later releases. They may keep their names: a procedure keeps
+   its route, and a message its key.
+3. **Versions.** `version` in the root `package.json` is now your product's, and the kit's release
+   is the new `kitVersion`, which only kit releases change: never edit it. This release sets
+   `version` to 0.1.0 once, there, in `apps/native/package.json` and in
+   `apps/native/src-tauri/Cargo.toml`. If the merge conflicts on any of those lines, keep yours. If
+   it took 0.1.0 and your product had a version of its own, set it again in all three.
+4. **`GET /api/v1/admin/system`.** `database.migrations` is now `{ kit, product }`, each with the
+   fields it had, and the response gains `kitVersion`. This matters only if you read it yourself.
+5. **After `bun run auth:schema`**, `bun run db:kit-drift` prints the SQL for a custom migration
+   of yours ("Migrations" above). `bun run db:generate` no longer sees the kit's tables.
+
+### Better Auth and `TRUSTED_ORIGINS` (1.1.0)
+
+- **Better Auth 1.7.7.** The upgrade's `bun install` takes Better Auth and its plugins from 1.7.3
+  to 1.7.7, which fixes three security advisories. It needs no schema change: `bun run auth:schema`
+  writes the same tables, so there is nothing to generate or migrate. Raise any Better Auth
+  package you pinned yourself to ^1.7.7.
+- **`null` in `TRUSTED_ORIGINS` now stops the API at start-up.** Sandboxed iframes, `data:` URLs
+  and `file:` pages send that origin, so trusting it let any website call the API with a visitor's
+  session. Remove it before you deploy, from every `.env` and from `infra/env/production.enc.env`
+  if you deploy with SOPS. A Tauri shell's origins are `tauri://localhost` and
+  `http://tauri.localhost`.
+
+
+### What your deploys publish (1.1.0)
+
+1. **The kit's release notes and posts leave your site.** `apps/site/src/content/changelog` and
+   `apps/site/src/content/blog` now hold one draft sample each, which `astro dev` shows and no
+   build publishes, and the merge deletes the kit's notes for 0.1.0 to 1.0.0 and its two posts.
+   If you edited one of those, git stops on a modify/delete conflict: keep yours with
+   `git add <path>`. From this release on both folders are yours, like
+   `apps/docs/src/content/product` ("What we will not do to you").
+2. **`docs.<domain>`, or `/docs`, serves your product's docs.** A docs build now publishes
+   `apps/docs/src/content/product`: a splash page, a getting-started guide and the interactive API
+   reference. The kit's manual in `apps/docs/src/content/docs` is built only with
+   `DOCS_CONTENT=kit`; read it with `bun run dev:manual`. Move any page you added to the manual
+   for your users into `apps/docs/src/content/product/guides/` or `reference/`, where the sidebar
+   lists it by itself. The site's "Read the guides" and "Read the docs" buttons now open the docs
+   home, which both have.
+3. **A production site build refuses unfinished legal pages.** When `SITE_URL` is a real origin,
+   a tailnet `*.ts.net` one included, the build fails while a page in `apps/site/src/content/legal`
+   still holds a `**[placeholder]**` or the "Template: review with counsel" note, and names each
+   file and what is left. Fill them in before your next deploy. For a staging or trial deploy, set
+   `ALLOW_LEGAL_PLACEHOLDERS=1` instead: as a repository variable for the Deploy workflow, as a row
+   of the server's root `.env` for a build on the box, or in `apps/site/.env`.
+4. **The demo banner links where `PUBLIC_DEMO_CTA_URL` says**, and nowhere while it is empty; it
+   linked to the seller's site. `infra/demo/compose.yml` defaults it to the demo's own marketing
+   site. `infra/demo/.env.example` now ships `DOMAIN`, `EMAIL_FROM` and `IMAGE_REGISTRY` empty
+   instead of the seller's demo values; an existing demo `.env` is untouched.
+5. **`infra/scripts/provision.sh` needs `REPO_URL`.** Its default was the kit's repository, which
+   provisioned the kit instead of your product.
+6. **Renamed forks: two one-time changes in the first renamed snapshot.** `rename` now rewrites
+   the `STARTERDOUGH_` prefix of the deploy scripts' variables to your slug in capitals
+   (`ACME_STATE_DIR`); if you set `STARTERDOUGH_STATE_DIR` or
+   `STARTERDOUGH_OPERATION_LOCK_WAIT_SECONDS` on a server, set it again under the new name. It also
+   sorts the dependency maps of each `package.json` it rewrites. If you ran `bun add` after your
+   rename, the merge may stop inside such a map: keep the snapshot's order and your own entries.
+
+### Deploys and operations (1.1.0)
+
+1. **Set `DEPLOY_PATH` and `DEPLOY_KNOWN_HOSTS` before you merge**, as repository variables, or the
+   Deploy workflow stops in its plan job and names the one that is missing. `DEPLOY_PATH` has no
+   default any more: set it to the checkout on the server. If you kept `provision.sh`'s default,
+   that is `/opt/<your slug>`: `/opt/starterdough` if you never renamed, `/opt/acme` after
+   `rename --slug acme`. Your `deploy.yml` from before the merge names it, in
+   `vars.DEPLOY_PATH || '…'`. `DEPLOY_KNOWN_HOSTS` is the server's SSH host key, which every
+   workflow that reaches the server now checks (`StrictHostKeyChecking yes`); the `accept-new` it
+   replaces accepted any key, because a hosted runner starts every job with an empty
+   `known_hosts`. Compare `ssh-keyscan -t ed25519 <host> | ssh-keygen -lf -` with the fingerprint
+   your provider's console shows, or with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` run on
+   the box, and once they match, set the variable to the line `ssh-keyscan -t ed25519 <host>`
+   prints. If the server's `.env` sets `COMPOSE_PROJECT_NAME`, set a repository variable of the
+   same name: before it replaces the server's `.env`, a deploy now refuses a checkout that shares
+   no history with the release or runs another Compose project.
+2. **Every deploy takes a release backup** before it stops anything: a dump of the database in the
+   `backups` volume under `release/`, up to four of them. Expect it in every deploy log. Set
+   `RELEASE_BACKUP=off` in the server's `.env` if you rely on provider snapshots or the database is
+   too large to dump on every deploy, and if your stack has no `backup` service, which the deploy
+   otherwise refuses.
+3. **Desktop installers are opt-in.** `desktop.yml` builds nothing on a `v*` tag until the
+   repository variable `DESKTOP_ENABLED` is `true`. Set it if you ship installers.
+4. **Postgres restarts once.** The image line is now `pgvector/pgvector:0.8.7-pg17`, the same image
+   as `pg17`, but a changed line makes Compose recreate the container, which the first deploy does
+   after the writers have stopped. Every base and service image is now pinned to a patch release,
+   and `oven/bun` to the Bun in `packageManager`: `infra/scripts/image-pins.test.ts` fails until
+   the four `oven/bun` lines move with that field. If you changed one of those lines, keep the
+   release's pin.
+5. **Steps of your own in `infra/scripts/deploy.sh`** belong in
+   `infra/scripts/hooks/pre-deploy.d/` or `post-deploy.d/` now (the README there has the
+   contract). The kit never changes those folders, so the steps stop conflicting with releases.
+6. **Products without a surface.** CI's Rust job now skips itself when `apps/native` is gone, and
+   Deploy skips an image whose Dockerfile is gone. If you deleted a job or an image from a workflow
+   for that reason, the merge may stop there: take the release's side.
+7. **Optional.** `SENTRY_DSN` now reports the API's unexpected errors as well as the web's.
+   `ADMIN_BOOTSTRAP_PASSWORD`, a secret of the `production` environment, feeds the new Admin
+   bootstrap workflow; delete it after the first sign-in. That workflow can also promote an
+   existing account without any secret, so add required reviewers to the `production` environment
+   if the repository has collaborators. Run the new Registry cleanup workflow by hand with
+   `dry-run` before its first weekly run. Recover deployment's new `abandon` cannot drop a journal
+   that a 1.0.0 deploy wrote; `recover` still finishes one.
+
+
+### Email in the user's language (1.1.0)
+
+- **A template takes the recipient's locale** as its second argument, and is written once per
+  language with `defineTemplate({ en, de })`. Move each template you added to
+  `packages/email/src/index.ts` into `productTemplates` in `packages/email/src/product.ts`, with an
+  `en` and a `de` copy: `bun run check` fails while one is missing. A call without a locale still
+  compiles and sends English. In a procedure, `localeOf(context.headers)` picks the language from
+  the caller's `Accept-Language`
+  ([Authentication](apps/docs/src/content/docs/guides/authentication.md), "Email: templates and
+  language").
+
 
 ### Setup and deploys (1.0.0)
 
@@ -374,7 +554,17 @@ not the `-s ours` an archive takes, because your tree does not hold the full edi
 Cloning the paid edition and merging your work onto it is usually shorter than the reverse.
 
 Your database moves too: the full edition's `bun run db:migrate` adopts a database this edition
-migrated. Take a dump first.
+migrated, along with your own migrations in `packages/db/drizzle-product`. Take a dump first. If a
+table, index or function of yours has a name one of the full edition's migrations creates, it
+names it and changes nothing, and this edition still migrates the database: rename yours first.
+If a release before 1.1.0 generated your migrations into `packages/db/drizzle`, run
+`bun run db:move-product-migrations --kit kit/v1.1.0` on this edition's 1.1.0 and commit before
+you move across.
+
+In the merge, keep your side of every product file both editions ship: each `product.ts`,
+`product.json` and `packages/db/drizzle-product`. They carry no edition markers and are the same
+in both, so your side holds everything the full edition's does, plus your own code. The full
+edition's own product files arrive as new files.
 
 ## What we will not do to you
 
@@ -382,6 +572,12 @@ migrated. Take a dump first.
   `packages/db/drizzle`, and the changelog says so.
 - **No renamed environment variables without a note.** If a variable changes name, the changelog
   lists both.
+- **No release changes a product file.** Your migrations in `packages/db/drizzle-product`, and
+  every `product.ts`, `product-*.ts` and `product.json`, are yours from 1.1.0 on:
+  [Where your code goes](apps/docs/src/content/docs/guides/product-files.md) lists them. A new
+  extension point arrives as a new file. So are the site's `apps/site/src/content/changelog/` and
+  `apps/site/src/content/blog/`, and your docs in `apps/docs/src/content/product/`: no release
+  adds, changes or deletes a file there.
 - **No new required paid service.** Anything that needs a key stays dormant without one, as
   Sentry and PostHog already do, and as email does in development. Email in production is the
   one exception, from 1.0.0: without a provider nobody can verify an address or reset a

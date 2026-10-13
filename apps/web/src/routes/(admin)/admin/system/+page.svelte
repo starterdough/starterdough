@@ -10,6 +10,8 @@
 
 	let { data }: PageProps = $props();
 
+	type MigrationHistoryStatus = NonNullable<SystemStatus['database']['migrations']>['kit'];
+
 	/** `3d 2h`, `2h 14m`, `14m`, `40s`: coarse on purpose, the page is a glance. */
 	function formatUptime(seconds: number) {
 		const days = Math.floor(seconds / 86_400);
@@ -74,6 +76,38 @@
 	<dt class="text-muted-foreground">{label}</dt>
 {/snippet}
 
+<!-- The kit's history and the product's are applied and counted separately (packages/db). -->
+{#snippet migrationHistory(label: string, history: MigrationHistoryStatus)}
+	{@render row(label)}
+	<dd>
+		{m.admin_system_migrations_applied({
+			applied: formatNumber(history.applied),
+			shipped: formatNumber(history.shipped),
+		})}
+		{#if history.latestApplied}
+			<span class="text-muted-foreground block font-mono text-xs">
+				{m.admin_system_migrations_latest({ name: history.latestApplied })}
+			</span>
+		{/if}
+	</dd>
+	{#if history.pending.length > 0}
+		{@render row(m.admin_system_migrations_pending())}
+		<dd class="text-destructive">
+			<ul class="font-mono text-xs">
+				{#each history.pending as name (name)}
+					<li>{name}</li>
+				{/each}
+			</ul>
+		</dd>
+	{/if}
+	{#if history.unknown > 0}
+		{@render row(m.admin_system_migrations_unknown())}
+		<dd class="text-destructive">
+			{m.admin_system_migrations_unknown_detail({ count: history.unknown })}
+		</dd>
+	{/if}
+{/snippet}
+
 <div class="mx-auto flex w-full max-w-4xl flex-col gap-6">
 	<div class="flex flex-wrap items-end justify-between gap-4">
 		<div>
@@ -114,6 +148,8 @@
 				<dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
 					{@render row(m.admin_system_version())}
 					<dd class="font-mono">{status.version}</dd>
+					{@render row(m.admin_system_kit_version())}
+					<dd class="font-mono">{status.kitVersion}</dd>
 					{@render row(m.admin_system_runtime())}
 					<dd>{status.runtime}</dd>
 					{@render row(m.admin_system_environment())}
@@ -152,34 +188,8 @@
 						{/if}
 					</dd>
 					{#if migrations}
-						{@render row(m.admin_system_migrations())}
-						<dd>
-							{m.admin_system_migrations_applied({
-								applied: formatNumber(migrations.applied),
-								shipped: formatNumber(migrations.shipped),
-							})}
-							{#if migrations.latestApplied}
-								<span class="text-muted-foreground block font-mono text-xs">
-									{m.admin_system_migrations_latest({ name: migrations.latestApplied })}
-								</span>
-							{/if}
-						</dd>
-						{#if migrations.pending.length > 0}
-							{@render row(m.admin_system_migrations_pending())}
-							<dd class="text-destructive">
-								<ul class="font-mono text-xs">
-									{#each migrations.pending as name (name)}
-										<li>{name}</li>
-									{/each}
-								</ul>
-							</dd>
-						{/if}
-						{#if migrations.unknown > 0}
-							{@render row(m.admin_system_migrations_unknown())}
-							<dd class="text-destructive">
-								{m.admin_system_migrations_unknown_detail({ count: migrations.unknown })}
-							</dd>
-						{/if}
+						{@render migrationHistory(m.admin_system_migrations_kit(), migrations.kit)}
+						{@render migrationHistory(m.admin_system_migrations_product(), migrations.product)}
 					{/if}
 				</dl>
 			</section>

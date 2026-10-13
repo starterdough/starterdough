@@ -16,6 +16,7 @@
 			"!**/build",
 			"!**/dist",
 			"!**/drizzle/meta",
+			"!**/drizzle-product/meta",
 			"!packages/db/src/schema/auth.ts",
 			"!**/src/lib/paraglide",
 			"!**/project.inlang/cache",

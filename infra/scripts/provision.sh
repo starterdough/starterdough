@@ -14,8 +14,8 @@
 #   sudo --preserve-env=GIT_TOKEN REPO_URL=https://github.com/<owner>/<repo>.git EXPOSE=tailscale \
 #     bash provision.sh
 #
-# Variables (all optional):
-#   REPO_URL     the repository to clone (default: the kit's)
+# Variables (all optional except REPO_URL):
+#   REPO_URL     the repository to clone: yours (required)
 #   GIT_TOKEN    a token with read access, for a private repository: a fine-grained personal access
 #                token for that one repository with read-only Contents is enough, and it can expire
 #                the same day. Used for the first clone only, through an in-memory
@@ -36,7 +36,8 @@
 # firewall it re-applies the rules but leaves the default policies alone.
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-https://github.com/starterdough/starterdough.git}"
+# Your repository, never a default: the kit's own would provision the kit instead of your product.
+REPO_URL="${REPO_URL:?set REPO_URL to the clone URL of your repository, e.g. https://github.com/<you>/<repo>.git}"
 DEPLOY_USER="${DEPLOY_USER:-deploy}"
 DEPLOY_PATH="${DEPLOY_PATH:-/opt/starterdough}"
 EXPOSE="${EXPOSE:-tailscale}"
@@ -211,6 +212,29 @@ else
        (leave DOMAIN and COOKIE_DOMAIN empty: one origin, no CORS, TLS terminated by Tailscale)"
 fi
 
+# The Deploy workflow pins this box's SSH host key (DEPLOY_KNOWN_HOSTS) and needs the checkout's
+# path (DEPLOY_PATH); neither has a default, so print both exactly as the variables take them.
+HOST_KEY_FILE=/etc/ssh/ssh_host_ed25519_key.pub
+if [ -r "$HOST_KEY_FILE" ]; then
+	HOST_KEY="$(cut -d' ' -f1,2 "$HOST_KEY_FILE")"
+	HOST_KEY_CHECK="its fingerprint, $(ssh-keygen -lf "$HOST_KEY_FILE" | cut -d' ' -f2), must match the one
+     your provider's console shows for this box"
+else
+	HOST_KEY="<the line \`ssh-keyscan -t ed25519 <host>\` prints>"
+	HOST_KEY_CHECK="$HOST_KEY_FILE is missing here, so compare \`ssh-keyscan -t ed25519 <host> | ssh-keygen -lf -\`
+     with \`ssh-keygen -lf\` of the host key on the box, from your provider's console"
+fi
+
+# Break glass: a key on a hardware token is the way in that survives a leaked or lost CI key. Only a
+# recommendation, because provision.sh cannot make one for you.
+SK_HINT=
+if ! grep -Eq '(^|[[:space:]])sk-[a-z0-9-]+@openssh\.com[[:space:]]' /root/.ssh/authorized_keys 2>/dev/null; then
+	SK_HINT="
+Recommended: no hardware-backed key (sk-…) is in /root/.ssh/authorized_keys. Make one for yourself on a
+security key (ssh-keygen -t ed25519-sk -O resident -O verify-required) and add its public half there
+and to /home/$DEPLOY_USER/.ssh/authorized_keys, so you can still get in when the CI key is all there is."
+fi
+
 cat <<EOF
 
 Done. Next, as $DEPLOY_USER (\`su - $DEPLOY_USER\`), in $DEPLOY_PATH:
@@ -232,6 +256,11 @@ $URLS
   6. CI deploys (.github/workflows/deploy.yml, off until you switch it on; infra/README.md,
      "Deploy, update, roll back", has the order): put the public half of a key pair made for CI
      into /home/$DEPLOY_USER/.ssh/authorized_keys, set the repository variables SITE_URL DOCS_URL
-     WEB_URL API_URL and DEPLOY_HOST, the secret DEPLOY_SSH_KEY (the private half), and last
-     DEPLOY_ENABLED=true. No deploy key: each release is pushed into $DEPLOY_PATH over that SSH login.
+     WEB_URL API_URL and DEPLOY_HOST, and these two, with exactly these values:
+       DEPLOY_PATH          $DEPLOY_PATH
+       DEPLOY_KNOWN_HOSTS   $HOST_KEY
+     ($HOST_KEY_CHECK),
+     then the secret DEPLOY_SSH_KEY (the private half), and last DEPLOY_ENABLED=true. No deploy key:
+     each release is pushed into $DEPLOY_PATH over that SSH login.
+$SK_HINT
 EOF

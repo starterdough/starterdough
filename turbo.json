@@ -13,7 +13,14 @@
 			"dependsOn": ["^build"],
 			"inputs": ["$TURBO_DEFAULT$", ".env", ".env.production"],
 			"outputs": ["build/**", "dist/**", ".svelte-kit/**", ".astro/**"],
-			"env": ["ADAPTER", "PUBLIC_*", "API_URL", "SITE_URL"]
+			"env": [
+				"ADAPTER",
+				"PUBLIC_*",
+				"API_URL",
+				"SITE_URL",
+				"DOCS_CONTENT",
+				"ALLOW_LEGAL_PLACEHOLDERS"
+			]
 		},
 		"build:static": {
 			"dependsOn": ["^build"],
@@ -39,7 +46,7 @@
 		"dev": {
 			"cache": false,
 			"persistent": true,
-			"env": ["PORT", "PUBLIC_*", "API_URL"]
+			"env": ["PORT", "PUBLIC_*", "API_URL", "DOCS_CONTENT"]
 		},
 		"clean": {
 			"cache": false

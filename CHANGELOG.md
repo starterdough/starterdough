@@ -6,15 +6,253 @@ Every notable change to the kit, newest first. The format follows
 merging the release into their fork: a moved file, a renamed export, a changed environment
 variable, a migration that must be applied.
 
-The version in the root `package.json` is the single source of truth. The site, the admin system
-page and every artefact read it from there. [`UPGRADING.md`](UPGRADING.md) explains how to pull a
-release into a renamed fork.
+The kit's release is `kitVersion` in the root `package.json`. `version` is your product's: it
+starts at 0.1.0 and the kit never changes it again. [`UPGRADING.md`](UPGRADING.md) explains how to
+pull a release into a renamed fork.
 
 Every release from 1.0.0 on is a git tag, `v1.0.0`, `v1.1.0` and so on, and its date is the day
 it was tagged. 0.1.0 to 0.3.0 are the milestones the kit was built in over its first two days,
 dated by their commits (0.3.0 by the commit that set the version), and were never tagged.
 `package.json` said 0.3.0 from 2026-09-10 until 1.0.0, so a checkout or a publish labelled 0.3.0
 can hold anything listed under 1.0.0.
+
+## [1.1.0] - 2026-10-13
+
+Your code gets files of its own, a migration history of its own and a version of its own, none of
+which a kit release touches, so what you put there no longer conflicts with an upgrade. Start with
+Breaking: each entry there asks something of you when you merge, and [`UPGRADING.md`](UPGRADING.md)
+gives the steps under "Release by release", in the order this entry lists them.
+It carries no migration: `0000_init` is still this edition's only one.
+
+### Breaking
+
+- **Your migrations have a history of their own.** `bun run db:generate` now writes to
+  `packages/db/drizzle-product`, from the tables `packages/db/src/schema/product.ts` exports, and
+  `bun run db:migrate` records them in `drizzle.__product_migrations`. Export your tables from
+  `schema/product.ts` instead of `schema/index.ts`.
+  - `packages/db/drizzle` is the kit's alone, generated through `drizzle.kit.config.ts`.
+    `db:migrate` applies the kit's history and then yours, and says how many of each it applied,
+    so a kit release that adds a migration no longer conflicts with yours or gets skipped behind
+    them.
+  - `db:generate` no longer sees the kit's tables. A change to one, such as a Better Auth plugin
+    after `bun run auth:schema`, is a custom migration of yours with the SQL `bun run db:kit-drift`
+    prints (under Added).
+  - If you generated migrations on 1.0.0, run `bun run db:move-product-migrations` while the merge
+    is still open. It names each moved table `schema/index.ts` still exports, which `db:generate`
+    would otherwise propose to drop. Each database's next `db:migrate` then moves their history
+    rows by itself, and from then on a build from before 1.1.0 cannot migrate it: roll back across
+    this release with the dump you took before migrating.
+- **`version` is your product's, and `kitVersion` is the kit's release.** The kit sets `version`
+  to 0.1.0 once, in the root `package.json`, `apps/native/package.json` and
+  `apps/native/src-tauri/Cargo.toml`, and never changes it again; its own release is the new
+  `kitVersion`, which only kit releases change. `/health`, the OpenAPI document, telemetry, the
+  site and the desktop builds report your `version`, and `/admin/system` also shows `kitVersion`.
+  If the merge conflicts on a `version` line, keep yours.
+- **`GET /api/v1/admin/system`'s `database.migrations` is now `{ kit, product }`**, each with the
+  fields it had, and the response gains `kitVersion`. This matters only if you read it yourself.
+- **`null` in `TRUSTED_ORIGINS` stops the API at start-up** (under Security). Remove it before you
+  deploy, from every `.env` and from `infra/env/production.enc.env` if you deploy with SOPS. A
+  Tauri shell's origins are `tauri://localhost` and `http://tauri.localhost`.
+- **The marketing site no longer ships the kit's release notes or blog posts.**
+  `apps/site/src/content/changelog` and `apps/site/src/content/blog` now hold one draft sample
+  each (`draft: true`), which `astro dev` shows and every build, the RSS feed and the sitemap leave
+  out. The kit's history is this file only, and no later release adds or changes a file in either
+  folder. Merging this release deletes the kit's notes for 0.1.0 to 1.0.0 and its two posts; if you
+  edited one, keep your side.
+- **The docs build publishes your product's documentation, not the kit's manual.** `apps/docs` has
+  two content sets: `src/content/product`, a two-page start and the interactive API reference,
+  built by default and served at `docs.<DOMAIN>` (or `/docs`), and the kit's developer manual in
+  `src/content/docs`, built only with `DOCS_CONTENT=kit`. Read the manual with the new
+  `bun run dev:manual`. The site's "Read the guides" and "Read the docs" buttons now open the docs
+  home, which both sets have.
+  This edition's licence lets you publish the manual too: build with `DOCS_CONTENT=kit`.
+- **A production site build refuses unfinished legal pages.** When `SITE_URL` is a real origin, a
+  tailnet `*.ts.net` one included, `astro build` fails while a page in `src/content/legal` still
+  holds a `**[placeholder]**` or the "Template: review with counsel" note, and names each file and
+  what is left. localhost, `.invalid`, `.test`, `.localhost` and `.example` origins are never
+  checked. Fill the pages in before your next deploy, or, for a staging or trial deploy, set
+  `ALLOW_LEGAL_PLACEHOLDERS=1`: as a repository variable for the Deploy workflow, in the root
+  `.env` for a build on the server, or in `apps/site/.env`.
+- **`infra/scripts/provision.sh` needs `REPO_URL`.** Its default was the kit's repository, which
+  provisioned the kit instead of your product.
+- **A renamed fork's deploy variables are renamed once.** `bun run rename` now rewrites the
+  `STARTERDOUGH_` prefix to your slug in capitals (under Changed), so a server that sets
+  `STARTERDOUGH_STATE_DIR` or `STARTERDOUGH_OPERATION_LOCK_WAIT_SECONDS` needs it again under the
+  new name.
+- **Deploys need two more repository variables,** or the Deploy workflow stops in its plan job and
+  names the one that is missing. Set both before you merge.
+  - `DEPLOY_PATH` has no default any more. The old one was `/opt/<your slug>`, which is
+    `/opt/starterdough` unless you renamed: set the variable to the checkout on the server.
+  - `DEPLOY_KNOWN_HOSTS` is the server's SSH host key, which `provision.sh` now prints. Every
+    workflow that reaches the server checks it (`StrictHostKeyChecking yes`); the `accept-new` it
+    replaces accepted any key, because a hosted runner starts every job with an empty
+    `known_hosts`. Compare the key's fingerprint with your provider's console before you set it.
+- **A deploy refuses a checkout that is not this product's.** Before the server's `.env` is
+  replaced or anything is checked out, the checkout must share history with the release
+  (`git merge-base`) and resolve to the release's Compose project, and so must the demo's checkout
+  when `DEMO_PATH` is set, to the project in the release's `infra/demo/compose.yml`. If the
+  server's `.env` renames the project with `COMPOSE_PROJECT_NAME`, set a repository variable of the
+  same name.
+- **Desktop installers are opt-in.** `desktop.yml` builds nothing on a `v*` tag until the
+  repository variable `DESKTOP_ENABLED` is `true`.
+- **Base and service images are pinned to patch releases**, at the versions their floating tags
+  pointed to when 1.1.0 was cut, and `oven/bun` to the `packageManager` version;
+  `infra/scripts/image-pins.test.ts` fails until the `oven/bun` lines move with that field. The
+  Postgres image line is now `pgvector/pgvector:0.8.7-pg17`, the same image, so the first deploy of
+  this release recreates Postgres once, after the writers have stopped.
+- **Email templates take the recipient's locale** as a second argument, and each is written once
+  per language with `defineTemplate({ en, de })`. Move each template you added to
+  `packages/email/src/index.ts` into `productTemplates` in `packages/email/src/product.ts`, with an
+  `en` and a `de` copy: `bun run check` fails while one is missing. A call without a locale still
+  compiles and sends English.
+
+### Security
+
+- **Better Auth 1.7.7** fixes three advisories:
+  - GHSA-965c-763c-88jm (critical): an OAuth state could be used as a magic link;
+  - GHSA-r4xp-prcw-77qf (high): the OAuth Proxy allowed sign-in as another user;
+  - GHSA-44jh-23m7-hpcf (low, `@better-auth/drizzle-adapter`): concurrent requests could exceed
+    rate limits stored in PostgreSQL.
+
+  The kit as shipped enables neither the magic-link nor the OAuth Proxy plugin and keeps rate
+  limits in memory, so it was not exposed. A fork that enabled either plugin, or set Better Auth's
+  rate-limit `storage` to `'database'`, was. The upgrade needs no schema change.
+- **`TRUSTED_ORIGINS=null` is refused.** Sandboxed iframes, `data:` URLs and `file:` pages send
+  that origin, so trusting it let any website call the API with a visitor's session.
+- **The off-site backup credentials and `BACKUP_HEARTBEAT_URL` reach only the `backup` service.**
+  Every container built from the API image received them before. CI checks the resolved Compose
+  configuration with sentinel values.
+- **wrangler 4.149 (miniflare) brings sharp 0.35.5 and undici 7.29.1**, which clears
+  GHSA-rgj7-g3m4-5g8c, GHSA-wq5f-xc86-pv6w, GHSA-rfgv-xxqx-mfg5 and GHSA-w293-vg96-wgc3 (high) and
+  undici's moderate and low advisories. These are development tools. `bun audit` now reports two
+  moderate findings, both in development tooling.
+- **The GitHub Actions move to their node24 releases,** still pinned to a commit: checkout 7.0.1,
+  the docker actions, tailscale 4.2.0, upload-artifact 7.0.1 and download-artifact 8.0.1.
+
+### Added
+
+- **Product files the kit never changes.** Each place your product plugs into the kit is a file or
+  folder of its own, next to the kit code that reads it. The kit created each in 1.1.0, and no
+  later release changes one:
+  - `packages/db/src/schema/product.ts`, `packages/db/src/product.ts` and
+    `packages/db/drizzle-product/`;
+  - `packages/api-contract/src/product.ts`, which `@repo/api-client` re-exports whole;
+  - `apps/api/src/rpc/product.ts`;
+  - `packages/email/src/product.ts`;
+  - `apps/web/messages/{en,de}/product.json` and `apps/web/src/lib/product.ts` (the sidebar and the
+    command palette);
+  - `apps/site/src/content/changelog` and `blog`, `apps/docs/src/content/product`, and
+    `infra/scripts/hooks/pre-deploy.d/` and `post-deploy.d/`.
+
+  The new "Where your code goes" guide lists them and what each is for.
+- **`bun run db:kit-drift`** prints the SQL your schema needs on kit tables (a Better Auth plugin,
+  an extra field) that no migration of yours already holds, for a custom migration. A test fails
+  while any is outstanding.
+- **Tests for the two histories:** a database test fails when the schema declares a table or column
+  the migrated database lacks; a file test checks both histories' SQL, journal, snapshot pairing
+  and chain; and Postgres tests cover upgrading a database at 1.0.0's last migration and moving
+  history rows.
+- **UPGRADING.md** gains a "Migrations" section, and its 1.1.0 sections under "Release by release".
+- **`bun run dev:manual`** serves the kit's manual on :4322; `bun run dev:docs` serves your
+  product's docs.
+- **`PUBLIC_DEMO_CTA_URL`** sets where the public demo's banner links. `infra/demo/compose.yml`
+  defaults it to the demo's own marketing site; unset elsewhere, the banner has no link.
+- **`bun run doctor` warns, without failing,** when `.env` still names the product you renamed
+  away from: the `DATABASE_URL` role or database, `COMPOSE_PROJECT_NAME`, or `EMAIL_FROM`'s display
+  name. It names the rows, never their values.
+- **Email in the user's language.** The kit's emails are written in English and German. The web
+  app sends the language it shows with every auth request, so a German user gets German
+  verification, password-reset, email-change and account-deletion mail.
+  `localeOf(context.headers)` picks the language in a procedure of yours, and your own templates go
+  in `packages/email/src/product.ts`, each with `defineTemplate`.
+- **A restore point before every deploy.** `deploy.sh` runs `backup --release` under the deploy
+  lock, after pulling and before it stops anything, and a failure leaves the running release
+  untouched.
+  - Release sets hold the database only, stay on the box in the `backups` volume under `release/`,
+    never ping the heartbeat, and are kept to the newest four. A first deploy, whose database has
+    no tables yet, skips it.
+  - A deploy that lands during the nightly backup waits up to 10 minutes for it, and the nightly
+    backup waits for a release backup instead of failing and paging.
+  - `RELEASE_BACKUP=off` in `.env` turns it off. `list --release` and `restore … --release` read
+    the sets.
+- **Operate without a shell:** Server status, Server logs, Server backup (backup, list or drill,
+  for nightly or release sets) and Admin bootstrap workflows.
+  - Each is gated on `DEPLOY_ENABLED`, runs in the `production` environment, checks that the
+    checkout it reaches runs this product's Compose project, and takes the host lock where it
+    changes anything.
+  - In a public repository Server logs refuses to run and Server status leaves out log lines,
+    because anyone can read those runs.
+  - Admin bootstrap reads the `ADMIN_BOOTSTRAP_PASSWORD` environment secret, which never appears
+    on a command line.
+- **`abandon` in Recover deployment** drops a forward-only journal after a migration that fails
+  every time, so the fix can deploy.
+- **Pre-deploy and post-deploy hooks:** `infra/scripts/hooks/{pre,post}-deploy.d/*.sh` are your
+  own files, so steps of your own stop conflicting with `deploy.sh`.
+- **API error tracking.** Set `SENTRY_DSN`, which the web's server side already reads, and the
+  API's unexpected errors and fatal process errors reach Sentry.
+  It reports errors only, with traces left to OpenTelemetry, and withholds failed SQL statements
+  and their parameters.
+- **The deploy job checks the server's clock**, failing beyond 30 seconds, and **smoke-tests**
+  `API_URL/readyz` and `WEB_URL` from outside once it has deployed (`SMOKE_TEST=off` skips it). It
+  is cancelled after 180 minutes.
+- **A weekly registry cleanup** keeps version tags, `latest`, `main` and the 20 newest builds of
+  each image. Roll back further than that by version tag.
+- **Docs:** a "Server access and break glass" guide (one product per server, a hardware-backed
+  break-glass key, the rescue console, per-product deploy keys, sharing a box); watching the stack
+  from outside (an uptime check, and Healthchecks for the backup heartbeat); and shipping logs off
+  the box.
+- **Decision records** in `docs/DECISIONS.md`: D33 Two migration histories, D34 Product files, D35
+  `kitVersion` and `version`, D37 What a renamed product publishes, D38 Operating a product without
+  a shell and D39 Platform primitives.
+
+### Changed
+
+- **`kit-renamed` is created with `git switch --no-track -c`.**
+- **`db:studio` shows the kit's tables and yours.**
+- **Kit bug and vulnerability reports ask for `kitVersion`,** the kit release you are on, rather
+  than `version`.
+- **`bun run rename`:**
+  - It also rewrites uppercase environment-variable prefixes: `STARTERDOUGH_STATE_DIR` becomes
+    `ACME_STATE_DIR`, and a dash in the slug becomes an underscore.
+  - It leaves every dependency map in a rewritten `package.json` in the order `bun add` keeps.
+  - It keeps "the Starterdough kit" where a page says what your product is built on.
+  - Its checklist names the `.env` rows that carry the old name, every place your domain goes, and
+    everything a deploy publishes that is still the kit's.
+- **QUICKSTART's agent prompt** describes the repository as "[Name], built on the Starterdough
+  kit". It adds the domain step, lists what to replace and keeps product docs in
+  `apps/docs/src/content/product`.
+- **`infra/demo/.env.example` ships `DOMAIN`, `EMAIL_FROM` and `IMAGE_REGISTRY` empty** instead of
+  the seller's demo values. Compose, the API and `update.sh` each name the row until it is filled.
+  An existing demo `.env` is untouched.
+- **A live restore leaves the database holding exactly what the set holds.** It clears the
+  database first, in the same transaction: every table, view, sequence, function and type of its
+  own, and every schema but `public` and an extension's. Before, `--clean` dropped only what the
+  set held, so a table created since with a foreign key into one of them failed the restore, and
+  what survived made the migration that created it fail when it ran again. The backup tool runs
+  `pg_restore` into `psql` for it; its image has both.
+- **`deploy.sh` keeps the three newest local builds of each image** instead of deleting all of
+  them.
+- **Deployment recovery records the Compose project that Compose resolves,** in a version 2
+  journal. A journal from 1.0.0 is still recovered by the 1.0.0 code in its own checkout.
+- **CI and deploys follow what the repository still has.** CI skips the Rust job when
+  `apps/native` no longer exists, the Deploy workflow skips an image whose Dockerfile is gone, and
+  pull requests build only the images whose inputs changed.
+
+### Fixed
+
+- **After a rename:**
+  - the demo banner linked to the seller's site;
+  - `apps/native/src-tauri/Cargo.toml` still named the seller as author and the kit's repository;
+  - a sentence in `apps/native/README.md` called your new identifier the one ending in `native`;
+  - the first `bun add` in a fork re-sorted the renamed dependency maps, so every later renamed
+    release conflicted inside them.
+- **A fresh `bun install` no longer rewrites `bun.lock`,** and CI fails when it would.
+- **The deployment-recovery, recovery-transport and demo-reset tests no longer time out** on a
+  loaded machine or when run on their own.
+- **A dialog taller than the window scrolls inside it,** a margin short of the window's edges,
+  where its title and its buttons used to sit off-screen and out of reach.
+  Sheets, popovers, dropdown submenus and the command palette stop at the window's edge the same
+  way.
 
 ## [1.0.0] - 2026-10-08
 

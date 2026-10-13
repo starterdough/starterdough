@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, setDefaultTimeout } from 'bun:test';
 import { chmod, copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -9,6 +9,12 @@ const recovery = resolve(import.meta.dir, '../scripts/deployment-recovery.sh');
 const revision = '1234567890abcdef1234567890abcdef12345678';
 const imageId = `sha256:${'a'.repeat(64)}`;
 const roots: string[] = [];
+
+// Each case runs the real reset.sh and recovery helpers against docker, git and flock shims, and a
+// loaded machine runs them many times slower than an idle one. Set here, the budget also covers
+// `bun test <this file>` without the root `test` script's `--timeout` (see
+// deployment-recovery.test.ts).
+setDefaultTimeout(60_000);
 
 afterEach(async () => {
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));

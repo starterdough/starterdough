@@ -5,9 +5,10 @@ configured, to S3/R2. Old sets are pruned. A heartbeat URL is pinged after each 
 you hear about backups that stop.
 
 The tool is `@repo/backup`, Bun built-ins only (`Bun.spawn`, `Bun.S3Client`, `Bun.cron`,
-`Bun.SQL`). The image is `oven/bun:1.4-alpine` plus Alpine's `postgresql17-client` package (and GNU
-`tar`/`gzip`), so `pg_dump` matches the server major. Bump the client major in the Dockerfile's
-`apk add` in the same commit as a Postgres upgrade. No `bun install` at runtime.
+`Bun.SQL`). The image is `oven/bun:1.4.2-alpine` plus Alpine's `postgresql17-client` package (and
+GNU `tar`/`gzip`), so `pg_dump`, `pg_restore` and `psql` match the server major. Bump the client
+major in the Dockerfile's `apk add` in the same commit as a Postgres upgrade. No `bun install` at
+runtime.
 
 Logs are one JSON object per line: `info` on stdout, `warn` and `error` on stderr.
 
@@ -29,16 +30,18 @@ docker compose run --rm backup bun src/cli.ts restore latest --yes            # 
 | `backup` | take the lock, pre-flight, dump (`--format=custom --compress=6 --no-privileges`; ownership is dropped at restore time by `pg_restore --no-owner`), verify the archive, row counts, manifest, upload **and verify the objects against the bucket**, prune, heartbeat |
 | `list` | sets on disk and in the bucket, plus the pre-restore dumps nothing prunes. Freshness and `restore latest` use the newest set with both a dump and manifest on the same source (local directory or bucket); partial newer sets do not shadow an older complete set. **Exits 1 when the newest complete set is older than `--max-age` (default `BACKUP_MAX_AGE`, `36h`).** This is the command a monitor runs |
 | `list --no-max-age` | list without the freshness check, so browsing a fresh box exits 0 |
+| `backup --release` | the restore point a deploy takes before it migrates: the database only, into `BACKUP_DIR/release`, never copied to the bucket, no heartbeat, the newest 4 sets kept. See [Release sets](#release-sets---release) |
+| `list --release`, `restore … --release` | the same commands on the release sets |
 | `restore <stamp\|latest> --drill` | restore into a uniquely named scratch database, compare its table list and row counts against the live database and manifest, then drop it |
 | | The drill name includes a random suffix and does not drop a database before creating its own. A database left by an interrupted drill has a different name from the next run. |
-| `restore <stamp\|latest> --yes` | restore into the live database (`--clean --if-exists --single-transaction --exit-on-error`). Refused without `--yes` |
+| `restore <stamp\|latest> --yes` | restore into the live database: clear it, then run the set (`pg_restore --clean --if-exists --single-transaction --exit-on-error` into `psql`), all in one transaction. Refused without `--yes` |
 | `restore … --database <name>` | target database (live) or base name of the drill database; defaults to the one in `DATABASE_URL` |
 | `restore … --no-safety-dump` | skip the pre-restore dump (below). Only for a target you are certain you never want back |
 | `restore … --force-database-mismatch` | restore even though the manifest says the dump came from another database. Without it a staging dump cannot be restored into production by accident |
 | `restore … --no-manifest-check` | restore a set whose manifest is missing or unreadable. Nothing is then verified: not the checksum, not the source database |
 | `restore … --no-single-transaction` | restore statement by statement. Only for a schema large enough to exhaust `max_locks_per_transaction`; a failure then leaves the database half-restored |
 | `restore … --terminate-connections` | disconnect other sessions instead of refusing the restore |
-| `schedule` | `Bun.cron(BACKUP_SCHEDULE, …, { tz: 'UTC' })` until SIGTERM. Prunes once at start, then on every tick. A tick that arrives while the previous backup is still running is skipped with a warning. With `BACKUP_CATCHUP` (default `true`) it also takes one backup at start when the newest set is older than one schedule interval |
+| `schedule` | `Bun.cron(BACKUP_SCHEDULE, …, { tz: 'UTC' })` until SIGTERM. Prunes once at start, then on every tick. A tick that arrives while the previous backup is still running is skipped with a warning. With `BACKUP_CATCHUP` (default `true`) it also takes one backup at start when the newest set is older than one schedule interval. Each run waits up to 30 minutes for the lock (below) |
 
 Exit codes: `0` ok, `1` failure or refused, `2` usage. Durations (`--max-age`, `BACKUP_MAX_AGE`,
 `BACKUP_LOCK_TIMEOUT`) are one number and one unit: `90s`, `45m`, `36h`, `2d`. A bare number is
@@ -55,10 +58,12 @@ them yourself once you are sure the restore was the right one.
 ## What a run checks
 
 - **One backup or restore at a time.** A run takes a Postgres session-level advisory lock on the
-  target database (`pg_try_advisory_lock`, class `4475218`, key hashed from the database name) and
-  refuses with exit 1 if another process holds it. Known ceiling: the lock lives in one pooled
-  connection, so a Postgres restart releases it while the work continues. It prevents the accident,
-  not a race.
+  target database (`pg_try_advisory_lock`, class `4475218`, key hashed from the database name).
+  A manual `backup` and every `restore` refuse with exit 1 if another process holds it. A scheduled
+  backup waits up to 30 minutes for it and a release backup up to 10, trying again every 5 s, so a
+  deploy and the nightly run that meet queue behind each other instead of failing or paging. Known
+  ceiling: the lock lives in one pooled connection, so a Postgres restart releases it while the
+  work continues. It prevents the accident, not a race.
 - **Pre-flight, before `pg_dump`.** `BACKUP_DIR` exists and is writable; there is free space on the
   backups filesystem (`df`, skipped on Windows; under 64 MiB fails the run, less than 1.5× the last
   dump warns); and, when a bucket is configured, **the credential is proved to work** by writing,
@@ -74,6 +79,11 @@ them yourself once you are sure the restore was the right one.
   per query) goes into the manifest, so a drill can assert that the data came back. The counts are
   taken just after the dump, not inside its snapshot, so a database still taking writes drifts by a
   few rows; a drill allows 5 %. Failing to count is a warning, not a failed backup.
+- **Nothing pauses writes.** The nightly run, a manual run and the release backup a deploy takes
+  all dump while the app keeps running. `pg_dump` reads one consistent snapshot, taken as it
+  starts, so writes made while it runs are in the next set, not this one. For a set with no write
+  in flight, stop the writer first (`docker compose stop api`), take the backup, then
+  `docker compose up -d`.
 - **The off-box copy is verified against the bucket.** After each `put` the object is `HEAD`ed and
   the size the *bucket* reports is compared with the local file's. A mismatch deletes the bad
   object and retries once. A second mismatch fails the run, so the heartbeat stays silent and the
@@ -107,6 +117,52 @@ loses data. Three things cover it, and none of them replaces the other two:
   set with one schedule interval and takes a backup now if it is older. `BACKUP_ON_START=true` is
   the stronger form that always runs one at start.
 
+## Release sets (`--release`)
+
+`backup --release` is the restore point a deploy needs before its migrations run.
+`infra/scripts/deploy.sh` takes one under the deploy lock, after pulling the new images and before
+it stops anything, so a failed backup leaves the running production release untouched.
+`RELEASE_BACKUP=off` in `.env` turns it off (`infra/README.md`).
+
+It is the same dump, archive check, manifest and drill as a nightly set, with four differences in
+how it is taken:
+
+- **The database only, in `BACKUP_DIR/release`** (`/backups/release` in the image). A migration
+  changes the database and nothing else.
+- **It stays on this machine,** even when a bucket is configured. It guards against a bad migration,
+  not against losing the box, which the nightly off-site copy covers, and a bucket outage must not
+  block a deploy.
+- **No heartbeat.** A release set must not tell the nightly monitor that a backup ran.
+- **The newest four are kept.** Retention is zero days plus the floor of three complete sets, so a
+  run keeps the set it wrote and the three before it. Nothing else prunes them.
+
+A release backup waits up to 10 minutes for the lock, so a deploy that lands during the nightly
+run waits for that run to finish; the nightly run waits up to 30 minutes for a release backup in
+the same way.
+`pg_dump` gets a 30-minute ceiling (or `BACKUP_COMMAND_TIMEOUT_MINUTES`, if lower), so a stuck dump
+fails the deploy instead of holding it. On a database with no tables yet, which is a first deploy
+before `migrate` has run, it logs `release backup skipped: the database has no tables yet (first
+deploy)` and exits 0.
+
+```sh
+docker compose run --rm backup bun src/cli.ts list --release
+docker compose run --rm backup bun src/cli.ts restore latest --release --drill
+```
+
+A release set holds the schema from before its deploy's migrations, so its drill warns about the
+tables the live database has gained since (`drill: the live database has tables this set
+predates`) instead of failing on them as a nightly drill does. The tables in the set's manifest
+must still all come back.
+
+A live restore works as for a nightly set (writers stopped first, see [Compose](#compose)), with
+`--release` added: `restore <stamp> --release --yes`. The set is taken online, so writes made while
+`pg_dump` ran are not in it, and restoring it after the new release has served traffic loses
+everything written since. The restore leaves the database holding exactly what the set holds: the
+tables, types, functions and schemas the new migrations created go, and the migrations journal goes
+back to before them, so a release that runs the same migrations again applies them as it did the
+first time. `list --release` checks no freshness unless you pass `--max-age`: the age of a release
+set only says when the last deploy was.
+
 ## Encryption at rest
 
 **The dump is written unencrypted and every run says so.** `pg_dump --format=custom` is
@@ -127,7 +183,7 @@ management already exists:
 
 ## Restoring
 
-A live restore is destructive. Before `pg_restore --clean --if-exists` drops a single object:
+A live restore is destructive. Before it drops a single object:
 
 1. The set's **manifest is loaded and the dump's SHA-256 re-computed and compared**.
    `pg_restore --list` reads the table of contents and decompresses no data block, so a corrupt
@@ -139,23 +195,32 @@ A live restore is destructive. Before `pg_restore --clean --if-exists` drops a s
    `--force-database-mismatch` is the deliberate override.
 3. The dump is opened with `pg_restore --list` as the cheap first check.
 4. **Other sessions block the restore.** `pg_stat_activity` is checked and the restore *refuses*
-   while anything else is connected. An API that keeps writing during `--clean --if-exists` ends up
-   with rows pointing at objects that were dropped underneath it, and `--single-transaction` with
-   `--clean` cannot take its locks while another session holds them. `--terminate-connections`
+   while anything else is connected. An API that keeps writing during the restore ends up with rows
+   pointing at objects that were dropped underneath it, and the restore's one transaction cannot
+   take its locks while another session holds them. `--terminate-connections`
    disconnects them instead (they come back if their service is still running, so stop it).
 5. The current contents of the target database are dumped to `<db>_<stamp>_pre_restore.dump` in
    `BACKUP_DIR`, and the path is logged with the `pg_restore` command that puts it back.
    `--no-safety-dump` skips this.
 
-The restore itself runs `--single-transaction --exit-on-error` with
-`PGOPTIONS='-c lock_timeout=<BACKUP_LOCK_TIMEOUT>'`, so it is all-or-nothing and cannot hang forever
-on a lock. Two trade-offs to know:
+The restore itself is `pg_restore --clean --if-exists --single-transaction --exit-on-error --file -`
+piped into `psql` with `ON_ERROR_STOP`, under `PGOPTIONS='-c lock_timeout=<BACKUP_LOCK_TIMEOUT>'`.
+psql first clears the database (every table, view, sequence, function and type of its own, and
+every schema but `public` and an extension's; extensions themselves stay), then runs the set, in
+one transaction that only the set's last statement commits. So it is all-or-nothing, cannot hang
+forever on a lock, and ends with the database holding exactly what the set holds.
 
-- `--single-transaction` together with `--clean` requires the target to have **no** other open
-  connections (hence the blocking check), and one transaction dropping and recreating every object
-  in a large schema can exhaust `max_locks_per_transaction` (`ERROR: out of shared memory`). Raise
-  `max_locks_per_transaction` first. `--no-single-transaction` is the fallback, and then a failure
-  can leave the database half-restored, which is what the pre-restore dump is for.
+Clearing first is what lets a set restore over a database that has changed since it was taken.
+`--clean` alone drops only what the set holds, without `CASCADE`, so the first newer object that
+depends on one of them stops it: a table a migration added with a foreign key into a table the set
+holds fails the `DROP CONSTRAINT` of that table's primary key, and the restore with it. Two
+trade-offs to know:
+
+- One transaction that clears and recreates everything requires the target to have **no** other
+  open connections (hence the blocking check), and in a large schema it can exhaust
+  `max_locks_per_transaction` (`ERROR: out of shared memory`). Raise `max_locks_per_transaction`
+  first. `--no-single-transaction` is the fallback, and then a failure can leave the database
+  half-restored, which is what the pre-restore dump is for.
 - `--exit-on-error` is why the drill is worth anything. pg_restore's default is to log an error and
   carry on, so a restore whose data entries nearly all failed would still exit 0 with an identical
   table list. The drill also compares the restored row counts against the manifest's (5 %
@@ -283,7 +348,8 @@ deletes the backups before the data. Configure the bucket so it cannot:
 Point `BACKUP_HEARTBEAT_URL` at a Healthchecks.io check or an Uptime Kuma push monitor. When the
 nightly run stops (container down, disk full, Postgres unreachable) the ping stops and you get
 paged. A successful run pings the URL. A *failed* scheduled run pings `<url>/fail`, so the alert
-arrives immediately instead of at the next missed ping. One-shot runs never ping `/fail`.
+arrives immediately instead of at the next missed ping. One-shot runs never ping `/fail`, and a
+release backup (`--release`) pings neither URL.
 
 Leaving it unset is a warning at every run and at scheduler start: the backup then has no external
 observer at all. Pair it with `list --max-age` (above) so a *stale* set is caught as well as a

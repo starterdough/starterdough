@@ -12,7 +12,8 @@ across every workspace that defines the script.
 | --- | --- |
 | `bun run dev` | every app with a `dev` script: api `:3000`, web `:5173`, site `:4321`, docs `:4322` |
 | `bun run dev:app` | api + web only |
-| `bun run dev:site` · `bun run dev:docs` | one Astro site |
+| `bun run dev:site` · `bun run dev:docs` | one Astro site: the marketing site, or your product's docs |
+| `bun run dev:manual` | the kit's developer manual (these pages) on `:4322`, which no deploy publishes (`DOCS_CONTENT=kit`) |
 | `bun run dev:desktop` | Tauri desktop shell around the dev server (needs Rust) |
 
 ## Pipeline
@@ -20,7 +21,7 @@ across every workspace that defines the script.
 | Command | What |
 | --- | --- |
 | `bun run setup` | Create every local `.env` from the `.env.example` next to it, or complete an existing one: generated secrets and the sites' local `SITE_URL`. Fills only absent or blank rows, never prints a secret, and is safe to rerun |
-| `bun run doctor` | Read-only local setup check: Bun, dependencies, app configuration, Docker CLI, Compose and daemon. `-- --database=external` skips Docker for your existing database; `-- --build` adds site/docs build configuration. Does not connect to Postgres or apply migrations |
+| `bun run doctor` | Read-only local setup check: Bun, dependencies, app configuration, Docker CLI, Compose and daemon. `-- --database=external` skips Docker for your existing database; `-- --build` adds site/docs build configuration. Does not connect to Postgres or apply migrations. A `!` line is a warning that does not fail the run, such as `.env` rows that still name the product before a rename |
 | `bun run verify` | `lint`, `check` and `test` in CI's order. The pre-push command. Add `bun run build` for the whole pipeline |
 | `bun run check` | `turbo check`: svelte-check in the app and packages, `astro check` in the sites |
 | `bun run test` | `turbo test`: `bun test` in the TS packages and the API, Vitest (unit + component in Chromium) in the app, and `packages/ui`'s contrast check, which recomputes every token pair's ratio from `theme.css`. The component tests need Playwright's Chromium; `apps/web`'s `pretest` installs it on first run |
@@ -30,22 +31,24 @@ across every workspace that defines the script.
 | `bun run build` | `turbo build`: every app |
 | `bun run clean` | remove build outputs |
 | `bun run licenses` | audit every dependency's licence from the metadata an install left on disk. `--all` prints one line per package. `--strict` exits 1 on anything not already recorded in `THIRD-PARTY.md` (what CI runs) |
-| `bun run rename` | rename the kit to your product across the tracked text files: `--name`, `--slug`, `--identifier`, `--scope`. Dry run unless `--write`. `LICENSE.md`, `THIRD-PARTY.md`, `CHANGELOG.md`, `UPGRADING.md` and the script itself are left verbatim. It prints a residue checklist of what a text substitution must not touch (Docker volumes, the dev database, `.env`, lockfiles, the kit's own repository URL) |
+| `bun run rename` | rename the kit to your product across the tracked text files: `--name`, `--slug`, `--identifier`, `--scope`. Dry run unless `--write`. `LICENSE.md`, `THIRD-PARTY.md`, `CHANGELOG.md`, `UPGRADING.md` and the script itself are left verbatim. It also rewrites the slug's uppercase form in environment variable names (`<SLUG>_STATE_DIR`, a dash becoming an underscore), keeps every dependency map in a rewritten `package.json` in the order `bun add` keeps, and leaves "Starterdough kit" as it is. It prints a residue checklist of what a text substitution must not touch (Docker volumes, the dev database, `.env`, lockfiles, the kit's own repository URL), where your domain goes, and what a deploy still publishes of the kit's |
 
 ## Database (Drizzle Kit, `packages/db`)
 
 | Command | What |
 | --- | --- |
-| `bun run db:up` · `bun run db:down` | Postgres 17 + pgvector (`pgvector/pgvector:pg17`) in Docker via `infra/compose.dev.yml` (host port `POSTGRES_PORT`, default 5433) |
-| `bun run db:migrate` | apply `packages/db/drizzle/*.sql`, then verify nothing is still pending and **exit 1** if something is. A branch merge can interleave migration timestamps, which Drizzle's migrator would otherwise skip |
-| `bun run db:generate` | generate a migration from the schema, then apply it with `db:migrate`. Every schema change goes through a migration, in development too: a migration can carry SQL the schema cannot describe (triggers, data fixes), and a database that skipped it no longer matches production |
-| `bun run db:studio` | Drizzle Studio |
+| `bun run db:up` · `bun run db:down` | Postgres 17 + pgvector (`pgvector/pgvector:0.8.7-pg17`) in Docker via `infra/compose.dev.yml` (host port `POSTGRES_PORT`, default 5433) |
+| `bun run db:migrate` | apply the kit's migrations (`packages/db/drizzle`), then yours (`packages/db/drizzle-product`), then verify nothing in either history is still pending and **exit 1** if something is. A branch merge can interleave migration timestamps, which Drizzle's migrator would otherwise skip; the message names the history, and `UPGRADING.md` ("Migrations") says what to do |
+| `bun run db:generate` | generate a migration of yours in `packages/db/drizzle-product` from the tables `packages/db/src/schema/product.ts` exports, then apply it with `db:migrate`. Every schema change goes through a migration, in development too: a migration can carry SQL the schema cannot describe (triggers, data fixes), and a database that skipped it no longer matches production. `--custom --name=<name>` writes an empty one for such SQL |
+| `bun run db:kit-drift` | print the SQL your schema needs on the kit's own tables (a Better Auth plugin or extra field, an index of yours) that no migration of yours holds yet. Put it in `bun run db:generate --custom --name=<name>`. Nothing is written; `bun run test` fails while any of it is outstanding |
+| `bun run db:move-product-migrations` | once, when upgrading from a release before 1.1.0 with migrations of your own: moves them from the kit's history to yours, keeping their SQL and timestamps, while the merge is still open (or later with `--kit <release>`), and names each moved table `packages/db/src/schema/index.ts` still exports instead of `schema/product.ts`. Each database's next `db:migrate` moves their history rows |
+| `bun run db:studio` | Drizzle Studio, over the kit's tables and yours |
 
 ## Auth and admin
 
 | Command | What |
 | --- | --- |
-| `bun run auth:schema` | regenerate the Better Auth tables after changing plugins. It **exits 1** until you put back the hand-added constraints it names ([how](/guides/authentication/#changing-auth-plugins)); then `db:generate`, check that the migration drops none of them, and `db:migrate` |
+| `bun run auth:schema` | regenerate the Better Auth tables after changing plugins. It **exits 1** until you put back the hand-added constraints it names ([how](/guides/authentication/#changing-auth-plugins)); then put what `db:kit-drift` prints in `db:generate --custom`, check that it drops none of them, and `db:migrate` |
 | `bun run admin:create -- --email … [--name …] [--yes]` | create or promote the first platform administrator. The password comes from `ADMIN_PASSWORD` or an interactive prompt, never from the command line (arguments land in shell history and `ps`). It runs through the kit's own auth config with no `bunx` and no network, so it works inside the API container too. `--yes` is required to promote an account that already exists |
 
 ## API
@@ -61,10 +64,14 @@ across every workspace that defines the script.
 | `docker compose up -d --build` | production stack from the repository root (`COMPOSE_FILE` in `.env`) |
 | `COMPOSE_PROFILES=backup` in `.env`, then `docker compose up -d` | nightly backups (`infra/backup`); `run --rm backup bun src/cli.ts backup\|list\|restore`. Profiles live in `.env`, not on the command line: `deploy.sh --remove-orphans` drops containers of profiles it cannot see |
 | `sudo REPO_URL=… EXPOSE=tailscale bash infra/scripts/provision.sh` | one-time VPS setup, as root (`EXPOSE=public` opens 80/443): Docker, Tailscale, deploy user, firewall, clone, `.env`. Or `curl … \| sudo … bash` as in the runbook |
-| `bash infra/scripts/deploy.sh` | pull `IMAGE_TAG`, restart, wait healthy, hit `/readyz` (what CI runs over SSH) |
+| `bash infra/scripts/deploy.sh` | pull `IMAGE_TAG`, run the pre-deploy hooks, take a release backup (`RELEASE_BACKUP=off` skips it), restart, wait healthy, hit `/readyz`, keep the three newest local builds, run the post-deploy hooks (what CI runs over SSH) |
+| `docker compose run --rm backup bun src/cli.ts list --release` | the release sets deploys took; `restore latest --release --drill` checks the newest |
+| `bash infra/scripts/recover-deployment.sh status\|recover\|abandon <revision>` | an interrupted deployment, on the box: what Actions → Recover deployment runs |
 | `docker run --rm -i -e API_URL=… grafana/k6 run - < infra/loadtest/k6/smoke.js` | load test the API |
 
-See [Operations](/guides/operations/).
+The Server status, Server logs, Server backup and Admin bootstrap workflows inspect the box, back
+it up and create the first administrator from Actions, without a shell. See
+[Operations](/guides/operations/) and [Server access and break glass](/guides/server-access/).
 
 ## Per app
 

@@ -3,6 +3,7 @@ import { satteri } from '@astrojs/markdown-satteri';
 import starlight from '@astrojs/starlight';
 import { defineConfig } from 'astro/config';
 import { loadSiteEnv } from '../../scripts/load-site-env.mjs';
+import { docsContent } from './content-set.mjs';
 
 /**
  * Astro loads `.env` into `import.meta.env` for source files, never into `process.env` for this
@@ -104,41 +105,78 @@ const mdastPlugins = base
 		]
 	: [];
 
+/**
+ * The kit's developer manual: `DOCS_CONTENT=kit` (content-set.mjs). Its sidebar names every page,
+ * and Starlight fails the build on a slug that does not exist, so it is only used with that set.
+ *
+ * @type {NonNullable<Parameters<typeof starlight>[0]['sidebar']>}
+ */
+const kitSidebar = [
+	{
+		label: 'Start',
+		items: [
+			{ label: 'Quickstart', slug: 'start/quickstart' },
+			{ label: 'Configuration', slug: 'start/configuration' },
+		],
+	},
+	{
+		label: 'Guides',
+		items: [
+			{ label: 'Authentication', slug: 'guides/authentication' },
+			{ label: 'Admin', slug: 'guides/admin' },
+			{ label: 'Where your code goes', slug: 'guides/product-files' },
+			{ label: 'Worked feature example', slug: 'guides/feature-example' },
+			{ label: 'Frontend platform', slug: 'guides/frontend' },
+			{ label: 'Serve anywhere', slug: 'guides/serve-anywhere' },
+			{ label: 'Operations', slug: 'guides/operations' },
+			{ label: 'Server access and break glass', slug: 'guides/server-access' },
+		],
+	},
+	{
+		label: 'Reference',
+		items: [
+			{ label: 'API: RPC and REST', slug: 'reference/api' },
+			{ label: 'API reference (interactive)', link: '/reference/api-reference/' },
+			{ label: 'Commands', slug: 'reference/commands' },
+			{ label: 'Architecture', slug: 'reference/architecture' },
+		],
+	},
+];
+
+/**
+ * Your product's documentation, the default. Pages you add under `src/content/product/guides/` or
+ * `src/content/product/reference/` appear in the sidebar by themselves (order them with
+ * `sidebar.order` in their frontmatter), so this file needs no edit for a new page.
+ *
+ * @type {NonNullable<Parameters<typeof starlight>[0]['sidebar']>}
+ */
+const productSidebar = [
+	{ label: 'Guides', items: [{ autogenerate: { directory: 'guides' } }] },
+	{
+		label: 'Reference',
+		items: [
+			{ label: 'API reference', link: '/reference/api-reference/' },
+			{ autogenerate: { directory: 'reference' } },
+		],
+	},
+];
+
+const content = docsContent();
+
 /** @type {Parameters<typeof starlight>[0]} */
-const starlightOptions = {
-	title: 'Starterdough',
-	description:
-		'Documentation for Starterdough, a Bun-native, serve-anywhere SaaS starter: one HTTP API, every surface a thin client.',
-	sidebar: [
-		{
-			label: 'Start',
-			items: [
-				{ label: 'Quickstart', slug: 'start/quickstart' },
-				{ label: 'Configuration', slug: 'start/configuration' },
-			],
-		},
-		{
-			label: 'Guides',
-			items: [
-				{ label: 'Authentication', slug: 'guides/authentication' },
-				{ label: 'Admin', slug: 'guides/admin' },
-				{ label: 'Worked feature example', slug: 'guides/feature-example' },
-				{ label: 'Frontend platform', slug: 'guides/frontend' },
-				{ label: 'Serve anywhere', slug: 'guides/serve-anywhere' },
-				{ label: 'Operations', slug: 'guides/operations' },
-			],
-		},
-		{
-			label: 'Reference',
-			items: [
-				{ label: 'API: RPC and REST', slug: 'reference/api' },
-				{ label: 'API reference (interactive)', link: '/reference/api-reference/' },
-				{ label: 'Commands', slug: 'reference/commands' },
-				{ label: 'Architecture', slug: 'reference/architecture' },
-			],
-		},
-	],
-};
+const starlightOptions =
+	content === 'kit'
+		? {
+				title: 'Starterdough',
+				description:
+					'Documentation for Starterdough, a Bun-native, serve-anywhere SaaS starter: one HTTP API, every surface a thin client.',
+				sidebar: kitSidebar,
+			}
+		: {
+				title: 'Starterdough',
+				description: 'Documentation for Starterdough: guides and the API reference.',
+				sidebar: productSidebar,
+			};
 
 if (repoUrl) {
 	starlightOptions.social = [{ icon: 'github', label: 'GitHub', href: repoUrl }];
@@ -148,6 +186,9 @@ if (repoUrl) {
 // https://astro.build/config
 export default defineConfig({
 	site: site.origin,
+	// One content cache per set: the cache keys the `docs` collection by name, so switching sets on a
+	// warm cache would otherwise reconcile one set's entries against the other's.
+	cacheDir: `./node_modules/.astro/${content}`,
 	...(base ? { base } : {}),
 	markdown: { processor: satteri({ mdastPlugins }) },
 	integrations: [requireCanonicalSite(), starlight(starlightOptions)],

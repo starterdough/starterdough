@@ -11,12 +11,15 @@ Set up once with `QUICKSTART.md`, where `bun run setup` writes the environment f
 and omit `db:up` when you intentionally use an existing development database. The
 [worked feature example](apps/docs/src/content/docs/guides/feature-example.md) follows a shipped
 feature through the database, contract, permissions, localized form and tests.
+[Where your code goes](apps/docs/src/content/docs/guides/product-files.md) lists the files that are
+yours to fill: no kit release changes them, so what you add there never conflicts with an upgrade.
 
 ```sh
 bun install                    # installs git hooks and syncs SvelteKit's generated types
 bun run db:up                  # Postgres 17 on 127.0.0.1:5433
 bun run db:migrate
 bun run dev                    # everything, or: dev:app / dev:api / dev:site / dev:docs
+bun run dev:manual             # the kit's manual on :4322, to read or edit it (dev:docs is yours)
 ```
 
 Before you push:
@@ -109,9 +112,10 @@ in there with the reason they were not taken.
 
 ## Reporting a bug in the kit
 
-Open an issue with the bug-report template. Include the version from the root `package.json`, the
-package or app, what you expected, what happened, and the smallest reproduction you have. For a
-security issue, do not open an issue; see [`SECURITY.md`](SECURITY.md).
+Open an issue with the bug-report template. Include the kit release you are on, `kitVersion` in the
+root `package.json` (`version` there is your product's own), the package or app, what you expected,
+what happened, and the smallest reproduction you have. For a security issue, do not open an issue;
+see [`SECURITY.md`](SECURITY.md).
 
 Patches are welcome from licensees. By sending one you confirm it is your own work and that it may
 ship under the kit's licence.

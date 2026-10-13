@@ -1,0 +1,105 @@
+# One service's logs, for an owner without a shell on the server. Read-only, and it takes no lock
+# (infra/scripts/ops.sh, `logs`).
+#
+# It uses Deploy's variables and secret (deploy.yml's header lists them), runs only while
+# DEPLOY_ENABLED is `true`, and runs in the `production` environment, so that environment's required
+# reviewers, if you set any, approve it too. Before it reads anything, the checkout must run this
+# product's Compose project.
+#
+# The lines land in this run's log, which everyone who can read the repository can open, and the
+# API's lines carry client addresses, paths and ids. So it refuses to run in a public repository:
+# read logs on the server there, or make the repository private. In a private repository every
+# collaborator can read them.
+name: Server logs
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Which checkout: production (DEPLOY_PATH) or the public demo (DEMO_PATH).'
+        type: choice
+        options: [production, demo]
+        default: production
+      service:
+        description: 'A Compose service the checkout runs, such as api, web, caddy or postgres; demo-api or demo-web on the demo.'
+        required: true
+        default: api
+      lines:
+        description: 'How many lines, newest last.'
+        type: choice
+        options: ['100', '500', '2000', '10000']
+        default: '500'
+      since:
+        description: 'Only lines newer than this: 30m, 2h, or a time such as 2026-10-21T09:00:00Z. Empty for no limit.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+# Not Deploy's group: GitHub cancels a run waiting in the same group, so reading logs could cancel a
+# queued release.
+concurrency:
+  group: server-logs
+  cancel-in-progress: false
+
+jobs:
+  logs:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    # Everything a `run:` needs comes through env, never `${{ }}` inside the script.
+    env:
+      DEPLOY_ENABLED: ${{ vars.DEPLOY_ENABLED }}
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER || 'deploy' }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+      DEMO_PATH: ${{ vars.DEMO_PATH }}
+    steps:
+      # First, before anything else: nothing reaches the server from a public repository.
+      - name: Refuse in a public repository
+        env:
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          if [ "$REPOSITORY_PRIVATE" != true ]; then
+            echo "::error title=Public repository::Anyone can read this run's log, and log lines carry client addresses, paths and ids. Read logs on the server, or make the repository private."
+            exit 1
+          fi
+      # The scripts and the compose files that name the expected project; ops.sh runs from here, not
+      # from the server's checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: |
+            .github/scripts
+            infra
+      - uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
+        if: vars.DEPLOY_VIA_TAILSCALE == 'true'
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+      - name: SSH to the server, host key pinned
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: bash .github/scripts/ssh-target.sh
+      - name: Logs
+        env:
+          TARGET: ${{ inputs.target }}
+          SERVICE: ${{ inputs.service }}
+          LINES: ${{ inputs.lines }}
+          SINCE: ${{ inputs.since }}
+          COMPOSE_PROJECT: ${{ vars.COMPOSE_PROJECT_NAME }}
+        run: |
+          set -euo pipefail
+          [[ "$SERVICE" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { echo "::error title=No such service::'$SERVICE' is not a Compose service name."; exit 1; }
+          case "$TARGET" in
+            production) export OPS_CHECKOUT="$DEPLOY_PATH" OPS_COMPOSE_FILE=infra/compose.yml ;;
+            demo)
+              [ -n "$DEMO_PATH" ] || { echo "::error title=No demo::Set the repository variable DEMO_PATH to read the demo's logs."; exit 1; }
+              # COMPOSE_PROJECT_NAME renames production's project only.
+              export OPS_CHECKOUT="$DEMO_PATH" OPS_COMPOSE_FILE=infra/demo/compose.yml COMPOSE_PROJECT=
+              ;;
+            *) exit 1 ;;
+          esac
+          bash .github/scripts/run-ops.sh logs "$SERVICE" "$LINES" "$SINCE"

@@ -96,9 +96,9 @@ installed what the Desktop workflow builds. Treat your first release as the test
   not exist; `android:init` and `ios:init` create them on a machine with Android Studio and the NDK,
   or Xcode. Set your own bundle identifier first: `bun run rename` takes it as `--identifier`,
   together with the `--name`, `--slug` and `--scope` it also requires, for example
-  `bun run rename --name Acme --slug acme --identifier com.acme.desktop --scope @acme --write`. The
-  default, `dev.starterdough.native`, ends in `native`, a Java keyword that an Android package name
-  cannot contain. Then come icons, testing on real devices, and every item in this list again.
+  `bun run rename --name Acme --slug acme --identifier com.acme.desktop --scope @acme --write`. An
+  Android package name cannot contain a Java keyword, and the identifier the kit ships ends in one,
+  `native`. Then come icons, testing on real devices, and every item in this list again.
 - **Tray, autostart, notifications.** None of these exist yet.
 - **The remote (thin-client) mode** described below has not been tried. `is_app_url` in
   `src-tauri/src/lib.rs` treats every origin except the bundled one and the dev server as external

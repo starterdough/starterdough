@@ -22,7 +22,16 @@
 #                         DEPLOY_HOST, it builds and pushes the images and deploys nothing.
 #   DEPLOY_HOST           the server (hostname, IP, or its tailnet name)
 #   DEPLOY_USER           SSH user, default `deploy` (infra/scripts/provision.sh creates it)
-#   DEPLOY_PATH           the clone on the server, default /opt/starterdough
+#   DEPLOY_PATH           REQUIRED with DEPLOY_HOST: the clone on the server, as provision.sh printed
+#                         it. No default: a guessed path is how one product deploys into another's
+#                         checkout.
+#   DEPLOY_KNOWN_HOSTS    REQUIRED with DEPLOY_HOST: the server's SSH host key, as provision.sh printed
+#                         it, or the line `ssh-keyscan -t ed25519 <host>` prints once its fingerprint
+#                         matches the server's. One server's key only: every key in it is trusted.
+#   COMPOSE_PROJECT_NAME  optional: the Compose project the server's .env resolves to, when it is not
+#                         the `name:` in infra/compose.yml. Before the server's .env is replaced or
+#                         anything is checked out, the deploy refuses a checkout that shares no history
+#                         with this repository or runs another project.
 #   DEMO_PATH             optional: the public demo's clone on the same box (infra/README.md, "A
 #                         public demo"). Set it and every deploy also moves the demo onto the build
 #                         being released, so what visitors try is what you ship; unset, the demo
@@ -32,11 +41,17 @@
 #                         optional overrides for the URLs baked into demo-static; each defaults from
 #                         DEMO_DOMAIN using the standard demo topology documented in infra/README.md.
 #   DEPLOY_VIA_TAILSCALE  'true' when the server is reachable only over your tailnet
+#   SMOKE_TEST            `off` skips the last step, which fetches API_URL/readyz and WEB_URL from the
+#                         runner after the deploy: for a site the runner cannot reach, or DNS not yet
+#                         pointing at the server.
 #   IMAGE_PLATFORMS       default linux/amd64; add linux/arm64 for an ARM VPS (slower builds via QEMU)
 #   SITE_URL DOCS_URL WEB_URL API_URL   REQUIRED: baked into the static sites (caddy image) at build
 #                         time, and API_URL also into the app's Content-Security-Policy (web image).
 #                         The `caddy` image fails the build while any of them is unset rather
 #                         than shipping example.com URLs to your visitors.
+#   ALLOW_LEGAL_PLACEHOLDERS  optional: `1` lets the caddy and demo-static builds publish legal pages
+#                         that still hold the templates' placeholders (a staging deploy). Unset, the
+#                         build fails and names each unfinished file.
 # Secrets:
 #   DEPLOY_SSH_KEY        private key whose public half is in the deploy user's authorized_keys
 #   SOPS_AGE_KEY          optional: decrypts infra/env/production.enc.env into the server's .env first
@@ -62,9 +77,10 @@
 # The deploy also passes IMAGE_REGISTRY (this repository's own GHCR namespace, lowercased) to
 # deploy.sh, which pins it in the server's .env, so a fork never edits that row by hand.
 #
-# SSH host keys are accepted on first use (`StrictHostKeyChecking accept-new`). Pinning the key would
-# mean a repository variable to update on every rebuild of the box; accept-new still refuses a
-# changed key, which is the attack that matters after the first deploy.
+# SSH host keys are pinned: every connection checks the server's key against DEPLOY_KNOWN_HOSTS
+# (`StrictHostKeyChecking yes`, .github/scripts/ssh-target.sh). Trust on first use would protect
+# nothing here: a hosted runner starts every job with an empty known_hosts, so `accept-new` accepted
+# whatever key answered, on every run. A rebuilt box has a new key, so update the variable with it.
 #
 # Every third-party action is pinned to a full commit SHA (version in the trailing comment). This job
 # holds SOPS_AGE_KEY, which decrypts every production secret, so a moving tag like `@v3` (whatever
@@ -134,7 +150,7 @@ jobs:
       sha: ${{ steps.plan.outputs.sha }}
       tag: ${{ steps.plan.outputs.tag }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         # Only a requested tag needs the history: `1.2.0` resolves through its git tag, and an
         # abbreviated `sha-…` to the full commit id the CI lookup and the server need.
         if: vars.DEPLOY_ENABLED == 'true' && github.event_name == 'workflow_dispatch' && inputs.tag != ''
@@ -147,6 +163,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DEPLOY_ENABLED: ${{ vars.DEPLOY_ENABLED }}
           DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
           REQUESTED: ${{ inputs.tag }}
           CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           CI_EVENT: ${{ github.event.workflow_run.event }}
@@ -271,6 +289,15 @@ jobs:
             deploy=false
             echo "::notice title=Images only::DEPLOY_HOST is not set, so this run builds and pushes the images and deploys nothing."
           fi
+          # Said here, before anything is built, rather than at the SSH step after every image.
+          if [ "$deploy" = true ] && [ -z "$DEPLOY_PATH" ]; then
+            echo "::error title=No checkout path::Set the repository variable DEPLOY_PATH to the checkout on the server, as provision.sh printed it. It has no default."
+            exit 1
+          fi
+          if [ "$deploy" = true ] && [ -z "$DEPLOY_KNOWN_HOSTS" ]; then
+            echo "::error title=No host key::Set the repository variable DEPLOY_KNOWN_HOSTS to the server's SSH host key, as provision.sh printed it."
+            exit 1
+          fi
           finish
 
   images:
@@ -311,17 +338,31 @@ jobs:
               DOCS_URL=${{ vars.DOCS_URL }}
               PUBLIC_APP_URL=${{ vars.WEB_URL }}
               PUBLIC_API_URL=${{ vars.API_URL }}
+              ALLOW_LEGAL_PLACEHOLDERS=${{ vars.ALLOW_LEGAL_PLACEHOLDERS }}
           - name: backup
             context: .
             dockerfile: infra/backup/Dockerfile
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The commit the plan chose, never `github.sha`: after a CI run that is wherever main
           # points by now.
           ref: ${{ needs.plan.outputs.sha }}
+      # A product that deleted a surface needs no edit here: an image whose Dockerfile is gone is
+      # skipped, and its job still passes.
+      - id: surface
+        name: Skip an image this repository no longer ships
+        env:
+          DOCKERFILE: ${{ matrix.dockerfile }}
+        run: |
+          if [ -f "$DOCKERFILE" ]; then
+            echo build=true >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Not built::$DOCKERFILE is not in this repository; remove its service from infra/compose.yml too."
+            echo build=false >> "$GITHUB_OUTPUT"
+          fi
       - name: The static sites need their canonical URLs
-        if: matrix.name == 'caddy'
+        if: matrix.name == 'caddy' && steps.surface.outputs.build == 'true'
         env:
           SITE_URL: ${{ vars.SITE_URL }}
           DOCS_URL: ${{ vars.DOCS_URL }}
@@ -336,16 +377,19 @@ jobs:
             echo "::error title=Missing repository variables::Set$missing under Settings → Secrets and variables → Actions → Variables. They are baked into the marketing site and the docs when this image is built (canonical URLs, sitemap, RSS, the origins the pages link to and call), so they cannot be changed afterwards — and defaulting them to example.com would publish someone else's domain."
             exit 1
           fi
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
-        if: vars.IMAGE_PLATFORMS != '' && vars.IMAGE_PLATFORMS != 'linux/amd64'
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        if: steps.surface.outputs.build == 'true' && vars.IMAGE_PLATFORMS != '' && vars.IMAGE_PLATFORMS != 'linux/amd64'
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        if: steps.surface.outputs.build == 'true'
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        if: steps.surface.outputs.build == 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        if: steps.surface.outputs.build == 'true'
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ matrix.name }}
           # The commit tag and the revision label come from the plan (see `tag` there).
@@ -356,7 +400,8 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
           labels: |
             org.opencontainers.image.revision=${{ needs.plan.outputs.sha }}
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        if: steps.surface.outputs.build == 'true'
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
@@ -377,7 +422,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.sha }}
       - name: The public demo image needs its canonical domain
@@ -388,16 +433,16 @@ jobs:
             echo "::error title=Missing repository variable::Set DEMO_DOMAIN under Settings → Secrets and variables → Actions → Variables. It is required when DEMO_PATH enables the public demo and supplies the defaults for the URLs compiled into demo-static."
             exit 1
           fi
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         if: vars.IMAGE_PLATFORMS != '' && vars.IMAGE_PLATFORMS != 'linux/amd64'
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/demo-static
           tags: |
@@ -407,7 +452,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
           labels: |
             org.opencontainers.image.revision=${{ needs.plan.outputs.sha }}
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: infra/docker/Dockerfile.static
@@ -422,6 +467,7 @@ jobs:
             DOCS_URL=${{ vars.DEMO_DOCS_URL || format('https://{0}/docs', vars.DEMO_DOMAIN) }}
             PUBLIC_APP_URL=${{ vars.DEMO_WEB_URL || format('https://app.{0}', vars.DEMO_DOMAIN) }}
             PUBLIC_API_URL=${{ vars.DEMO_API_URL || format('https://app.{0}', vars.DEMO_DOMAIN) }}
+            ALLOW_LEGAL_PLACEHOLDERS=${{ vars.ALLOW_LEGAL_PLACEHOLDERS }}
 
   deploy:
     name: Deploy to ${{ vars.DEPLOY_HOST }}
@@ -433,6 +479,13 @@ jobs:
       (needs.demo-image.result == 'success' || needs.demo-image.result == 'skipped')
     runs-on: ubuntu-latest
     environment: production
+    # Only a hang should ever reach this. Before deploy.sh stops a single writer, the bounded waits
+    # alone can add up to about 140 minutes: three 30-minute waits for the host lock (the pending
+    # recovery check, the environment file and Deploy), the demo update's pull and 5-minute start,
+    # the release backup's 10-minute wait for the backup lock and its 30-minute ceiling, and 3 minutes
+    # for Postgres. Then Compose's 3-minute start, the readiness check and the smoke test. A cancelled
+    # job drops its SSH session mid-rollout, which is what Recover deployment is for.
+    timeout-minutes: 180
     permissions:
       contents: read
       # So the fallback GITHUB_TOKEN may log the server into GHCR and pull the images.
@@ -440,11 +493,14 @@ jobs:
     # Everything a `run:` needs comes through env, never `${{ }}` inside the script: the values reach
     # `ssh target "…"` and `git checkout`, so they must be shell-quoted, not templated.
     env:
+      DEPLOY_ENABLED: ${{ vars.DEPLOY_ENABLED }}
       DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
       DEPLOY_USER: ${{ vars.DEPLOY_USER || 'deploy' }}
-      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/starterdough' }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+      DEMO_PATH: ${{ vars.DEMO_PATH }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The released commit after a CI run; a run by hand keeps the commit it was started from,
           # whose infra/env/production.enc.env is the current one, even when rolling back.
@@ -454,7 +510,7 @@ jobs:
           fetch-depth: 0
       - name: Log the runner into GHCR for demo rollback validation
         if: vars.DEMO_PATH != '' && github.event_name == 'workflow_dispatch' && inputs.tag != ''
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -470,23 +526,19 @@ jobs:
             echo "::error title=The requested tag has no public demo image::$image is unavailable. Production has not been touched. Publish a demo-static image for this tag, unset DEMO_PATH for a production-only rollback, or follow infra/README.md's explicit BUILD_DEMO_STATIC=1 self-host fallback outside this workflow."
             exit 1
           fi
-      - uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3.3.0
+      - uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
         if: vars.DEPLOY_VIA_TAILSCALE == 'true'
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
-      - name: SSH key
+      - name: SSH to the server, host key pinned
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-        run: |
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
-          # StrictHostKeyChecking=accept-new: trust the host key on first use, refuse it if it ever
-          # changes. Pinning it would mean a repository variable to update every time the box is
-          # rebuilt, and the runner reaches the host over the tailnet or a known IP.
-          printf 'Host target\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/deploy\n  BatchMode yes\n  IdentitiesOnly yes\n  ConnectTimeout 15\n  ServerAliveInterval 15\n  ServerAliveCountMax 6\n  StrictHostKeyChecking accept-new\n' \
-            "$DEPLOY_HOST" "$DEPLOY_USER" > ~/.ssh/config
+        # Also validates DEPLOY_PATH and DEMO_PATH, which the steps below quote into remote scripts.
+        run: bash .github/scripts/ssh-target.sh
+      - name: Server clock against the runner's
+        run: bash .github/scripts/check-clock.sh
       - name: Refuse a new release while deployment recovery is pending
         run: |
           ssh target 'set -euo pipefail
@@ -499,10 +551,30 @@ jobs:
               echo "deployment recovery is pending; use the Recover deployment workflow before starting another release" >&2
               exit 1
             fi'
+      - id: project
+        name: The Compose project this release expects on the server
+        env:
+          GIT_REF: ${{ needs.plan.outputs.sha }}
+          COMPOSE_PROJECT: ${{ vars.COMPOSE_PROJECT_NAME }}
+        run: |
+          # The variable when the server's .env renames the project, else the release's own `name:`.
+          name="${COMPOSE_PROJECT:-$(git show "$GIT_REF:infra/compose.yml" | sed -n 's/^name: *//p' | head -n 1)}"
+          if ! [[ "$name" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+            echo "::error title=No Compose project::Cannot tell which Compose project this release expects ('$name'). Set the repository variable COMPOSE_PROJECT_NAME to the project the server's .env names."
+            exit 1
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          # The demo's, from the release's own demo stack: infra/demo/update.sh accepts no other.
+          [ -n "$DEMO_PATH" ] || exit 0
+          demo="$( (git show "$GIT_REF:infra/demo/compose.yml" 2>/dev/null || true) | sed -n 's/^name: *//p' | head -n 1)"
+          if ! [[ "$demo" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+            echo "::error title=No demo Compose project::DEMO_PATH is set, but this release's infra/demo/compose.yml names no Compose project ('$demo')."
+            exit 1
+          fi
+          echo "demo=$demo" >> "$GITHUB_OUTPUT"
       - name: Deliver the release commit to the server
         env:
           GIT_REF: ${{ needs.plan.outputs.sha }}
-          DEMO_PATH: ${{ vars.DEMO_PATH }}
         run: |
           # The server never fetches from GitHub: on a private repository that would need a
           # credential on the box (a deploy key or a token) for every owner to create, store and
@@ -514,6 +586,45 @@ jobs:
             [ -n "$checkout" ] || continue
             git push --quiet --force "target:$checkout" "$GIT_REF:refs/starterdough/release"
           done
+      - name: Refuse a checkout that is not this product's
+        env:
+          GIT_REF: ${{ needs.plan.outputs.sha }}
+          EXPECTED_PROJECT: ${{ steps.project.outputs.name }}
+          EXPECTED_DEMO_PROJECT: ${{ steps.project.outputs.demo }}
+        run: |
+          # Before the next step writes $DEPLOY_PATH/.env: a DEPLOY_PATH that names another product's
+          # checkout must be refused before its secrets are replaced. merge-base catches an unrelated
+          # repository (Deliver has just put the release commit into it); the project catches another
+          # product built from the kit, which shares the kit's history. DEMO_PATH gets both too: the
+          # Deploy step checks it out before infra/demo/update.sh can look at it.
+          [[ "$EXPECTED_PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { echo "invalid project: $EXPECTED_PROJECT" >&2; exit 1; }
+          if [ -n "$DEMO_PATH" ] && ! [[ "$EXPECTED_DEMO_PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+            echo "invalid demo project: $EXPECTED_DEMO_PROJECT" >&2
+            exit 1
+          fi
+          # shellcheck disable=SC2029  # the values expand here on purpose, single-quoted for the remote shell
+          ssh target "set -euo pipefail
+            cd '$DEPLOY_PATH'
+            git merge-base HEAD '$GIT_REF' >/dev/null 2>&1 || {
+              echo '$DEPLOY_PATH shares no history with this repository: DEPLOY_PATH names another checkout' >&2
+              exit 1
+            }
+            project=\$( (docker compose config 2>/dev/null || true) | sed -n 's/^name: //p' | head -n 1)
+            [ \"\$project\" = '$EXPECTED_PROJECT' ] || {
+              echo \"$DEPLOY_PATH runs Compose project '\${project:-none}', not '$EXPECTED_PROJECT': fix DEPLOY_PATH, or set the repository variable COMPOSE_PROJECT_NAME\" >&2
+              exit 1
+            }
+            if [ -n '$DEMO_PATH' ]; then
+              git -C '$DEMO_PATH' merge-base HEAD '$GIT_REF' >/dev/null 2>&1 || {
+                echo '$DEMO_PATH shares no history with this repository: DEMO_PATH names another checkout' >&2
+                exit 1
+              }
+              demo=\$(cd '$DEMO_PATH' && (docker compose config 2>/dev/null || true) | sed -n 's/^name: //p' | head -n 1)
+              [ \"\$demo\" = '$EXPECTED_DEMO_PROJECT' ] || {
+                echo \"$DEMO_PATH runs Compose project '\${demo:-none}', not '$EXPECTED_DEMO_PROJECT': DEMO_PATH names another checkout\" >&2
+                exit 1
+              }
+            fi" </dev/null
       - name: Ship the environment file (only when SOPS_AGE_KEY is set)
         env:
           SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
@@ -563,10 +674,16 @@ jobs:
         env:
           IMAGE_TAG: ${{ needs.plan.outputs.tag }}
           GIT_REF: ${{ needs.plan.outputs.sha }}
-          DEMO_PATH: ${{ vars.DEMO_PATH }}
+          EXPECTED_PROJECT: ${{ steps.project.outputs.name }}
+          EXPECTED_DEMO_PROJECT: ${{ steps.project.outputs.demo }}
         run: |
           # GHCR namespaces are lowercase; github.repository keeps the owner's casing.
           IMAGE_REGISTRY="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          [[ "$EXPECTED_PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { echo "invalid project: $EXPECTED_PROJECT" >&2; exit 1; }
+          if [ -n "$DEMO_PATH" ] && ! [[ "$EXPECTED_DEMO_PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+            echo "invalid demo project: $EXPECTED_DEMO_PROJECT" >&2
+            exit 1
+          fi
           # Hold one host fence before either checkout. The demo updates first so a failed demo
           # leaves production on its prior healthy release, and both scripts inherit FD 8.
           ssh target "set -euo pipefail
@@ -581,6 +698,13 @@ jobs:
               exit 1
             fi
             cd '$DEPLOY_PATH'
+            # Again under the lock, now that a new .env may have been shipped: one that renamed the
+            # project would start an empty stack beside the real one's volumes.
+            project=\$( (docker compose config 2>/dev/null || true) | sed -n 's/^name: //p' | head -n 1)
+            [ \"\$project\" = '$EXPECTED_PROJECT' ] || {
+              echo \"$DEPLOY_PATH now runs Compose project '\${project:-none}', not '$EXPECTED_PROJECT' (does its .env set another COMPOSE_PROJECT_NAME?); nothing was checked out or restarted\" >&2
+              exit 1
+            }
             for path in infra/scripts/operation-lock.sh infra/scripts/deployment-recovery.py infra/scripts/deployment-recovery.sh infra/scripts/recover-deployment.sh; do
               git cat-file -e '$GIT_REF':\$path
             done
@@ -588,6 +712,13 @@ jobs:
             if [ -n '$DEMO_PATH' ]; then
               git show '$GIT_REF:infra/demo/update.sh' | grep -F 'deployment-recovery.sh' >/dev/null
               git show '$GIT_REF:infra/demo/reset.sh' | grep -F 'deployment-recovery.sh' >/dev/null
+              # Under the lock, before the checkout moves anything there: update.sh checks the same,
+              # but only once it runs, from the tree this checkout has already replaced.
+              demo=\$(cd '$DEMO_PATH' && (docker compose config 2>/dev/null || true) | sed -n 's/^name: //p' | head -n 1)
+              [ \"\$demo\" = '$EXPECTED_DEMO_PROJECT' ] || {
+                echo \"$DEMO_PATH runs Compose project '\${demo:-none}', not '$EXPECTED_DEMO_PROJECT'; nothing was checked out or restarted\" >&2
+                exit 1
+              }
               git -C '$DEMO_PATH' checkout --quiet --detach '$GIT_REF'
               (cd '$DEMO_PATH' && IMAGE_REGISTRY='$IMAGE_REGISTRY' IMAGE_TAG='$IMAGE_TAG' GIT_REF='' bash infra/demo/update.sh)
             fi
@@ -595,3 +726,21 @@ jobs:
             source infra/scripts/operation-lock.sh
             acquire_operation_lock
             IMAGE_REGISTRY='$IMAGE_REGISTRY' IMAGE_TAG='$IMAGE_TAG' GIT_REF='' bash infra/scripts/deploy.sh"
+      - name: Smoke-test the public URLs
+        if: vars.SMOKE_TEST != 'off'
+        env:
+          API_URL: ${{ vars.API_URL }}
+          WEB_URL: ${{ vars.WEB_URL }}
+        run: |
+          # From outside the box, through DNS, Caddy and TLS, which deploy.sh's readiness check inside
+          # the API container cannot see. A failure here leaves the release in place: it says the
+          # public path is broken, not that the release is.
+          set -euo pipefail
+          if [ -z "$API_URL" ] || [ -z "$WEB_URL" ]; then
+            echo "::error title=Nothing to smoke-test::Set the repository variables API_URL and WEB_URL, or SMOKE_TEST=off."
+            exit 1
+          fi
+          curl -fsS --retry 10 --retry-delay 3 --retry-all-errors --max-time 10 "${API_URL%/}/readyz"
+          echo
+          curl -fsSL --retry 10 --retry-delay 3 --retry-all-errors --max-time 15 -o /dev/null \
+            -w 'web %{http_code} %{url_effective}\n' "$WEB_URL"

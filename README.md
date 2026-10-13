@@ -68,7 +68,8 @@ decision.
   webhooks.
 - **`site`**: marketing. Landing, features, changelog, blog, legal, contact form, sitemap, RSS,
   OG images.
-- **`docs`**: Starlight docs with a live Scalar API reference.
+- **`docs`**: Starlight: your product's docs and a live Scalar API reference (the kit's manual via
+  `bun run dev:manual`).
 - **`native`**: Tauri 2 shells for desktop and mobile with no IPC layer. Bearer auth, CSP from your
   env, external links open in the system browser, installer workflow for Windows/macOS/Linux.
 

@@ -15,8 +15,10 @@
 	import { DEMO_MODE, IMPERSONATION_AVAILABLE, returnUrl } from '#lib/api.js';
 	import { authClient } from '#lib/auth.js';
 	import CommandPalette from '#lib/components/CommandPalette.svelte';
+	import DemoBanner from '#lib/components/DemoBanner.svelte';
 	import ThemeToggle from '#lib/components/ThemeToggle.svelte';
 	import { m } from '#lib/paraglide/messages.js';
+	import { productNavLinks } from '#lib/product.js';
 	import { pwa } from '#lib/pwa.svelte.js';
 	import { tokenStore } from '#lib/token-store.js';
 	import { afterNavigate, goto, refreshAll } from '$app/navigation';
@@ -72,6 +74,7 @@
 
 	const links = [
 		{ href: '/app', label: m.common_home(), icon: LayoutGridIcon },
+		...productNavLinks.map((link) => ({ href: link.href, label: link.label(), icon: link.icon })),
 		{ href: '/app/settings', label: m.common_settings(), icon: SettingsIcon },
 	];
 
@@ -286,14 +289,7 @@
 
 	<main id="main" tabindex="-1" class="min-w-0 flex-1 p-4 outline-none sm:p-6 md:p-8">
 		{#if DEMO_MODE}
-			<Alert class="mb-6">
-				{m.shell_banner_demo_text()}
-				<a
-					class="font-medium underline"
-					href="https://starterdough.dev/?utm_source=demo&utm_medium=banner"
-					>{m.shell_banner_demo_link()}</a
-				>
-			</Alert>
+			<DemoBanner />
 		{/if}
 		{#if impersonatedBy}
 			<Alert variant="error" class="mb-6 flex items-center justify-between gap-3">

@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from 'bun:test';
-import { chmod, mkdir, mkdtemp, rm, symlink } from 'node:fs/promises';
+import { afterEach, describe, expect, it, setDefaultTimeout } from 'bun:test';
+import { chmod, copyFile, mkdir, mkdtemp, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -12,6 +12,12 @@ const scaledApiId = '8'.repeat(64);
 const oldImageId = `sha256:${'b'.repeat(64)}`;
 const candidateImageId = `sha256:${'c'.repeat(64)}`;
 const roots: string[] = [];
+
+// Each case runs the real helpers in bash and Python against docker and flock shims, dozens of
+// processes per case, and a loaded machine runs them many times slower than an idle one. The
+// budget is set here so that `bun test <this file>` gets it too: a file-level default also wins
+// over the root `test` script's `--timeout`. No case sets a tighter one of its own.
+setDefaultTimeout(60_000);
 
 afterEach(async () => {
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -46,7 +52,7 @@ scaled_api_id = '${scaledApiId}'
 old_image_id = '${oldImageId}'
 candidate_image_id = '${candidateImageId}'
 project = os.environ.get('PROJECT', 'starterdough')
-primary = 'demo-api' if project == 'starterdough-demo' else 'api'
+primary = 'demo-api' if os.environ.get('KIND') == 'demo' else 'api'
 args = sys.argv[1:]
 with open(log, 'a', encoding='utf-8') as handle:
     handle.write(' '.join(args) + '\\n')
@@ -76,8 +82,8 @@ elif args[:4] == ['image', 'inspect', '--format', '{{.Id}}']:
     print(os.environ.get('CANDIDATE_IMAGE_ID', candidate_image_id))
 elif args[:4] == ['compose', 'ps', '--status', 'running']:
     if os.environ.get('INVENTORY_FAILURE') == '1': raise SystemExit(1)
-    if os.environ.get('NO_WRITERS') != '1' and running(old_id):
-        print(old_id)
+    if os.environ.get('NO_WRITERS') != '1':
+        if running(old_id): print(old_id)
         print('backup-id')
         print('foreign-id')
 elif args[:3] == ['compose', 'ps', '--quiet']:
@@ -196,8 +202,10 @@ async function invoke(
 	};
 }
 
+// A spawned helper writes the barrier file once it holds the lock, which under load can take
+// seconds. The wait stays under the test's budget, so a hang still names the file it waited for.
 async function waitForFile(path: string) {
-	const deadline = Date.now() + 5_000;
+	const deadline = Date.now() + 30_000;
 	while (!(await Bun.file(path).exists())) {
 		if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${path}`);
 		await Bun.sleep(10);
@@ -216,14 +224,155 @@ async function run(fixtureValue: Fixture, command: string[], extra: Record<strin
 async function begin(
 	fixtureValue: Fixture,
 	extra: Record<string, string> = {},
-	project = 'starterdough',
+	kind = 'stack',
 	services = ['api'],
 ) {
-	const result = await run(fixtureValue, ['begin', project, ...services], extra);
+	const result = await run(fixtureValue, ['begin', kind, ...services], extra);
 	if (result.code !== 0) throw new Error(result.stderr);
 }
 
+async function journal(value: Fixture) {
+	return JSON.parse(await Bun.file(join(value.state, 'deployment-interrupted')).text());
+}
+
 describe('deployment interruption journal', () => {
+	it('records whatever project Compose resolves, so a renamed stack deploys and recovers', async () => {
+		const value = await fixture();
+		const extra = { PROJECT: 'lumen' };
+		await begin(value, extra);
+		expect(await journal(value)).toMatchObject({ version: 2, kind: 'stack', project: 'lumen' });
+		expect((await run(value, ['stop'], extra)).code).toBe(0);
+		expect((await run(value, ['forward'], extra)).code).toBe(0);
+		expect(await run(value, ['recover'], extra)).toMatchObject({
+			code: 0,
+			stdout: 'deployment_recovery_complete\n',
+		});
+		expect(await Bun.file(value.log).text()).toContain(`inspect ${candidateId}`);
+	});
+
+	it('refuses a candidate that runs under another project than the journal names', async () => {
+		const value = await fixture();
+		await begin(value, { PROJECT: 'lumen' });
+		expect((await run(value, ['stop'], { PROJECT: 'lumen' })).code).toBe(0);
+		expect((await run(value, ['forward'], { PROJECT: 'lumen' })).code).toBe(0);
+		// Same configuration hash, but the containers Compose finds now carry another project label.
+		const path = join(value.state, 'deployment-interrupted');
+		await Bun.write(path, `${JSON.stringify({ ...(await journal(value)), project: 'other' })}\n`);
+		const recovered = await run(value, ['recover'], { PROJECT: 'lumen' });
+		expect(recovered.code).toBe(1);
+		expect(recovered.stderr).toContain('candidate service image does not match resolved target');
+		expect(await phase(value)).toBe('forward-only');
+	});
+
+	it('refuses an unknown kind and a project name Compose would not accept', async () => {
+		const value = await fixture();
+		expect((await run(value, ['begin', 'starterdough', 'api'])).code).toBe(1);
+		expect((await run(value, ['begin', 'demo', 'api'])).code).toBe(1);
+		expect((await run(value, ['begin', 'stack', 'api'], { PROJECT: 'Lumen' })).code).toBe(1);
+		expect(await Bun.file(join(value.state, 'deployment-interrupted')).exists()).toBe(false);
+	});
+
+	it('still reads and recovers a version 1 journal, which names the default projects', async () => {
+		for (const [project, kind, service] of [
+			['starterdough', 'stack', 'api'],
+			['starterdough-demo', 'demo', 'demo-api'],
+		] as const) {
+			const value = await fixture();
+			const extra = { PROJECT: project, KIND: kind };
+			await begin(value, extra, kind, [service]);
+			const path = join(value.state, 'deployment-interrupted');
+			const { kind: _, ...legacy } = await journal(value);
+			await Bun.write(path, `${JSON.stringify({ ...legacy, version: 1 })}\n`);
+			expect((await run(value, ['stop'], extra)).code, project).toBe(0);
+			expect((await run(value, ['forward'], extra)).code, project).toBe(0);
+			// Saved again by `forward`, and still a version 1 journal.
+			expect(await journal(value), project).toMatchObject({ version: 1, phase: 'forward-only' });
+			expect(Object.keys(await journal(value)), project).not.toContain('kind');
+			expect(await run(value, ['recover'], extra), project).toMatchObject({
+				code: 0,
+				stdout: 'deployment_recovery_complete\n',
+			});
+		}
+		// Version 1 knew no other project, so a renamed one there is not a journal this code wrote.
+		const value = await fixture();
+		await begin(value, { PROJECT: 'lumen' });
+		const path = join(value.state, 'deployment-interrupted');
+		const { kind: _, ...renamed } = await journal(value);
+		await Bun.write(path, `${JSON.stringify({ ...renamed, version: 1 })}\n`);
+		const before = await Bun.file(value.log).text();
+		expect((await run(value, ['recover'], { PROJECT: 'lumen' })).code).toBe(1);
+		expect(await Bun.file(value.log).text()).toBe(before);
+	});
+
+	it('abandons only a forward-only journal, only in its checkout, only with its revision', async () => {
+		const value = await fixture();
+		await begin(value);
+		const refusal = await run(value, ['abandon', revision.slice(0, 7)]);
+		expect(refusal.code).toBe(1);
+		expect(refusal.stderr).toContain('use recover');
+		expect((await run(value, ['stop'])).code).toBe(0);
+		expect((await run(value, ['forward'])).code).toBe(0);
+		const before = await Bun.file(value.log).text();
+		for (const confirmation of ['f'.repeat(7), revision.slice(0, 6), '', revision.slice(1, 8)]) {
+			expect((await run(value, ['abandon', confirmation])).code, confirmation).toBe(1);
+		}
+		expect((await run(value, ['abandon'])).code).toBe(1);
+		const otherCheckout = join(value.root, 'other-checkout');
+		await mkdir(otherCheckout);
+		const elsewhere = await invoke(value, ['abandon', revision.slice(0, 7)], {}, otherCheckout);
+		expect(await elsewhere.code).toBe(1);
+		expect(await phase(value)).toBe('forward-only');
+
+		expect(await run(value, ['abandon', revision.slice(0, 7)])).toMatchObject({
+			code: 0,
+			stdout: 'deployment_recovery_abandoned\n',
+		});
+		expect(await Bun.file(join(value.state, 'deployment-interrupted')).exists()).toBe(false);
+		// It starts and stops nothing, and asks Docker nothing.
+		expect((await Bun.file(value.log).text()).slice(before.length)).toBe('');
+	});
+
+	it('reaches abandon through recover-deployment.sh, which needs the revision', async () => {
+		const value = await fixture();
+		await mkdir(join(value.root, 'infra/scripts'), { recursive: true });
+		for (const name of ['recover-deployment.sh', 'operation-lock.sh', 'deployment-recovery.sh']) {
+			await copyFile(resolve(import.meta.dir, name), join(value.root, 'infra/scripts', name));
+		}
+		await copyFile(helper, join(value.root, 'infra/scripts/deployment-recovery.py'));
+		await begin(value);
+		expect((await run(value, ['stop'])).code).toBe(0);
+		expect((await run(value, ['forward'])).code).toBe(0);
+		const script = async (...args: string[]) => {
+			const child = Bun.spawn(
+				['bash', join(value.root, 'infra/scripts/recover-deployment.sh'), ...args],
+				{
+					cwd: value.root,
+					env: {
+						...process.env,
+						PATH: `${value.bin}:${process.env.PATH ?? ''}`,
+						STARTERDOUGH_STATE_DIR: value.state,
+						DOCKER_LOG: value.log,
+						RUNNING_PATH: value.running,
+					},
+					stdout: 'pipe',
+					stderr: 'pipe',
+				},
+			);
+			const [code, stdout] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+			return { code, stdout };
+		};
+		expect((await script('abandon')).code).toBe(1);
+		expect(await phase(value)).toBe('forward-only');
+		expect(await script('abandon', revision)).toMatchObject({
+			code: 0,
+			stdout: 'deployment_recovery_abandoned\n',
+		});
+		expect(await script('status')).toMatchObject({
+			code: 0,
+			stdout: 'deployment_recovery_pending=false\n',
+		});
+	});
+
 	it('recovers an interruption immediately after journaling and before writer stop', async () => {
 		const value = await fixture();
 		await begin(value);
@@ -358,7 +507,7 @@ describe('deployment interruption journal', () => {
 		const recovered = await invoke(value, ['recover'], {}, otherCheckout);
 		expect(await recovered.code).toBe(1);
 		expect(await phase(value)).toBe('forward-only');
-	}, 20_000);
+	});
 
 	it('serializes recovery and blocks normal operations while a journal exists', async () => {
 		const value = await fixture();
@@ -422,8 +571,8 @@ while not os.path.exists(barrier + '.release'): time.sleep(0.01)
 
 	it('records and stops only the demo API writer', async () => {
 		const value = await fixture();
-		const extra = { PROJECT: 'starterdough-demo' };
-		await begin(value, extra, 'starterdough-demo', ['demo-api']);
+		const extra = { PROJECT: 'starterdough-demo', KIND: 'demo' };
+		await begin(value, extra, 'demo', ['demo-api']);
 		expect((await run(value, ['stop'], extra)).code).toBe(0);
 		const mutations = (await Bun.file(value.log).text())
 			.split('\n')
@@ -433,7 +582,7 @@ while not os.path.exists(barrier + '.release'): time.sleep(0.01)
 
 	it('refuses inventory failures without writer mutation', async () => {
 		const value = await fixture();
-		const result = await run(value, ['begin', 'starterdough', 'api'], { INVENTORY_FAILURE: '1' });
+		const result = await run(value, ['begin', 'stack', 'api'], { INVENTORY_FAILURE: '1' });
 		expect(result.code).toBe(1);
 		const mutations = (await Bun.file(value.log).text())
 			.split('\n')

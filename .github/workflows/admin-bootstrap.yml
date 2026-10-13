@@ -1,0 +1,108 @@
+# The first platform administrator, without a shell on the server: runs `bun run admin:create`
+# inside the running API container (infra/scripts/ops.sh, `admin`).
+#
+# The password comes from the environment secret ADMIN_BOOTSTRAP_PASSWORD (Settings → Environments
+# → production), at least 12 characters, and reaches the script on its standard input: never a
+# command line and never the container's environment. Delete the secret once you have signed in and
+# changed the password. `promote` makes an existing account an administrator and reads no password;
+# an address without an account then fails rather than getting one.
+#
+# It uses Deploy's variables and secret (deploy.yml's header lists them), runs only while
+# DEPLOY_ENABLED is `true`, and runs in the `production` environment. Before it changes anything, the
+# checkout must run this product's Compose project, and it waits up to 10 minutes for the host
+# operation lock deploys hold.
+#
+# Anyone who can run workflows here can promote any existing account, since that needs no secret.
+# Such a person can already deploy code, but when the repository has collaborators, add required
+# reviewers to the `production` environment. In a public repository the address you enter appears
+# in this run's public log.
+name: Admin bootstrap
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Which checkout: production (DEPLOY_PATH) or the public demo (DEMO_PATH).'
+        type: choice
+        options: [production, demo]
+        default: production
+      email:
+        description: 'Email address of the administrator.'
+        required: true
+      name:
+        description: 'Display name: letters, digits, spaces and . _ + : @ - only. Empty for the part of the address before the @.'
+        required: false
+        default: ''
+      promote:
+        description: 'The account already exists: make it an administrator and leave its password as it is.'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Not Deploy's group: GitHub cancels a run waiting in the same group, so this could cancel a queued
+# release. The host lock keeps the two apart instead.
+concurrency:
+  group: admin-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  admin:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    # Everything a `run:` needs comes through env, never `${{ }}` inside the script.
+    env:
+      DEPLOY_ENABLED: ${{ vars.DEPLOY_ENABLED }}
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER || 'deploy' }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+      DEMO_PATH: ${{ vars.DEMO_PATH }}
+    steps:
+      # The scripts and the compose files that name the expected project; ops.sh runs from here, not
+      # from the server's checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: |
+            .github/scripts
+            infra
+      - uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
+        if: vars.DEPLOY_VIA_TAILSCALE == 'true'
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+      - name: SSH to the server, host key pinned
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: bash .github/scripts/ssh-target.sh
+      - name: Create or promote the administrator
+        env:
+          TARGET: ${{ inputs.target }}
+          EMAIL: ${{ inputs.email }}
+          NAME: ${{ inputs.name }}
+          PROMOTE: ${{ inputs.promote && 'yes' || 'no' }}
+          COMPOSE_PROJECT: ${{ vars.COMPOSE_PROJECT_NAME }}
+          OPS_SECRET: ${{ secrets.ADMIN_BOOTSTRAP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [[ "$EMAIL" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*@[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || { echo "::error title=No email address::'$EMAIL' is not an email address."; exit 1; }
+          [[ "$NAME" =~ ^([A-Za-z0-9][A-Za-z0-9@._+:\ -]*)?$ ]] || { echo "::error title=Unusable name::Use letters, digits, spaces and . _ + : @ - in the name, or leave it empty and change it in the app."; exit 1; }
+          if [ "$PROMOTE" = yes ]; then
+            OPS_SECRET=
+          elif [ "${#OPS_SECRET}" -lt 12 ]; then
+            echo "::error title=No usable password::Set the environment secret ADMIN_BOOTSTRAP_PASSWORD (Settings → Environments → production) to at least 12 characters, or tick promote for an existing account."
+            exit 1
+          fi
+          case "$TARGET" in
+            production) export OPS_CHECKOUT="$DEPLOY_PATH" OPS_COMPOSE_FILE=infra/compose.yml ;;
+            demo)
+              [ -n "$DEMO_PATH" ] || { echo "::error title=No demo::Set the repository variable DEMO_PATH to reach the demo."; exit 1; }
+              # COMPOSE_PROJECT_NAME renames production's project only.
+              export OPS_CHECKOUT="$DEMO_PATH" OPS_COMPOSE_FILE=infra/demo/compose.yml COMPOSE_PROJECT=
+              ;;
+            *) exit 1 ;;
+          esac
+          OPS_SECRET="$OPS_SECRET" bash .github/scripts/run-ops.sh admin "$EMAIL" "$NAME" "$PROMOTE"

@@ -22,6 +22,7 @@ const { goto, stopImpersonating, signOut, clearToken } = vi.hoisted(() => ({
 vi.mock('$app/navigation', () => ({ goto, refreshAll: vi.fn(), afterNavigate: vi.fn() }));
 
 vi.mock('#lib/api.js', () => ({
+	DEMO_CTA_URL: null,
 	DEMO_MODE: false,
 	IMPERSONATION_AVAILABLE: false,
 	returnUrl: (path: string) => `https://app.example.com${path}`,

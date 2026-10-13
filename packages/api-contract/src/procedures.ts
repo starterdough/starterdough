@@ -2,16 +2,17 @@ import { oc } from '@orpc/contract';
 
 /**
  * The builders and text rules every contract file shares. `index.ts` builds the kit's procedures
- * from them, and a feature can do the same in a file of its own next to it: import from here,
- * export an object of procedures and spread it into `contract` in `index.ts`. The feature's
- * procedures then stay out of the file every kit release changes.
+ * from them, and `product.ts` builds yours: import from here, never from `./index`, which imports
+ * `product.ts` and would be a cycle. Your procedures then stay out of the file every kit release
+ * changes.
  */
 
 // ── Base builders ──────────────────────────────────────────────────────────────
 
 export const publicProcedure = oc;
+const procedureBase = oc;
 
-export const protectedProcedure = oc.errors({
+export const protectedProcedure = procedureBase.errors({
 	UNAUTHORIZED: { message: 'You must be signed in.' },
 	FORBIDDEN: { message: 'You do not have access to this resource.' },
 });

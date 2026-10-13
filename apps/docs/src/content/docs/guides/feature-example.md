@@ -8,6 +8,11 @@ the app consumes: **feature flags**. It already crosses the contract, API, admin
 browser regression and the generated free edition. Start from these files instead of creating a
 parallel example domain.
 
+Feature flags are the kit's own, so every file below is a kit file. A feature of yours follows the
+same layers in the product files instead, which kit releases never change: its tables in
+`schema/product.ts`, its procedures in `api-contract/src/product.ts`, its handlers in
+`rpc/product.ts`. [Where your code goes](/guides/product-files/) lists them all.
+
 
 ## The path
 

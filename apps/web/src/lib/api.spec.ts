@@ -28,6 +28,7 @@ async function build({
 	vi.doMock('./pwa.svelte', () => ({ isTauri: tauri }));
 	vi.doMock('$app/env/public', () => ({
 		PUBLIC_API_URL: undefined,
+		PUBLIC_DEMO_CTA_URL: undefined,
 		PUBLIC_DEMO_MODE: undefined,
 		PUBLIC_WEB_URL: webUrl,
 	}));

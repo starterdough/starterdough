@@ -1,3 +1,4 @@
+import { errorReportingEnabled, flushErrorReporting, reportError } from './error-reporting';
 import { log } from './log';
 
 /**
@@ -18,6 +19,9 @@ interface ProcessHandlers {
 
 type Global = typeof globalThis & { [HANDLERS]?: ProcessHandlers };
 
+/** How long a fatal error waits for its report to reach Sentry before the process exits. */
+const FATAL_REPORT_FLUSH_MS = 2_000;
+
 /**
  * A rejection or exception nobody handled leaves the process in a state we cannot reason about (a
  * half-written response, a job neither completed nor failed), so it is logged and the process exits
@@ -25,7 +29,10 @@ type Global = typeof globalThis & { [HANDLERS]?: ProcessHandlers };
  */
 function fatal(message: string, error: unknown): void {
 	log.error(message, { error });
-	process.exit(1);
+	if (!errorReportingEnabled()) process.exit(1);
+	// Sentry sends in the background: wait for the report, as Sentry's own handler would, then exit.
+	reportError(error, { fatal: message });
+	void flushErrorReporting(FATAL_REPORT_FLUSH_MS).finally(() => process.exit(1));
 }
 
 /** Signals (graceful `shutdown`) and the two fatal-error events, de-duplicated across reloads. */
@@ -71,7 +78,7 @@ export interface ShutdownSteps {
 	drain(): Promise<void>;
 	/** What to log (and do) when `drain` did not finish inside `afterMs`. */
 	onDrainTimeout(afterMs: number): void | Promise<void>;
-	/** Flush telemetry, bounded by `TELEMETRY_FLUSH_CAP_MS`. */
+	/** Flush spans and error reports, bounded by `TELEMETRY_FLUSH_CAP_MS`. */
 	flushTelemetry(capMs: number): Promise<void>;
 	/** Close the database pool with a `timeout` in seconds. */
 	closeDatabase(timeoutSeconds: number): Promise<void>;

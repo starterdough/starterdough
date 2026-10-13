@@ -57,7 +57,7 @@ x-api-env: &api-env
 services:
   postgres:
     # The image production uses (Postgres 17).
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:0.8.7-pg17
     restart: unless-stopped
     logging: *logging
     environment:
@@ -144,6 +144,8 @@ services:
       API_URL: http://demo-api:3000
       # The banner and noindex. Read at run time; pinned for the same reason as in x-api-env.
       PUBLIC_DEMO_MODE: 'true'
+      # The banner's link: this demo's own marketing site unless .env names another.
+      PUBLIC_DEMO_CTA_URL: ${PUBLIC_DEMO_CTA_URL:-https://${DOMAIN:?set DOMAIN in .env}/}
     networks: [default, proxy]
     depends_on:
       demo-api:
@@ -177,6 +179,8 @@ services:
         DOCS_URL: ${DOCS_URL:-https://${DOMAIN:?set DOMAIN in .env}/docs}
         PUBLIC_APP_URL: ${WEB_URL:-https://app.${DOMAIN:?set DOMAIN in .env}}
         PUBLIC_API_URL: ${API_URL:-https://app.${DOMAIN:?set DOMAIN in .env}}
+        # `1` publishes legal pages that still hold the templates' placeholders (BUILD_DEMO_STATIC=1).
+        ALLOW_LEGAL_PLACEHOLDERS: ${ALLOW_LEGAL_PLACEHOLDERS:-}
     image: ${IMAGE_REGISTRY:-starterdough}/demo-static:${IMAGE_TAG:-local}
     restart: unless-stopped
     logging: *logging

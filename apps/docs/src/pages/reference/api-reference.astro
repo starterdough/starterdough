@@ -1,4 +1,5 @@
 ---
+import { getCollection } from 'astro:content';
 import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
 
 // Scalar renders the API's OpenAPI document client-side. The API origin comes from env at build
@@ -8,6 +9,11 @@ const apiUrl: string = import.meta.env.PUBLIC_API_URL ?? 'http://localhost:3000'
 const specUrl = `${apiUrl.replace(/\/+$/, '')}/api/v1/openapi.json`;
 // Internal links carry the site's base (`/docs` in the single-origin Caddy mode, otherwise empty).
 const base = import.meta.env.BASE_URL.replace(/\/+$/, '');
+// The prose companion page, when this content set has one (the kit's manual does; your product's
+// docs do once you add `reference/api.md`). Never link to a page this build does not have.
+const prose = (await getCollection('docs', ({ id }) => id === 'reference/api')).length
+	? `${base}/reference/api/`
+	: undefined;
 
 /**
  * Scalar is third-party code executing on this origin, so it is pinned to an exact version and
@@ -35,15 +41,23 @@ const SCALAR_INTEGRITY = 'sha384-PhSzhE9ihf7z/cKeRSKAeP+oJMMzotyFv0EjvNYgL798a2O
 	<!-- `{' '}` before wrapped inline links: Astro's HTML compressor drops line-break whitespace. -->
 	<p>
 		Every procedure of the API as plain REST under <code>/api/v1</code>, rendered by Scalar from the
-		OpenAPI 3.1 document at <a href={specUrl}><code>{specUrl}</code></a>. The typed RPC client and
-		how the two transports relate are explained in{' '}
-		<a href={`${base}/reference/api/`}>API: RPC and REST</a>.
+		OpenAPI 3.1 document at <a href={specUrl}><code>{specUrl}</code></a>.
+		{prose && (
+			<>
+				The typed RPC client and how the two transports relate are explained in{' '}
+				<a href={prose}>API: RPC and REST</a>.
+			</>
+		)}
 	</p>
 	<noscript>
 		<p>
-			The interactive reference needs JavaScript. Without it, the same surface is a static page at{' '}
-			<a href={`${base}/reference/api/`}>API: RPC and REST</a>, and the raw document is at{' '}
-			<a href={specUrl}>{specUrl}</a>.
+			The interactive reference needs JavaScript.
+			{prose && (
+				<>
+					Without it, the same surface is a static page at <a href={prose}>API: RPC and REST</a>.
+				</>
+			)}{' '}
+			The raw document is at <a href={specUrl}>{specUrl}</a>.
 		</p>
 	</noscript>
 	<div class="api-reference not-content">
@@ -56,9 +70,11 @@ const SCALAR_INTEGRITY = 'sha384-PhSzhE9ihf7z/cKeRSKAeP+oJMMzotyFv0EjvNYgL798a2O
 				it:
 			</p>
 			<ul>
-				<li>
-					Every procedure, as a page: <a href={`${base}/reference/api/`}>API: RPC and REST</a>
-				</li>
+				{prose && (
+					<li>
+						Every procedure, as a page: <a href={prose}>API: RPC and REST</a>
+					</li>
+				)}
 				<li>
 					The raw OpenAPI 3.1 document: <a href={specUrl}><code>{specUrl}</code></a>
 				</li>

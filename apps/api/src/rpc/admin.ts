@@ -11,7 +11,7 @@ import {
 import { email } from '@repo/email';
 import { env } from '@repo/env';
 import { adminOnly } from './base';
-import { startedAt, version } from './version';
+import { kitVersion, startedAt, version } from './version';
 
 /**
  * Platform-admin procedures (`/admin/*` in the REST surface). User management (search, ban,
@@ -54,6 +54,7 @@ export const adminRouter = {
 			]);
 			return {
 				version,
+				kitVersion,
 				environment: env.NODE_ENV,
 				runtime: `bun ${Bun.version}`,
 				startedAt: startedAt.toISOString(),

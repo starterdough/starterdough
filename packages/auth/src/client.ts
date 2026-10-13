@@ -24,6 +24,12 @@ export interface AuthClientOptions {
 	 * enabled: navigate to the page that collects the TOTP / backup code.
 	 */
 	onTwoFactorRedirect?: () => void | Promise<void>;
+	/**
+	 * The UI's current locale, sent as `Accept-Language` on every auth call so that the emails those
+	 * calls send (verification, password reset, email change, account deletion) are written in the
+	 * language the person is using the app in. Left out, the browser's own `Accept-Language` decides.
+	 */
+	locale?: () => string;
 }
 
 /**
@@ -35,6 +41,7 @@ export function createAuthClient({
 	tokenStore,
 	fetch,
 	onTwoFactorRedirect,
+	locale,
 }: AuthClientOptions) {
 	return createBetterAuthClient({
 		baseURL,
@@ -43,6 +50,11 @@ export function createAuthClient({
 		fetchOptions: {
 			credentials: 'include',
 			customFetchImpl: fetch,
+			// A CORS-safelisted header for a value like `de`, so the API's preflight rules are unchanged.
+			onRequest: (context) => {
+				const current = locale?.();
+				if (current) context.headers.set('accept-language', current);
+			},
 			auth: tokenStore
 				? {
 						type: 'Bearer',

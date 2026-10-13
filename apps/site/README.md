@@ -15,6 +15,7 @@ cp .env.example .env   # `bun run setup` at the repository root writes this and 
 bun run dev            # http://localhost:4321
 bun run check          # astro check (types in .astro files, content frontmatter)
 bun run build          # dist/, plus the OG images, sitemap, RSS and robots.txt
+bun run test           # bun test src: the legal guard (src/lib/legal.test.ts)
 bun run preview
 ```
 
@@ -27,6 +28,7 @@ bun run preview
 | `PUBLIC_API_URL` | `http://localhost:3000` | The contact form POSTs to `${PUBLIC_API_URL}/api/v1/contact` |
 | `PUBLIC_REPO_URL` | empty | Optional. Your public repository: the footer link, "View on GitHub" on the landing page, the changelog's commit history, the contact page's "found a bug". Unset, none of them render |
 | `PUBLIC_CONTACT_EMAIL` | empty | Optional. Shown to visitors who cannot use the contact form (no JavaScript). The form itself delivers to the API's `CONTACT_EMAIL`, which never reaches the browser |
+| `ALLOW_LEGAL_PLACEHOLDERS` | empty | `1` lets a production build for a real origin publish legal pages that still hold the templates' placeholders, for a staging deployment. Empty, that build fails and names each unfinished file (see "Content collections") |
 | `PUBLIC_APP_URL` | `http://localhost:5173` | "Sign in" and "Open the app" |
 
 All of them are read at build time. Rebuild after changing them. The version shown on `/changelog`
@@ -36,14 +38,14 @@ comes from the root `package.json`.
 
 | Route | Source | Notes |
 | --- | --- | --- |
-| `/` | `src/pages/index.astro` | hero, "one HTTP API, every surface", feature grid, "how a request flows", quickstart CTA |
+| `/` | `src/pages/index.astro` | hero, "one HTTP API, every surface", feature grid, "how a request flows", docs CTA |
 | `/features` | `src/pages/features.astro` | long-form version of the grid from `src/lib/features.ts`, stack table |
-| `/changelog` | `src/pages/changelog.astro` | every entry of the `changelog` collection, newest first |
-| `/blog`, `/blog/[slug]` | `src/pages/blog/` | the `blog` collection |
-| `/legal/[slug]` | `src/pages/legal/[slug].astro` | the `legal` collection (`/legal/privacy`, `/legal/terms`) |
+| `/changelog` | `src/pages/changelog.astro` | the published entries of the `changelog` collection, newest first (drafts in dev only) |
+| `/blog`, `/blog/[slug]` | `src/pages/blog/` | the published posts of the `blog` collection (drafts in dev only) |
+| `/legal/[slug]` | `src/pages/legal/[slug].astro` | the `legal` collection (`/legal/privacy`, `/legal/terms`); refuses unfinished templates in a production build for a real origin |
 | `/contact` | `src/pages/contact.astro` | contact / waitlist form (see below) |
 | `/404` | `src/pages/404.astro` | served by Cloudflare (`not_found_handling: 404-page`) and Caddy |
-| `/rss.xml` | `src/pages/rss.xml.ts` | `@astrojs/rss` over the blog collection |
+| `/rss.xml` | `src/pages/rss.xml.ts` | `@astrojs/rss` over the published posts |
 | `/robots.txt` | `src/pages/robots.txt.ts` | generated so the `Sitemap:` line follows `SITE_URL` |
 | `/sitemap-index.xml` | `@astrojs/sitemap` | HTML pages only (OG images, RSS and robots are filtered out) |
 | `/og/*.png` | `src/pages/og/[...route].ts` | Open Graph images, see below |
@@ -58,13 +60,23 @@ fallbacks and the metadata of every static page live in `src/lib/site.ts`.
 
 | Collection | Folder | Frontmatter |
 | --- | --- | --- |
-| `blog` | `src/content/blog/*.md` | `title`, `description`, `pubDate`, `author`, `tags[]` |
-| `changelog` | `src/content/changelog/*.md` | `title`, `version`, `date` |
+| `blog` | `src/content/blog/*.md` | `title`, `description`, `pubDate`, `author`, `tags[]`, `draft` |
+| `changelog` | `src/content/changelog/*.md` | `title`, `version`, `date`, `draft` |
 | `legal` | `src/content/legal/*.md` | `title`, `description`, `updated` |
 
-The file name is the slug (`one-http-api.md` → `/blog/one-http-api/`). The legal texts are
-templates with `[Company name]`, `[Contact email]` and similar placeholders and a visible "review
-with counsel" note. Replace them before publishing. The privacy template's sub-processor table lists
+The file name is the slug (`welcome.md` → `/blog/welcome/`). An entry with `draft: true` shows in
+`astro dev` and is left out of every build, the RSS feed, the OG images and the sitemap
+(`src/lib/content.ts`). The blog and the changelog are yours: the kit ships one draft sample in
+each, never adds or changes a file there in an upgrade, and keeps its own release notes in the
+repository's `CHANGELOG.md`. Write your own entries and delete the samples; until one is
+published, each page shows an empty state ("No posts yet.", "No releases yet.").
+
+The legal texts are templates with `**[Company name]**`, `**[Contact email]**` and similar bold
+placeholders and a visible "review with counsel" note. Replace them before publishing: a production
+build whose `SITE_URL` is a real origin (anything but localhost, loopback and the reserved
+`.invalid`, `.test`, `.localhost` and `.example` names) fails while a legal page still holds either,
+and names each file and what is left (`src/lib/legal.ts`). `ALLOW_LEGAL_PLACEHOLDERS=1` publishes
+them anyway, for a staging deployment. The privacy template's sub-processor table lists
 every third party the kit can send data to, including the ones that only apply when configured;
 delete the rows that
 do not apply to your deployment. The rendered "Updated" date comes from each file's `updated`

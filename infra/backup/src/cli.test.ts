@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'bun:test';
-import { parseArgs, USAGE } from './cli';
+import { type Command, commandConfig, parseArgs, USAGE } from './cli';
+import {
+	configFromEnv,
+	RELEASE_COMMAND_TIMEOUT_MS,
+	RELEASE_LOCK_WAIT_MS,
+	SCHEDULED_LOCK_WAIT_MS,
+} from './config';
 
 describe('parseArgs', () => {
 	it('recognises the plain commands', () => {
@@ -96,9 +102,48 @@ describe('parseArgs', () => {
 		expect(parseArgs(['list', 'now'])).toEqual({ ok: false, error: 'unexpected argument "now"' });
 	});
 
+	it('parses --release on backup, list and restore, and nowhere else', () => {
+		expect(parseArgs(['backup', '--release'])).toEqual({
+			ok: true,
+			command: { command: 'backup', release: true },
+		});
+		expect(parseArgs(['list', '--release', '--max-age', '1h'])).toEqual({
+			ok: true,
+			command: { command: 'list', maxAgeMs: 3_600_000, release: true },
+		});
+		expect(parseArgs(['restore', 'latest', '--release', '--drill'])).toMatchObject({
+			ok: true,
+			command: { command: 'restore', name: 'latest', drill: true, release: true },
+		});
+		expect(parseArgs(['backup', '--release', '--release'])).toEqual({
+			ok: false,
+			error: 'backup takes no arguments but --release',
+		});
+		expect(parseArgs(['schedule', '--release'])).toEqual({
+			ok: false,
+			error: 'schedule takes no arguments',
+		});
+		expect(parseArgs(['list', '--release=yes'])).toEqual({
+			ok: false,
+			error: '--release takes no value',
+		});
+		expect(parseArgs(['restore', 'latest', '--release=1'])).toEqual({
+			ok: false,
+			error: '--release takes no value',
+		});
+		// A release set holds the database only, so there is no uploads archive to install.
+		expect(parseArgs(['restore', 'latest', '--release', '--yes', '--uploads'])).toEqual({
+			ok: false,
+			error: '--uploads cannot be used with --release: release sets hold the database only',
+		});
+	});
+
 	it('rejects unknown commands, unknown options and missing values', () => {
 		expect(parseArgs(['dump'])).toEqual({ ok: false, error: 'unknown command "dump"' });
-		expect(parseArgs(['backup', 'now'])).toEqual({ ok: false, error: 'backup takes no arguments' });
+		expect(parseArgs(['backup', 'now'])).toEqual({
+			ok: false,
+			error: 'backup takes no arguments but --release',
+		});
 		expect(parseArgs(['restore'])).toEqual({
 			ok: false,
 			error: 'restore needs a backup name or "latest"',
@@ -141,11 +186,45 @@ describe('parseArgs', () => {
 			'--terminate-connections',
 			'--max-age',
 			'--no-max-age',
+			'--release',
 			'BACKUP_ON_START',
 			'BACKUP_CATCHUP',
 			'BACKUP_MAX_AGE',
 		]) {
 			expect(USAGE).toContain(word);
 		}
+	});
+});
+
+describe('commandConfig', () => {
+	const config = configFromEnv({
+		DATABASE_URL: 'postgres://starterdough@postgres:5432/starterdough',
+		BACKUP_DIR: '/backups',
+	});
+	const parsed = (argv: string[]): Command => {
+		const result = parseArgs(argv);
+		if (!result.ok) throw new Error(result.error);
+		return result.command;
+	};
+
+	it('lets the scheduler wait for the lock and a manual backup refuse at once', () => {
+		expect(commandConfig(parsed(['schedule']), config).lockWaitMs).toBe(SCHEDULED_LOCK_WAIT_MS);
+		expect(commandConfig(parsed(['backup']), config)).toBe(config);
+		expect(commandConfig(parsed(['restore', 'latest', '--yes']), config)).toBe(config);
+	});
+
+	it('points every --release command at the release sets', () => {
+		const backup = commandConfig(parsed(['backup', '--release']), config);
+		expect(backup).toMatchObject({
+			backupDir: '/backups/release',
+			s3: null,
+			lockWaitMs: RELEASE_LOCK_WAIT_MS,
+			commandTimeoutMs: RELEASE_COMMAND_TIMEOUT_MS,
+		});
+		expect(commandConfig(parsed(['list', '--release']), config).backupDir).toBe('/backups/release');
+		// A deploy waits on the dump, so it has a ceiling of its own. Nobody waits on a restore.
+		const restore = commandConfig(parsed(['restore', 'latest', '--release', '--yes']), config);
+		expect(restore.backupDir).toBe('/backups/release');
+		expect(restore.commandTimeoutMs).toBe(config.commandTimeoutMs);
 	});
 });

@@ -1,15 +1,15 @@
-import { getCollection } from 'astro:content';
 import rss from '@astrojs/rss';
 import type { APIContext } from 'astro';
+import { published } from '../lib/content';
 import { requireSite, SITE_NAME, SITE_TAGLINE } from '../lib/site';
 
 export async function GET(context: APIContext) {
-	const posts = (await getCollection('blog')).sort(
+	const posts = (await published('blog')).sort(
 		(a, b) => b.data.pubDate.getTime() - a.data.pubDate.getTime(),
 	);
 	return rss({
 		title: `${SITE_NAME} blog`,
-		description: `${SITE_TAGLINE} Notes on how ${SITE_NAME} is built and why.`,
+		description: `${SITE_TAGLINE} News and articles from ${SITE_NAME}.`,
 		site: requireSite(context.site),
 		items: posts.map((post) => ({
 			title: post.data.title,

@@ -6,7 +6,8 @@
 # from apk, and the image keeps the `bun` user (uid 1000, the same as the api image, so files the API
 # writes to a volume they share stay readable). Building on postgres:17-alpine instead would drag in
 # its data VOLUME and an entrypoint that starts a server when the first argument looks like a flag.
-FROM oven/bun:1.4-alpine
+# The Bun in package.json's `packageManager`: infra/scripts/image-pins.test.ts fails when they differ.
+FROM oven/bun:1.4.2-alpine
 # Unpinned on purpose (Alpine only keeps one build of each package), but the major must match the
 # `postgres` service image: bump `postgresql17-client` here in the same commit as a Postgres upgrade.
 RUN apk add --no-cache postgresql17-client tar gzip

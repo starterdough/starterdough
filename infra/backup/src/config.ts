@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+
 export type Env = Record<string, string | undefined>;
 
 export interface S3Target {
@@ -43,6 +45,11 @@ export interface BackupConfig {
 	commandTimeoutMs: number;
 	/** `lock_timeout` for a restore session, so a live restore cannot block forever on a writer. */
 	lockTimeoutMs: number;
+	/**
+	 * How long `runBackup` waits for another backup or restore to release the tool's lock before it
+	 * refuses. Absent means 0, refuse at once: only `schedule` and `--release` set it.
+	 */
+	lockWaitMs?: number;
 	/** Non-fatal observations for the caller to log at startup. */
 	warnings: string[];
 }
@@ -52,8 +59,11 @@ export type UploadsSource =
 	| { kind: 'directory'; dir: string }
 	/** S3 storage driver: the objects already live in a bucket, nothing to archive. */
 	| { kind: 's3' }
-	/** Local driver but no `STORAGE_DIR` given, so there is nothing to point tar at. */
-	| { kind: 'none' };
+	/**
+	 * Nothing to point tar at: the local driver with no `STORAGE_DIR` given, or a release set, which
+	 * holds the database only. `reason` is the log's explanation when it is not the former.
+	 */
+	| { kind: 'none'; reason?: string };
 
 export class ConfigError extends Error {
 	override name = 'ConfigError';
@@ -70,6 +80,26 @@ export const DEFAULTS = {
 	commandTimeoutMinutes: 360,
 	lockTimeout: '60s',
 } as const;
+
+/** Subdirectory of `BACKUP_DIR` that holds the restore points `infra/scripts/deploy.sh` takes. */
+export const RELEASE_DIR = 'release';
+
+/** A release backup that takes longer than this fails the deploy instead of holding it for hours. */
+export const RELEASE_COMMAND_TIMEOUT_MS = 30 * 60_000;
+
+/**
+ * How long a release backup waits for the tool's lock. A deploy that lands during the nightly run
+ * waits for it to finish instead of failing; one that runs longer still fails the deploy, which a
+ * re-run fixes.
+ */
+export const RELEASE_LOCK_WAIT_MS = 10 * 60_000;
+
+/**
+ * How long a scheduled backup waits for the tool's lock: as long as a release backup may run, so a
+ * nightly run that meets a deploy's restore point waits for it instead of failing and pinging
+ * `/fail`, which pages someone.
+ */
+export const SCHEDULED_LOCK_WAIT_MS = 30 * 60_000;
 
 const DURATION_UNITS: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
 
@@ -151,6 +181,33 @@ export function configFromEnv(env: Env): BackupConfig {
 		commandTimeoutMs: commandTimeoutMinutes * 60_000,
 		lockTimeoutMs: duration(env, 'BACKUP_LOCK_TIMEOUT', DEFAULTS.lockTimeout),
 		warnings,
+	};
+}
+
+/**
+ * The configuration `--release` runs with: the restore point a deploy takes right before it can
+ * migrate. Database only (migrations do not touch uploaded files), on this machine only (it guards
+ * against a bad migration, not a lost box; the nightly sets cover that, and a bucket outage must
+ * not block a deploy), never a heartbeat (it would tell the nightly monitor that a backup ran), and
+ * a retention of zero days, which leaves exactly the retention floor: the newest complete release
+ * sets besides the one just written.
+ */
+export function releaseConfig(config: BackupConfig): BackupConfig {
+	return {
+		...config,
+		backupDir: join(config.backupDir, RELEASE_DIR),
+		retentionDays: 0,
+		s3: null,
+		heartbeatUrl: undefined,
+		uploads: { kind: 'none', reason: 'a release set holds the database only' },
+		runOnStart: false,
+		catchUp: false,
+		maxAgeMs: Number.POSITIVE_INFINITY,
+		commandTimeoutMs: Math.min(config.commandTimeoutMs, RELEASE_COMMAND_TIMEOUT_MS),
+		lockWaitMs: RELEASE_LOCK_WAIT_MS,
+		// The nightly warnings (no bucket, no heartbeat, documents left in S3) describe choices a
+		// release set makes on purpose, so they would only be noise in every deploy log.
+		warnings: [],
 	};
 }
 

@@ -1,6 +1,7 @@
 # Build from the repository root so workspace packages are available:
 #   docker build -f apps/api/Dockerfile -t starterdough-api .
-FROM oven/bun:1.4 AS base
+# The Bun in package.json's `packageManager`: infra/scripts/image-pins.test.ts fails when they differ.
+FROM oven/bun:1.4.2 AS base
 WORKDIR /repo
 
 # Install with the full workspace graph (cached until a manifest changes)

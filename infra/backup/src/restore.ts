@@ -35,7 +35,14 @@ import {
 	stampFor,
 	uploadsName,
 } from './names';
-import { CommandError, run, runOrThrow, SHORT_COMMAND_TIMEOUT_MS, writeViaPartFile } from './proc';
+import {
+	CommandError,
+	run,
+	runOrThrow,
+	runPipeline,
+	SHORT_COMMAND_TIMEOUT_MS,
+	writeViaPartFile,
+} from './proc';
 import { BackupBucket } from './s3';
 
 export { quoteIdentifier };
@@ -60,10 +67,16 @@ export interface RestoreOptions {
 	forceDatabaseMismatch?: boolean | undefined;
 	/** Restore a set whose manifest is missing or unreadable, so nothing can be verified. */
 	noManifestCheck?: boolean | undefined;
-	/** Restore statement by statement instead of in one transaction; see {@link pgRestoreArgs}. */
+	/** Restore statement by statement, not in one transaction; see {@link liveRestoreCommands}. */
 	noSingleTransaction?: boolean | undefined;
 	/** Disconnect other sessions instead of refusing the restore. */
 	terminateConnections?: boolean | undefined;
+	/**
+	 * A drill warns about tables the live database has and the restored one does not, instead of
+	 * failing on them. For release sets: each is taken right before a deploy's migrations, so once
+	 * that deploy is live the database has every table they created and the set has none of them.
+	 */
+	newerLiveTablesExpected?: boolean | undefined;
 }
 
 export type RestoreMode = 'drill' | 'live';
@@ -72,7 +85,10 @@ export interface DrillReport {
 	database: string;
 	tableCount: number;
 	tables: string[];
-	/** Tables the live database has and the restored one does not; any at all fails the drill. */
+	/**
+	 * Tables the live database has and the restored one does not; any at all fails the drill,
+	 * unless {@link RestoreOptions.newerLiveTablesExpected} is set.
+	 */
 	missingTables: string[];
 	/** Tables in the live database, or null when it could not be inspected (no live database yet). */
 	liveTableCount: number | null;
@@ -113,41 +129,140 @@ export interface RestoreDeps {
 }
 
 /**
- * A drill restores into an empty database, so nothing needs dropping; a live restore replaces
- * objects in place. The URL must not carry a password: see {@link detachPassword}.
+ * A drill restores into an empty database, so nothing needs dropping. The URL must not carry a
+ * password: see {@link detachPassword}.
  *
- * `--exit-on-error` on both: pg_restore's default is to log an error and carry on, which is how a
- * restore whose data entries nearly all failed still ends with exit 0 and a complete-looking table
- * list. A drill that proves nothing is worse than no drill.
- *
- * `--single-transaction` on a live restore, so a failure half-way leaves the database as it was
- * rather than a set of dropped objects and no replacements. The trade-off is real and is why
- * `--no-single-transaction` exists: together with `--clean` it needs the target to have no other
- * open connections at all, and one transaction dropping and recreating every object in a large
- * schema can exhaust `max_locks_per_transaction` (`ERROR: out of shared memory`). Raise
- * `max_locks_per_transaction` first; fall back to the flag only knowing a failure can leave the
- * database half-restored, which is what the pre-restore dump is for.
+ * `--exit-on-error`: pg_restore's default is to log an error and carry on, which is how a restore
+ * whose data entries nearly all failed still ends with exit 0 and a complete-looking table list. A
+ * drill that proves nothing is worse than no drill. A live restore runs the same pg_restore, see
+ * {@link liveRestoreCommands}.
  */
-export function pgRestoreArgs(
-	targetUrl: string,
-	dumpPath: string,
-	mode: RestoreMode,
-	options: { noSingleTransaction?: boolean | undefined } = {},
-): string[] {
-	const args = ['pg_restore', '--no-owner', '--no-privileges', '--exit-on-error'];
-	if (mode === 'live') {
-		args.push('--clean', '--if-exists');
-		if (!options.noSingleTransaction) args.push('--single-transaction');
-	}
-	args.push('--dbname', targetUrl, dumpPath);
-	return args;
+export function pgRestoreArgs(targetUrl: string, dumpPath: string): string[] {
+	return [
+		'pg_restore',
+		'--no-owner',
+		'--no-privileges',
+		'--exit-on-error',
+		'--dbname',
+		targetUrl,
+		dumpPath,
+	];
 }
 
 /**
- * `lock_timeout` for the restore session only. Without it `pg_restore --clean` waits forever for
- * the `ACCESS EXCLUSIVE` lock a single leftover reader holds, and a restore that hangs at 03:00
- * looks exactly like one that is working. It goes in the environment rather than the URL so it
- * cannot leak into the pre-restore `pg_dump`, which must not be interrupted by a lock wait.
+ * Clears the target before the set is restored into it, so that the database ends up holding what
+ * the set holds and nothing else: every table, view, sequence, function and type of its own, in
+ * `public` and in a schema an extension lives in, and every other schema whole. An extension's own
+ * objects stay, and so do database-wide ones (roles, the database's settings).
+ *
+ * `pg_restore --clean` alone drops only the objects the set holds, without `CASCADE`. Anything the
+ * live database gained since the set was taken survives that, and once it depends on something the
+ * set holds, it stops the drop: a table a migration added with a foreign key into one the set
+ * holds makes the `DROP CONSTRAINT` of that one's primary key fail, and the restore with it.
+ * Rolling back across a migration is what a release set is for, so that has to work; and a table,
+ * type or function the migration created that did survive would make the same migration fail when
+ * it runs again.
+ *
+ * Names are collected before anything is dropped, and every drop says `IF EXISTS`, because an
+ * earlier `CASCADE` may already have taken an object further down the list.
+ */
+export const CLEAR_DATABASE_SQL = `DO $restore$
+DECLARE
+	statements text[];
+	statement text;
+BEGIN
+	WITH own AS (
+		SELECT n.oid, n.nspname,
+			n.nspname = 'public' OR EXISTS (SELECT FROM pg_extension e WHERE e.extnamespace = n.oid) AS kept
+		FROM pg_namespace n
+		WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+	),
+	member AS (SELECT classid, objid FROM pg_depend WHERE deptype = 'e')
+	SELECT coalesce(array_agg(sql ORDER BY step), '{}') INTO statements FROM (
+		SELECT 1 AS step, format('DROP SCHEMA IF EXISTS %I CASCADE', own.nspname) AS sql
+		FROM own WHERE NOT own.kept
+		UNION ALL
+		SELECT 2, format('DROP %s IF EXISTS %I.%I CASCADE',
+			CASE c.relkind WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW' WHEN 'S' THEN 'SEQUENCE'
+				WHEN 'f' THEN 'FOREIGN TABLE' ELSE 'TABLE' END, own.nspname, c.relname)
+		FROM pg_class c JOIN own ON own.oid = c.relnamespace AND own.kept
+		WHERE c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+			AND NOT EXISTS (SELECT FROM member WHERE classid = 'pg_class'::regclass AND objid = c.oid)
+		UNION ALL
+		SELECT 3, format('DROP %s IF EXISTS %s CASCADE',
+			CASE p.prokind WHEN 'p' THEN 'PROCEDURE' WHEN 'a' THEN 'AGGREGATE' ELSE 'FUNCTION' END,
+			p.oid::regprocedure)
+		FROM pg_proc p JOIN own ON own.oid = p.pronamespace AND own.kept
+		WHERE NOT EXISTS (SELECT FROM member WHERE classid = 'pg_proc'::regclass AND objid = p.oid)
+		UNION ALL
+		SELECT 4, format('DROP %s IF EXISTS %s CASCADE',
+			CASE t.typtype WHEN 'd' THEN 'DOMAIN' ELSE 'TYPE' END, t.oid::regtype)
+		FROM pg_type t JOIN own ON own.oid = t.typnamespace AND own.kept
+		WHERE (t.typtype IN ('e', 'd', 'r')
+				OR (t.typtype = 'c' AND (SELECT relkind FROM pg_class WHERE oid = t.typrelid) = 'c'))
+			AND NOT EXISTS (SELECT FROM member WHERE classid = 'pg_type'::regclass AND objid = t.oid)
+	) AS drops;
+	FOREACH statement IN ARRAY statements LOOP
+		EXECUTE statement;
+	END LOOP;
+END
+$restore$`;
+
+/**
+ * A live restore is `pg_restore … --file - | psql`: pg_restore writes the set as SQL, and psql
+ * runs {@link CLEAR_DATABASE_SQL} first and then that SQL, on one connection. The URL must not
+ * carry a password: see {@link detachPassword}.
+ *
+ * One transaction, so a failure half-way leaves the database as it was rather than a set of dropped
+ * objects and no replacements. psql opens it, so the clearing is inside it; pg_restore's own
+ * `--single-transaction` then only adds a `BEGIN` (which psql's open transaction ignores, with a
+ * warning `client_min_messages` hides) and, as the very last statement it writes, the `COMMIT`. A
+ * pg_restore that fails before the end never writes that `COMMIT`: psql reaches the end of its
+ * input inside the transaction and disconnects, which rolls it back. `ON_ERROR_STOP` makes psql
+ * stop at the first statement that fails, before anything is committed.
+ *
+ * The trade-off is real and is why `--no-single-transaction` exists: it needs the target to have no
+ * other open connections at all, and one transaction dropping and recreating every object in a
+ * large schema can exhaust `max_locks_per_transaction` (`ERROR: out of shared memory`). Raise
+ * `max_locks_per_transaction` first; fall back to the flag only knowing a failure can leave the
+ * database half-restored, which is what the pre-restore dump is for.
+ *
+ * `--clean --if-exists` still drops what the set holds that the clearing does not reach (an
+ * extension it recreates, say). `--output /dev/null` discards what the set's own queries print.
+ */
+export function liveRestoreCommands(
+	targetUrl: string,
+	dumpPath: string,
+	options: { noSingleTransaction?: boolean | undefined } = {},
+): { pgRestore: string[]; psql: string[] } {
+	const single = !options.noSingleTransaction;
+	const pgRestore = ['pg_restore', '--no-owner', '--no-privileges', '--exit-on-error'];
+	pgRestore.push('--clean', '--if-exists');
+	if (single) pgRestore.push('--single-transaction');
+	pgRestore.push('--file', '-', dumpPath);
+	const psql = ['psql', '--no-psqlrc', '--quiet', '--set', 'ON_ERROR_STOP=1'];
+	psql.push('--output', '/dev/null', '--dbname', targetUrl);
+	if (single) psql.push('--command', 'BEGIN');
+	psql.push('--command', 'SET client_min_messages = error');
+	psql.push('--command', CLEAR_DATABASE_SQL, '--file', '-');
+	return { pgRestore, psql };
+}
+
+/** The pipeline as one line for the log, with the clearing statement named rather than printed. */
+export function describeLiveRestore(commands: { pgRestore: string[]; psql: string[] }): string {
+	const psql = commands.psql.map((arg) =>
+		arg === CLEAR_DATABASE_SQL ? '<clear the database: CLEAR_DATABASE_SQL>' : arg,
+	);
+	return `${commands.pgRestore.join(' ')} | ${psql.join(' ')}`;
+}
+
+/**
+ * `lock_timeout` for the restore session only. Without it the restore waits forever for the
+ * `ACCESS EXCLUSIVE` lock a single leftover reader holds, and a restore that hangs at 03:00 looks
+ * exactly like one that is working. The set's own SQL starts with `SET lock_timeout = 0`, so what
+ * this bounds is {@link CLEAR_DATABASE_SQL}, which runs first and, in one transaction, takes every
+ * lock the rest needs. It goes in the environment rather than the URL so it cannot leak into the
+ * pre-restore `pg_dump`, which must not be interrupted by a lock wait.
  */
 export function restoreSessionEnv(lockTimeoutMs: number): Record<string, string> {
 	return { PGOPTIONS: `-c lock_timeout=${lockTimeoutMs}` };
@@ -201,7 +316,15 @@ export async function restore(
 	if (manifest) await verifyArtifact(config, manifest, dumpName(located.stamp), log);
 
 	if (options.drill) {
-		const report = await runDrill(config, located, baseDatabase, manifest, bucket, log);
+		const report = await runDrill(
+			config,
+			located,
+			baseDatabase,
+			manifest,
+			options.newerLiveTablesExpected === true,
+			bucket,
+			log,
+		);
 		return {
 			...base,
 			ok: report.errors.length === 0 && report.dropped,
@@ -226,13 +349,13 @@ export async function restore(
 
 	const targetUrl = withDatabase(config.databaseUrl, baseDatabase);
 	const connection = detachPassword(targetUrl);
-	const args = pgRestoreArgs(connection.url, located.path, 'live', options);
+	const commands = liveRestoreCommands(connection.url, located.path, options);
 	if (!options.yes) {
 		log.warn('refusing to restore into a live database without --yes', {
 			database: baseDatabase,
 			target: redactUrl(targetUrl),
 			dump: located.path,
-			wouldRun: args.join(' '),
+			wouldRun: describeLiveRestore(commands),
 			manifest: manifest
 				? `verified: from ${manifest.database}, ${manifest.tableEntries ?? '?'} table data entries`
 				: 'none (checks skipped by --no-manifest-check)',
@@ -259,7 +382,7 @@ export async function restore(
 	let stagedUploads: StagedUploads | null = null;
 	let databaseRestored = false;
 	try {
-		// Everything that can still say no happens before `--clean --if-exists` drops a single object:
+		// Everything that can still say no happens before the restore drops a single object:
 		// an archive pg_restore cannot open, writers still connected, uploads that cannot fully extract,
 		// and the copy of what is about to be replaced.
 		await requireReadableArchive(located.path, log);
@@ -277,11 +400,14 @@ export async function restore(
 			singleTransaction: !options.noSingleTransaction,
 			lockTimeoutMs: config.lockTimeoutMs,
 		});
-		const result = await runOrThrow(args, {
+		const { producer, consumer } = await runPipeline(commands.pgRestore, commands.psql, {
 			env: { ...connection.env, ...restoreSessionEnv(config.lockTimeoutMs) },
 			timeoutMs: config.commandTimeoutMs,
 		});
-		log.info('pg_restore finished', { database: baseDatabase, durationMs: result.durationMs });
+		// psql's failure is the cause when there is one: pg_restore then only lost its reader.
+		if (consumer.code !== 0) throw new CommandError('psql', consumer);
+		if (producer.code !== 0) throw new CommandError('pg_restore', producer);
+		log.info('pg_restore finished', { database: baseDatabase, durationMs: consumer.durationMs });
 		databaseRestored = true;
 
 		if (stagedUploads) await installStagedUploads(stagedUploads, safetyDump, log);
@@ -598,6 +724,7 @@ async function runDrill(
 	dump: LocatedDump,
 	baseDatabase: string,
 	manifest: Manifest | null,
+	newerLiveTablesExpected: boolean,
 	bucket: BackupBucket | null,
 	log: Logger,
 ): Promise<DrillReport> {
@@ -633,7 +760,7 @@ async function runDrill(
 		const drillUrl = withDatabase(config.databaseUrl, database);
 		const connection = detachPassword(drillUrl);
 		log.info('drill: pg_restore started', { database, dump: dump.path });
-		const restored = await run(pgRestoreArgs(connection.url, dump.path, 'drill'), {
+		const restored = await run(pgRestoreArgs(connection.url, dump.path), {
 			env: { ...connection.env, ...restoreSessionEnv(config.lockTimeoutMs) },
 			timeoutMs: config.commandTimeoutMs,
 		});
@@ -642,7 +769,14 @@ async function runDrill(
 			report.errors.push(new CommandError('pg_restore', restored).message);
 		} else {
 			log.info('drill: pg_restore finished', { database, durationMs: restored.durationMs });
-			await verify(drillUrl, withDatabase(config.databaseUrl, baseDatabase), manifest, report, log);
+			await verify(
+				drillUrl,
+				withDatabase(config.databaseUrl, baseDatabase),
+				manifest,
+				newerLiveTablesExpected,
+				report,
+				log,
+			);
 		}
 
 		const uploads = await locateUploads(config, dump.stamp, bucket, log, dump.source).catch(
@@ -717,9 +851,10 @@ async function rejectLinks(directory: string): Promise<void> {
 }
 
 /**
- * Extracts the archive into a private throwaway directory and proves that every ready document in
- * the restored database has the bytes that row names. Final-generation objects also carry the
- * committed promotion marker, which prevents a same-sized but different generation from passing.
+ * Extracts the archive into a private throwaway directory and proves that every ready document and
+ * stored file in the restored database has the bytes that row names. Final-generation objects also
+ * carry the committed promotion marker, which prevents a same-sized but different generation from
+ * passing. A file the server generated has no manifest to compare against, so only its size is.
  */
 async function verifyDrillUploads(
 	config: BackupConfig,
@@ -750,8 +885,9 @@ const FALLBACK_ROW_COUNT_TABLES = ['user', 'organization'];
  * restores without an error but is missing a table (a `pg_dump --exclude-table` left in place, a
  * table created after the dump's schema was captured) is not a backup anyone can restore from.
  * Extra tables in the drill are expected (the live database has moved on since old sets), so only
- * missing ones fail. The live list is a nice-to-have: on a fresh box there is nothing to compare
- * against yet, and the drill still proves the dump restores.
+ * missing ones fail, and for a release set not even those: it is the schema from before the latest
+ * migrations. The live list is a nice-to-have: on a fresh box there is nothing to compare against
+ * yet, and the drill still proves the dump restores.
  *
  * The row counts are the part that proves *data* came back rather than an empty schema. They are
  * compared with the manifest's, which is why they are worth taking at backup time.
@@ -760,6 +896,7 @@ async function verify(
 	drillUrl: string,
 	liveUrl: string,
 	manifest: Manifest | null,
+	newerLiveTablesExpected: boolean,
 	report: DrillReport,
 	log: Logger,
 ): Promise<void> {
@@ -820,11 +957,18 @@ async function verify(
 	if (live === null) return;
 	report.liveTableCount = live.length;
 	report.missingTables = live.filter((table) => !report.tables.includes(table));
-	if (report.missingTables.length > 0) {
-		report.errors.push(
-			`tables in the live database are missing from the restored one: ${report.missingTables.join(', ')}`,
-		);
+	if (report.missingTables.length === 0) return;
+	if (newerLiveTablesExpected) {
+		// A release set predates the migrations of the deploy that took it, so the tables they created
+		// are missing by design. A table the set itself should hold is the manifest check's job above.
+		log.warn('drill: the live database has tables this set predates', {
+			tables: report.missingTables,
+		});
+		return;
 	}
+	report.errors.push(
+		`tables in the live database are missing from the restored one: ${report.missingTables.join(', ')}`,
+	);
 }
 
 async function liveTables(liveUrl: string, log: Logger): Promise<string[] | null> {
@@ -845,9 +989,9 @@ async function liveTables(liveUrl: string, log: Logger): Promise<string[] | null
 
 /**
  * Refuses the restore while anything else is connected to the target. An API that keeps writing
- * during `--clean --if-exists` ends up with rows referencing objects that were dropped underneath
- * it, and `--single-transaction` together with `--clean` cannot take its locks at all while another
- * session holds them, so the restore hangs until `lock_timeout` and then rolls back an hour of work.
+ * during the restore ends up with rows referencing objects that were dropped underneath it, and
+ * the restore's one transaction cannot take its locks at all while another session holds them, so
+ * the restore hangs until `lock_timeout` and then rolls back an hour of work.
  *
  * `--terminate-connections` disconnects them instead, for the case where the writers are not under
  * the operator's control (a leaked pool, a forgotten psql).

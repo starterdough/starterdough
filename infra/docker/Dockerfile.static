@@ -1,7 +1,8 @@
 # Builds the two Astro sites and serves them from Caddy, which also acts as the reverse proxy.
 # Build from the repository root:
 #   docker build -f infra/docker/Dockerfile.static -t starterdough-caddy .
-FROM oven/bun:1.4 AS build
+# The Bun in package.json's `packageManager`: infra/scripts/image-pins.test.ts fails when they differ.
+FROM oven/bun:1.4.2 AS build
 WORKDIR /repo
 COPY package.json bun.lock bunfig.toml ./
 COPY apps/site/package.json apps/site/
@@ -18,10 +19,15 @@ ARG DOCS_URL=
 # The browser-facing origins the pages link to / call.
 ARG PUBLIC_APP_URL=https://app.example.com
 ARG PUBLIC_API_URL=https://api.example.com
-RUN cd apps/site && SITE_URL=$SITE_URL PUBLIC_APP_URL=$PUBLIC_APP_URL PUBLIC_DOCS_URL=$DOCS_URL PUBLIC_API_URL=$PUBLIC_API_URL bun run build
-RUN cd apps/docs && SITE_URL=$DOCS_URL PUBLIC_API_URL=$PUBLIC_API_URL bun run build
+# Empty = your product's docs (apps/docs/content-set.mjs); `kit` builds the kit's manual instead,
+# which only the kit's own reference deployment publishes.
+ARG DOCS_CONTENT=
+# `1` publishes the legal templates with their placeholders (a staging build); empty refuses them.
+ARG ALLOW_LEGAL_PLACEHOLDERS=
+RUN cd apps/site && SITE_URL=$SITE_URL PUBLIC_APP_URL=$PUBLIC_APP_URL PUBLIC_DOCS_URL=$DOCS_URL PUBLIC_API_URL=$PUBLIC_API_URL ALLOW_LEGAL_PLACEHOLDERS=$ALLOW_LEGAL_PLACEHOLDERS bun run build
+RUN cd apps/docs && SITE_URL=$DOCS_URL PUBLIC_API_URL=$PUBLIC_API_URL DOCS_CONTENT=$DOCS_CONTENT bun run build
 
-FROM caddy:2-alpine
+FROM caddy:2.11.7-alpine
 COPY --from=build /repo/apps/site/dist /srv/site
 COPY --from=build /repo/apps/docs/dist /srv/docs
 # The Caddyfile is mounted by compose (infra/caddy/*.Caddyfile)

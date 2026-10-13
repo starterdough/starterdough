@@ -4,15 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: 'Inspect the journal, or recover using its recorded phase and release.'
+        description: 'status inspects the journal; recover finishes or undoes the interrupted rollout from its recorded phase; abandon drops a forward-only journal and starts nothing (infra/README.md, "Recover an interrupted deployment", first).'
         type: choice
-        options: [status, recover]
+        options: [status, recover, abandon]
         default: status
       target:
         description: 'The checkout whose deployment was interrupted.'
         type: choice
         options: [production, demo]
         default: production
+      confirm:
+        description: 'abandon only: the first 7 characters of the revision that status printed.'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -26,48 +30,60 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 15
+    env:
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER || 'deploy' }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+      DEMO_PATH: ${{ vars.DEMO_PATH }}
     steps:
-      - uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3.3.0
+      # Only for .github/scripts: the recovery itself runs the server's own copy of its scripts.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+      - uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
         if: vars.DEPLOY_VIA_TAILSCALE == 'true'
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
-      - name: Recover the recorded deployment without changing its checkout
+      - name: SSH to the server, host key pinned
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ vars.DEPLOY_USER || 'deploy' }}
-          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/starterdough' }}
-          DEMO_PATH: ${{ vars.DEMO_PATH }}
+        # --recovery: switching deploys off (DEPLOY_ENABLED) must not lock the owner out of this.
+        run: bash .github/scripts/ssh-target.sh --recovery
+      - name: Recover the recorded deployment without changing its checkout
+        env:
           RECOVERY_ACTION: ${{ inputs.action }}
           RECOVERY_TARGET: ${{ inputs.target }}
+          RECOVERY_CONFIRM: ${{ inputs.confirm }}
         run: |
           set -euo pipefail
-          umask 077
-          case "$RECOVERY_ACTION" in status|recover) ;; *) exit 1 ;; esac
+          case "$RECOVERY_ACTION" in
+            status|recover) RECOVERY_CONFIRM= ;;
+            abandon)
+              [[ "$RECOVERY_CONFIRM" =~ ^[0-9a-f]{7,40}$ ]] || {
+                echo "::error title=No confirmation::abandon needs the first 7 characters of the journal's revision in confirm; run status first."
+                exit 1
+              }
+              ;;
+            *) exit 1 ;;
+          esac
           case "$RECOVERY_TARGET" in
             production) checkout="$DEPLOY_PATH" ;;
             demo) checkout="$DEMO_PATH" ;;
             *) exit 1 ;;
           esac
+          [ -n "$checkout" ] || { echo "::error title=No checkout::Set the repository variable DEPLOY_PATH, or DEMO_PATH for the demo."; exit 1; }
           [[ "$checkout" = /* && "$checkout" != *$'\n'* ]]
-          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
-          [[ "$DEPLOY_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]
-          key="$RUNNER_TEMP/deployment-recovery-key"
-          trap 'rm -f "$key"' EXIT
-          printf '%s\n' "$DEPLOY_SSH_KEY" > "$key"
-          chmod 600 "$key"
           # The server already holds the candidate code and images. Fetching or checking out
-          # another revision here could replace the only safe recovery implementation.
-          printf -v remote 'set -euo pipefail; cd %q; bash infra/scripts/recover-deployment.sh %q' \
-            "$checkout" "$RECOVERY_ACTION"
-          ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=15 \
-            -o ServerAliveInterval=15 -o ServerAliveCountMax=6 -o StrictHostKeyChecking=accept-new \
-            "$DEPLOY_USER@$DEPLOY_HOST" "$remote" </dev/null \
-            | tee "$RUNNER_TEMP/deployment-recovery.log"
-          if [ "$RECOVERY_ACTION" = status ]; then
-            grep -Eq '^deployment_recovery_pending=(true|false)$' "$RUNNER_TEMP/deployment-recovery.log"
-          else
-            grep -Fxq deployment_recovery_complete "$RUNNER_TEMP/deployment-recovery.log"
-          fi
+          # another revision here could replace the only safe recovery implementation. A 1.0.0
+          # checkout's script ignores the second argument, and refuses abandon with its usage line.
+          printf -v remote 'set -euo pipefail; cd %q; bash infra/scripts/recover-deployment.sh %q %q' \
+            "$checkout" "$RECOVERY_ACTION" "$RECOVERY_CONFIRM"
+          ssh target "$remote" </dev/null | tee "$RUNNER_TEMP/deployment-recovery.log"
+          case "$RECOVERY_ACTION" in
+            status) grep -Eq '^deployment_recovery_pending=(true|false)$' "$RUNNER_TEMP/deployment-recovery.log" ;;
+            recover) grep -Fxq deployment_recovery_complete "$RUNNER_TEMP/deployment-recovery.log" ;;
+            abandon) grep -Fxq deployment_recovery_abandoned "$RUNNER_TEMP/deployment-recovery.log" ;;
+          esac

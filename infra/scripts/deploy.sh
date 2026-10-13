@@ -15,6 +15,11 @@
 # *this* invocation, so `docker compose --profile backup up -d` followed by this script would remove
 # the backup scheduler.
 #
+# Before it stops anything it runs the product's pre-deploy hooks and takes a release backup, a
+# database-only restore point for this release's migrations (RELEASE_BACKUP=off skips it). After
+# the new release is ready it keeps the three newest local builds of each image and runs the
+# post-deploy hooks (infra/scripts/hooks/README.md).
+#
 # Run from anywhere; it cds to the repository root. Requires a filled-in .env (infra/README.md).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -103,10 +108,60 @@ else
 	docker compose pull --quiet
 fi
 
+# The product's own hooks: every infra/scripts/hooks/<stage>.d/*.sh, in name order, from the
+# repository root, under this deploy's host lock (FD 8), with stdin closed.
+run_hooks() {
+	local stage="$1" hook revision
+	revision="$(git rev-parse HEAD)"
+	for hook in infra/scripts/hooks/"$stage".d/*.sh; do
+		[ -f "$hook" ] || continue
+		echo "▸ $stage hook ${hook##*/}"
+		IMAGE_TAG="$IMAGE_TAG" DEPLOY_REVISION="$revision" bash "$hook" </dev/null || {
+			echo "$stage hook ${hook##*/} failed" >&2
+			return 1
+		}
+	done
+}
+
+# Nothing has been stopped yet, so a failing hook leaves production on its current release.
+run_hooks pre-deploy
+
+# The restore point for this release's migrations, which are forward-only. It is taken online, last
+# before the writers stop, so it misses only what they write while it runs, and a failure stops the
+# deploy here with production untouched. RELEASE_BACKUP=off, in the environment or in .env, skips it.
+release_backup="${RELEASE_BACKUP:-$(grep -E '^RELEASE_BACKUP=' .env | cut -d= -f2- || true)}"
+case "${release_backup:-on}" in
+on)
+	# Named, because the backup profile may be inactive: `config --services` lists only active
+	# profiles, while a service named on the command line resolves whatever COMPOSE_PROFILES says,
+	# as it does for the pull and the run below.
+	docker compose config --format json backup 2>/dev/null |
+		python3 -c 'import json, sys; sys.exit("backup" not in json.load(sys.stdin)["services"])' 2>/dev/null || {
+		echo "RELEASE_BACKUP is on, but this stack defines no backup service; set RELEASE_BACKUP=off in .env to deploy without a restore point" >&2
+		exit 1
+	}
+	echo "▸ release backup (the database, before any migration)"
+	if [ "${BUILD:-0}" = 1 ]; then
+		docker compose build backup
+	else
+		docker compose pull --quiet backup
+	fi
+	# --no-recreate: a running Postgres keeps its container even when this release changes its
+	# image (the `up` below replaces it once the writers have stopped); a first deploy creates it.
+	docker compose up -d --no-recreate --wait --wait-timeout 180 postgres
+	docker compose run --rm --no-deps -T backup bun src/cli.ts backup --release </dev/null
+	;;
+off) echo "⚠ RELEASE_BACKUP=off: no restore point before this release's migrations" >&2 ;;
+*)
+	echo "RELEASE_BACKUP must be on or off, not '$release_backup'" >&2
+	exit 1
+	;;
+esac
+
 # Capture the old API before stopping it. The forward-only boundary is durable before Compose can
 # run a migration, so recovery never revives code that may no longer match the database schema.
 writers=(api)
-deployment_begin starterdough "${writers[@]}"
+deployment_begin stack "${writers[@]}"
 deployment_stop_recorded
 deployment_mark_forward_only
 
@@ -119,9 +174,22 @@ echo "▸ readiness (database reachable through the API)"
 docker compose exec -T api bun -e \
 	"fetch('http://127.0.0.1:3000/readyz').then(async (r) => { console.log(r.status, await r.text()); process.exit(r.ok ? 0 : 1); })"
 
-# Images from previous deploys stay pullable in the registry; drop the local copies.
-docker image prune -f >/dev/null
-
 docker compose ps
 deployment_complete api
+
+# Keep the three newest local builds of each image, so a rollback to a recent release needs no
+# pull, and drop the rest. `docker image rm` refuses an image a container still uses (the demo's,
+# say), which is the point. The release is live by now, so nothing here may fail the deploy.
+namespace="${IMAGE_REGISTRY:-$(grep -E '^IMAGE_REGISTRY=' .env | cut -d= -f2- || true)}"
+{
+	docker image ls --format '{{.Repository}}\t{{.Tag}}' --filter "reference=${namespace:-starterdough}/*" |
+		awk -F '\t' '$2 != "<none>" && ++seen[$1] > 3 { print $1 ":" $2 }' |
+		while read -r image; do docker image rm "$image" >/dev/null 2>&1 || true; done
+	docker image prune -f >/dev/null
+} || true
+
+run_hooks post-deploy || {
+	echo "deployed $IMAGE_TAG, but a post-deploy hook failed" >&2
+	exit 1
+}
 echo "✓ deployed $IMAGE_TAG"

@@ -149,7 +149,7 @@ if [ "${BUILD_DEMO_STATIC:-0}" = 1 ]; then
 	docker compose build demo-static
 fi
 
-deployment_begin starterdough-demo demo-api
+deployment_begin demo demo-api
 deployment_stop_recorded
 deployment_mark_forward_only
 

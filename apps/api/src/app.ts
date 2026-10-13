@@ -7,6 +7,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
 import { requestId } from 'hono/request-id';
 import { secureHeaders } from 'hono/secure-headers';
+import { reportError } from './error-reporting';
 import { log, rootCauseMessage } from './log';
 import { clientIp, rateLimit } from './middleware/rate-limit';
 import { requestLog } from './middleware/request-log';
@@ -215,6 +216,7 @@ app.notFound((c) => c.json({ error: 'not_found' }, 404));
 app.onError((error, c) => {
 	const requestId = c.get('requestId');
 	log.error('unhandled error', { error, requestId });
+	reportError(error, { requestId, method: c.req.method, path: c.req.path });
 	// The id is on `X-Request-Id` too, but a caller reporting a failure quotes the body.
 	return c.json({ error: 'internal_error', requestId }, 500);
 });

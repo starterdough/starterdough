@@ -62,8 +62,10 @@ truth is being created.
     are never imported by `apps/web` or `apps/site`. The browser-safe surfaces are
     `@repo/auth/client`, `@repo/auth/permissions`, `@repo/api-client` and `@repo/ui`.
 2. **Contract first.** No endpoint without a contract entry; no client without the typed client.
-   A new feature is: contract in `packages/api-contract` → implementation in
-   `apps/api/src/rpc/router.ts` → the UI calls the typed client. REST and OpenAPI follow.
+   A new feature is: contract in `packages/api-contract` → implementation in `apps/api/src/rpc/`
+   → the UI calls the typed client. REST and OpenAPI follow. Yours plug in through the
+   `product.ts` file in each, which kit releases never change
+   ([Where your code goes](/guides/product-files/)).
 3. **No Tauri IPC.** The shells have no commands and no data layer. They use the same HTTP client
    as the browser. Native capabilities are added as Tauri plugins.
 4. **SSR is rendering, not a backend.** `apps/web` has no server-side business logic. `load`
@@ -76,7 +78,7 @@ truth is being created.
 8. **Env is validated once** (`packages/env`). `SKIP_ENV_VALIDATION=1` only for steps that never
    boot the app.
 9. **Generated code is regenerated, not edited** (`packages/db/src/schema/auth.ts`,
-   `packages/db/drizzle/`).
+   `packages/db/drizzle/`, `packages/db/drizzle-product/meta/`).
 10. **One formatter and linter**: Biome. Tabs, single quotes, 100 columns.
 
 ## Repository map

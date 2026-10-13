@@ -70,6 +70,9 @@ describe('hand-added auth constraints', () => {
 		}
 		expect(report).toContain('git diff packages/db/src/schema/auth.ts');
 		expect(report).toContain('bun packages/db/src/schema/auth-constraints.ts');
+		// The auth tables are the kit's: `db:generate` never writes their migration.
+		expect(report).toContain('bun run db:kit-drift');
+		expect(report).not.toContain('bun run db:generate\n');
 	});
 
 	it('tells the reader who removed a plugin to delete its entries instead', () => {

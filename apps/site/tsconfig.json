@@ -7,7 +7,9 @@
 		// for the packages that are bundled.
 		"target": "ESNext",
 		"module": "ESNext",
-		"lib": ["ESNext", "DOM", "DOM.Iterable"]
+		"lib": ["ESNext", "DOM", "DOM.Iterable"],
+		// `bun test` runs src/**/*.test.ts (src/lib/legal.test.ts); the pages never import Bun.
+		"types": ["bun"]
 	},
 	"include": [".astro/types.d.ts", "**/*"],
 	"exclude": ["dist"]

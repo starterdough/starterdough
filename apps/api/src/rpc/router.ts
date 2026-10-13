@@ -3,6 +3,7 @@ import { effectiveFlags } from '@repo/db';
 import { adminRouter } from './admin';
 import { authed, os } from './base';
 import { contactRouter } from './contact';
+import { productRouter } from './product';
 import { version } from './version';
 
 export const router = os.router({
@@ -35,6 +36,9 @@ export const router = os.router({
 			};
 		}),
 	},
+
+	// Last, like `productContract` in the contract it implements.
+	...productRouter,
 });
 
 export type Router = typeof router;

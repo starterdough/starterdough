@@ -150,7 +150,8 @@ Open **http://localhost:5173**. Then:
 3. **See the rest** (optional):
    ```sh
    bun run dev:site    # marketing site at http://localhost:4321
-   bun run dev:docs    # docs at http://localhost:4322
+   bun run dev:docs    # your product's docs at http://localhost:4322
+   bun run dev:manual  # the kit's developer manual on the same port (not deployed)
    ```
 
 
@@ -159,8 +160,8 @@ Open **http://localhost:5173**. Then:
 | App | http://localhost:5173 | Sign up, `/app`, `/admin` |
 | API | http://localhost:3000 | Health: `/api/v1/health` · OpenAPI: `/api/v1/openapi.json` |
 | Site | http://localhost:4321 | Marketing, pricing, blog, contact |
-| Docs | http://localhost:4322 | Your product docs, with a live API reference |
-| Postgres | `localhost:5433` | Docker, `pgvector/pgvector:pg17` (`starterdough`/`starterdough`). A host Postgres on 5432 is left alone |
+| Docs | http://localhost:4322 | Your product docs, with a live API reference (`dev:manual` serves the kit's manual there instead) |
+| Postgres | `localhost:5433` | Docker, `pgvector/pgvector:0.8.7-pg17` (`starterdough`/`starterdough`). A host Postgres on 5432 is left alone |
 
 ✅ **Checkpoint:** you can sign up, sign in and open `/admin` as your admin user.
 Now hand off to your agent (next section) and keep going below in parallel. The
@@ -176,8 +177,8 @@ agent does not have to discover them.
 
 ```text
 Read AGENTS.md first.
-This repo is Starterdough, a Bun SvelteKit + Hono/oRPC SaaS starter. Then read README.md,
-QUICKSTART.md, docs/DECISIONS.md, and apps/web/README.md.
+This repo is [Name], built on the Starterdough kit (a Bun SvelteKit + Hono/oRPC SaaS starter).
+Then read README.md (the kit's), QUICKSTART.md, docs/DECISIONS.md and apps/web/README.md.
 
 My product: [1 to 2 sentences, e.g. "invoicing for freelance designers"].
 Product name: [Name]. Domain: [example.com or "none yet"].
@@ -188,11 +189,25 @@ after each step:
    apps/native/src-tauri/tauri.conf.json is already the product name above, QUICKSTART.md Step 1
    renamed the kit: do not run `bun run rename` again. If not, rename on the kit-renamed branch
    exactly as UPGRADING.md "Rename on a branch the kit can follow" shows, with the product name
-   above (agree the slug, identifier and scope with me first). Then finish the residue checklist
-   at the end of scripts/rename.ts, the one `rename` prints: titles, emails, legal placeholders.
-2. Rebrand: theme tokens (packages/ui/src/theme.css), logo/favicon, OG defaults.
-3. Rewrite apps/site copy (landing, features, blog starter posts, legal) for my product.
-4. Add/modify features: [your feature list].
+   above (agree the slug, identifier and scope with me first). Then work through the residue
+   checklist `bun run rename` prints (the end of scripts/rename.ts), and run `bun run doctor`
+   until it shows no "Product name" warning.
+2. If I gave a domain, set it everywhere item 7 of that checklist lists: the root .env (DOMAIN,
+   SITE_URL and DOCS_URL if they differ, TRUSTED_ORIGINS with the site and docs origins,
+   COOKIE_DOMAIN as a bare .domain, EMAIL_FROM and CONTACT_EMAIL on that domain), apps/site/.env,
+   apps/docs/.env and apps/web/wrangler.jsonc. Tell me the repository variables to set for the
+   Deploy workflow (SITE_URL, DOCS_URL, WEB_URL, API_URL, DEPLOY_HOST).
+3. Rebrand: theme tokens (packages/ui/src/theme.css), logo/favicon, OG defaults.
+4. Replace everything that still describes the kit instead of my product: the apps/site copy
+   (landing, features); the changelog and the blog (one draft sample each: write real entries,
+   delete the samples); the legal pages (fill every **[placeholder]**, remove the template note,
+   and tell me they need a lawyer's review; a production build refuses them until then);
+   README.md; the description in the root package.json and in
+   apps/web/static/manifest.webmanifest; SECURITY.md; .github/ISSUE_TEMPLATE/config.yml.
+   Product documentation goes in apps/docs/src/content/product. Leave apps/docs/src/content/docs
+   alone: it is the kit's manual, which your deploys do not publish.
+5. Add/modify features: [your feature list]. When a change touches the database schema, add a
+   `*.db.test.ts` as AGENTS.md describes and run it before you call the step done.
 
 Hard rules (do not break):
 - Contract first: new endpoint = entry in packages/api-contract → implement in apps/api →
@@ -258,11 +273,13 @@ Write these down and hand them to your agent:
 - [ ] **Name, tagline, domain.** Everything user-visible is renamed from this.
 - [ ] **Branding.** Logo, favicon, colors (light and dark), OG image style.
 - [ ] **Copy.** Landing hero, 6 to 8 feature blurbs, pricing bullets, 2 launch blog posts,
-  changelog voice.
+  changelog voice. The site's changelog and blog start with one draft sample each, which no build
+  publishes; the kit's own release notes are `CHANGELOG.md` and never reach your site.
 - [ ] **Legal.** Privacy policy and terms ship as templates with `[placeholders]` in the site. Have
   them reviewed; they are not legal advice. The privacy template's sub-processor table lists every
   third party the kit can send data to. Delete the rows that do not apply and name the providers
-  you use.
+  you use. A production build refuses them until every **[placeholder]** is filled and the
+  template note is gone.
 - [ ] **Languages.** English and German ship. Each extra language is a `messages/<locale>/*.json`
   translation plus one config line; ask the agent.
 - [ ] **Support.** The `CONTACT_EMAIL` destination, and where users reach you (email, Discord).
@@ -298,7 +315,9 @@ so their origins must be allowed:
   deploy, replace each with that site's public origin: the build refuses an unset value or an
   `example.com` placeholder, and `deploy:cloudflare` also refuses localhost. The other variables
   (`PUBLIC_APP_URL`, `PUBLIC_DOCS_URL`, `PUBLIC_API_URL`, and the optional `PUBLIC_REPO_URL`,
-  `PUBLIC_CONTACT_EMAIL`, `DOCS_REPO_URL`) are in the same two files.
+  `PUBLIC_CONTACT_EMAIL`, `DOCS_REPO_URL`) are in the same two files. For a public origin the
+  site's build also refuses legal pages that still hold the templates' **[placeholders]** (Step 2
+  B); `ALLOW_LEGAL_PLACEHOLDERS=1` in `apps/site/.env` builds them anyway, for a staging copy.
 
 Keep the public app/API targets in those files aligned with your running app. Run
 `bun run doctor -- --build` before `bun run build` (add `--database=external` if applicable).
@@ -345,8 +364,13 @@ bun install
 ADMIN_PASSWORD='Something-Strong-123' bun run admin:create -- --email you@example.com --name 'You'
 ```
 
+Once CI deploys are on (below), you can skip the shell for that last step: put the password in the
+`production` environment secret `ADMIN_BOOTSTRAP_PASSWORD` (Settings → Environments), run Actions →
+Admin bootstrap with your address, and delete the secret after you sign in.
+
 - `CADDY_MODE=subdomains` (public): `DOMAIN`, `docs.`, `app.`, `api.` with automatic HTTPS. Set
-  `COOKIE_DOMAIN=.yourdomain` so the session spans `app.` and `api.`.
+  `COOKIE_DOMAIN=.yourdomain` so the session spans `app.` and `api.`. `docs.` serves your
+  product's docs and the live API reference, not the kit's manual.
 - `CADDY_MODE=single-origin` (tailnet/LAN or Tailscale Funnel; what `EXPOSE=tailscale`
   provisions): one host with path routing. Set `WEB_URL` and `API_URL` to that same origin. Docs
   are at `/docs`.
@@ -371,9 +395,16 @@ ADMIN_PASSWORD='Something-Strong-123' bun run admin:create -- --email you@exampl
   `main`: it builds the images from that commit, pushes them to GHCR, pushes the commit to the
   server and runs `infra/scripts/deploy.sh` there. It needs the four repository variables the
   `caddy` image bakes in (`SITE_URL`, `DOCS_URL`, `WEB_URL`, `API_URL`; the build names any that is
-  missing), `DEPLOY_HOST`, and the secret `DEPLOY_SSH_KEY`. There is no deploy key: the server
-  never fetches from GitHub. The setup, in order, is in `infra/README.md`, "Deploy, update, roll
-  back".
+  missing), `DEPLOY_HOST`, `DEPLOY_PATH` and `DEPLOY_KNOWN_HOSTS` (the checkout and the server's
+  SSH host key, both printed at the end of `provision.sh`), and the secret `DEPLOY_SSH_KEY`. There
+  is no deploy key: the server never fetches from GitHub. Before a deploy stops anything it takes
+  a release backup of the database, so every release's migrations have a restore point. The setup,
+  in order, is in `infra/README.md`, "Deploy, update, roll back"; Server status, Server logs,
+  Server backup and Recover deployment then run the box from Actions, without a shell. The
+  `caddy` image's site build also refuses legal pages that still hold the templates'
+  placeholders. Any real origin counts, a tailnet `*.ts.net` one included. For a trial deploy
+  before they are reviewed, set the repository variable `ALLOW_LEGAL_PLACEHOLDERS=1` (or the root
+  `.env` row for a build on the box), and remove it before launch.
 - To pull those images instead of building on the box
   (`docker login ghcr.io && docker compose pull && docker compose up -d`), point `IMAGE_REGISTRY`
   at **your** fork's namespace (`provision.sh` derives it from `REPO_URL`; `deploy.sh` pins what CI
@@ -387,7 +418,8 @@ ADMIN_PASSWORD='Something-Strong-123' bun run admin:create -- --email you@exampl
   email provider or a real sender domain, and names the variable. The first `docker compose up`
   is the check.
 - [ ] OAuth callbacks registered for the production API origin.
-- [ ] Legal pages reviewed, contact email monitored.
+- [ ] Legal pages filled in and reviewed (the site build refuses unfinished templates), and
+  `ALLOW_LEGAL_PLACEHOLDERS` unset. Contact email monitored.
 - [ ] Backups scheduled, one restore drill (`restore latest --drill`), `list` wired into a cron or a
   health check, and the backup bucket hardened (versioning, a write-only credential, a lifecycle
   rule, server-side encryption).
@@ -395,6 +427,8 @@ ADMIN_PASSWORD='Something-Strong-123' bun run admin:create -- --email you@exampl
   `.env`) watching `/readyz`.
 - [ ] `BACKUP_S3_*` set, or an off-box copy of the `backups` volume.
 - [ ] `REQUIRE_EMAIL_VERIFICATION` left at its default (on in production).
+- [ ] A way into the server that is not CI's deploy key: a hardware-backed key of your own and a
+  tested rescue console (the docs' "Server access and break glass").
 
 ---
 
@@ -406,18 +440,19 @@ ADMIN_PASSWORD='Something-Strong-123' bun run admin:create -- --email you@exampl
 | `bun run doctor` | Read-only local prerequisite and app configuration check; `-- --build` includes site/docs configuration, `-- --database=external` skips Docker for an existing database |
 | `bun run dev:app` | API (:3000) + web app (:5173). The daily driver |
 | `bun run dev` | Everything with a dev script (adds site :4321, docs :4322) |
-| `bun run dev:site` / `dev:docs` | Only the marketing site / docs |
+| `bun run dev:site` / `dev:docs` | Only the marketing site / your product's docs |
+| `bun run dev:manual` | The kit's developer manual on :4322, which no deploy publishes |
 | `bun run dev:desktop` | Tauri desktop shell on the dev server, with HMR (needs Rust; keep `dev:app` or `dev:api` running) |
 | `bun run preview:desktop` / `build:desktop` | The shell as it ships (debug window over the static build) / installers in `apps/native/src-tauri/target/release/bundle` |
 | `bun run db:up` / `db:down` | Start / stop local Postgres |
-| `bun run db:migrate` / `db:studio` | Apply migrations / browse the DB |
+| `bun run db:migrate` / `db:studio` | Apply the kit's migrations, then yours / browse the DB |
 | `bun run admin:create -- --email … [--name …] [--yes]` | Create or promote a platform admin (password from `ADMIN_PASSWORD` or a prompt) |
 | `bun run licenses` | Dependency-licence audit. `--strict` is CI's gate; `THIRD-PARTY.md` is the write-up |
 | `bun run rename` | Rename the kit to your product (dry run without `--write`) |
 | `bun run verify` | Lint, typecheck and tests in CI's order |
 | `bun run check` / `test` / `lint` / `build` | The same steps one at a time (`test` installs Playwright's Chromium on first run) |
 | `bun run test:e2e` | Playwright: production preview, axe accessibility, locale checks |
-| `bun run auth:schema` | After changing auth plugins. Fails until you put back the hand-added constraints it names ([how](apps/docs/src/content/docs/guides/authentication.md#changing-auth-plugins)); then `db:generate`, check the migration drops none of them, `db:migrate` |
+| `bun run auth:schema` | After changing auth plugins. Fails until you put back the hand-added constraints it names ([how](apps/docs/src/content/docs/guides/authentication.md#changing-auth-plugins)); then put what `db:kit-drift` prints in `db:generate --custom --name=<name>`, check it drops none of them, `db:migrate` |
 | `bun run api:openapi` | Regenerate `apps/api/openapi.json` |
 | `bunx shadcn-svelte@latest add <name> -c packages/ui` | Add a UI component (then export it) |
 
@@ -428,7 +463,7 @@ ADMIN_PASSWORD='Something-Strong-123' bun run admin:create -- --email you@exampl
 | Port taken (`3000`/`5173`) after closing a terminal | The old `bun`/`vite` process is still running. Kill it (Windows: end `bun.exe` / `node.exe` in Task Manager), then `bun run dev:app` again |
 | Docker exists but `db:up` fails before starting Postgres | Run `bun run doctor`. Install the Compose plugin if missing; start Docker Desktop or the Docker daemon if unreachable. Do not treat `docker --version` as readiness |
 | `db:up` fails / port `5433` busy | Set `POSTGRES_PORT=5434` in the root `.env` (and in `DATABASE_URL`), then `bun run db:up` again |
-| `/api/auth/*` returns 500 after editing auth | `bun run auth:schema`, put back the hand-added constraints it names, then `bun run db:generate` (the migration must not drop them) and `bun run db:migrate`; restart `dev:app` |
+| `/api/auth/*` returns 500 after editing auth | `bun run auth:schema`, put back the hand-added constraints it names, put what `bun run db:kit-drift` prints in `bun run db:generate --custom --name=<name>` (it must not drop them), then `bun run db:migrate`; restart `dev:app` |
 | Changed a `packages/*` file, API did not pick it up | Restart `dev:app`. `--hot` watches `apps/api` only, and `--env-file` is read at start |
 | `dev:app` stops after a save, with an error like `SyntaxError: Export named 'x' not found` | A save that briefly broke an import made the API exit on purpose: an unhandled rejection is fatal (`apps/api/src/lifecycle.ts`), and turbo then stops the web server too. Finish the edit and run `bun run dev:app` again |
 | Contact form / Scalar show CORS errors | The site or docs origin must be in `TRUSTED_ORIGINS` (dev `:4321`/`:4322` are automatic; production is not) |
@@ -436,7 +471,7 @@ ADMIN_PASSWORD='Something-Strong-123' bun run admin:create -- --email you@exampl
 | Social button missing | Both `*_CLIENT_ID` and `*_SECRET` must be set, and the callback URL registered with the provider |
 | Astro build needs network | The `apps/site` build fetches the OG-image font. Expected |
 | `astro build` fails with "SITE_URL is not set" (or "still the placeholder") | Run `bun run setup`: it gives an empty `SITE_URL` the local origin. `bun run doctor -- --build` checks both sites. A nonempty shell export wins over those files. Deployment needs real public origins |
-| `db:migrate` exits 1 with "still pending after the run" | A merge interleaved migration timestamps and Drizzle skipped a file older than the newest applied one. Regenerate those so they sort last, or apply them by hand |
+| `db:migrate` exits 1 with "still pending after the run" | Drizzle skipped a migration older than the newest one applied from the same history. The message says which history, the kit's or yours; [UPGRADING.md, "Migrations"](UPGRADING.md#migrations) says what to do for each |
 | Sign-in succeeds but the session never sticks | `COOKIE_DOMAIN` must be a bare hostname (`.example.com`, not a URL) covering both `WEB_URL` and `API_URL`. The API refuses to start on any other value |
 | The API refuses to start in production | It names the variable: no `RESEND_API_KEY`, an `EMAIL_FROM` on localhost / example / a dotless domain, or a `COOKIE_DOMAIN` that does not cover both origins |
 

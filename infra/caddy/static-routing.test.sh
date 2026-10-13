@@ -8,7 +8,7 @@ if ! command -v docker >/dev/null || ! docker info >/dev/null 2>&1; then
 	exit 1
 fi
 
-caddy_image="${CADDY_IMAGE:-caddy:2-alpine}"
+caddy_image="${CADDY_IMAGE:-caddy:2.11.7-alpine}"
 fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/starterdough-caddy-routing.XXXXXX")"
 response_body="$fixture_root/response"
 containers=()

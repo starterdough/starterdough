@@ -188,6 +188,26 @@ export function configurationIssues(values: Record<string, unknown>): Configurat
 }
 
 /**
+ * `null` is the `Origin` a browser sends from a sandboxed iframe, a `data:` URL, a `file:` page and
+ * after a redirect across origins, so any website can produce it. Every origin check compares a
+ * request's `Origin` with `trustedOrigins()` as a string, and a listed `null` would let all of those
+ * pages call the API with the visitor's cookie. It is a rule on the variable rather than one of the
+ * `configurationIssues`, so it also runs under `SKIP_ENV_VALIDATION`, as `COOKIE_DOMAIN`'s does.
+ */
+const NULL_ORIGIN_MESSAGE =
+	"TRUSTED_ORIGINS lists `null`, the Origin that sandboxed iframes, data: URLs and file: pages send: trusting it would let any website call the API with a visitor's session. Remove it and list the real origins (a Tauri shell's are tauri://localhost and http://tauri.localhost).";
+
+/**
+ * Whether a `TRUSTED_ORIGINS` value lists `null`, in any case. Quotes around an entry are ignored:
+ * a compose file's list syntax keeps them, and whoever wrote `"null"` meant the same thing.
+ */
+function hasNullOrigin(value: string): boolean {
+	return parseList(value).some(
+		(origin) => origin.replace(/^["']|["']$/g, '').toLowerCase() === 'null',
+	);
+}
+
+/**
  * `SKIP_ENV_VALIDATION` is for steps that never boot the app: typecheck, lint, `auth:schema`, unit
  * tests, CI builds. The schema still runs with its coercions, transforms and defaults, so the typed
  * object keeps its real types; only the two variables with no default are filled in, and the
@@ -229,9 +249,12 @@ export const env = createEnv({
 		/**
 		 * Comma-separated extra origins (Tauri shells, LAN devices, tailnet hosts). Better Auth also
 		 * takes patterns (`https://*.example.com`) and app origins (`android:apk-key-hash:<hash>`); see
-		 * `normalizeOrigin` for which checks match those.
+		 * `normalizeOrigin` for which checks match those. `null` is refused (see `hasNullOrigin`).
 		 */
-		TRUSTED_ORIGINS: z.string().default(''),
+		TRUSTED_ORIGINS: z
+			.string()
+			.default('')
+			.refine((value) => !hasNullOrigin(value), { error: NULL_ORIGIN_MESSAGE }),
 		/**
 		 * Parent domain for cross-subdomain session cookies, e.g. `.example.com`. A bare hostname
 		 * with an optional leading dot, no scheme, port or path: the value goes straight into
@@ -285,6 +308,13 @@ export const env = createEnv({
 		OTEL_EXPORTER_OTLP_ENDPOINT: z.url().optional(),
 		/** `service.name` on exported spans. Unset → the service's own name, e.g. `starterdough-api`. */
 		OTEL_SERVICE_NAME: z.string().optional(),
+		/**
+		 * Sentry project for unexpected server errors (apps/web reads the same name for its server
+		 * side, so one row covers both). Unset means error tracking is off and the SDK is never loaded.
+		 */
+		SENTRY_DSN: z.url().optional(),
+		/** Sentry's `environment` tag. Unset → `NODE_ENV`. */
+		SENTRY_ENVIRONMENT: z.string().optional(),
 
 		BETTER_AUTH_SECRET: z.string().min(32, 'BETTER_AUTH_SECRET must be at least 32 characters'),
 		/** Gate sessions on a verified email. Unset → true in production, false elsewhere. */

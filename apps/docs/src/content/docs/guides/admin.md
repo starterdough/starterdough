@@ -47,10 +47,12 @@ underscores.
 
 ## `/admin/system`: health
 
-`admin.system.status` reports the version (read from the root `package.json`), the environment and
-runtime, uptime, counts (users, sessions), a database probe with migration state (journal shipped
-in the build vs. `drizzle.__drizzle_migrations`), and which optional subsystems are configured:
-the email provider and sender, social sign-in and email verification. Never secrets.
+`admin.system.status` reports your product's version and the kit release (`version` and
+`kitVersion` in the root `package.json`), the environment and runtime, uptime, counts (users,
+sessions), a database probe with the state of both migration histories (the journals shipped in
+the build vs. `drizzle.__drizzle_migrations` for the kit's and `drizzle.__product_migrations` for
+yours), and which optional subsystems are configured: the email provider and sender, social
+sign-in and email verification. Never secrets.
 
 ## Consequences to know
 

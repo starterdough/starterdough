@@ -10,7 +10,7 @@ export const SITE_TAGLINE = 'Build once. Serve anywhere.';
 export const SITE_DESCRIPTION =
 	'A Bun-native SaaS starter with authentication, an admin surface and internationalisation. Serve it on the web, as a PWA, on desktop, on mobile, or self-hosted on your own server.';
 
-/** Released version, from the root `package.json`, the only place the version is written. */
+/** The product's version: `version` in the root `package.json`, not the kit's `kitVersion`. */
 export const VERSION: string = pkg.version;
 
 /**
@@ -68,7 +68,7 @@ export const pages = {
 		path: '/blog',
 		ogKey: 'blog',
 		title: 'Blog',
-		description: 'Notes on how Starterdough is built and why.',
+		description: 'News and articles from Starterdough.',
 	},
 	contact: {
 		path: '/contact',

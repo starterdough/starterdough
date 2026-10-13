@@ -9,6 +9,7 @@
 	import { Command } from '@repo/ui';
 	import { resetMode, setMode, userPrefersMode } from 'mode-watcher';
 	import { m } from '#lib/paraglide/messages.js';
+	import { productNavLinks } from '#lib/product.js';
 	import { goto } from '$app/navigation';
 
 	interface Props {
@@ -30,6 +31,12 @@
 			icon: LayoutGridIcon,
 			keywords: ['home', 'projects'],
 		},
+		...productNavLinks.map((link) => ({
+			href: link.href,
+			label: link.label(),
+			icon: link.icon,
+			keywords: link.keywords ?? [],
+		})),
 		{
 			href: '/app/settings',
 			label: m.common_settings(),

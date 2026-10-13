@@ -3,9 +3,9 @@
 ## Reporting a vulnerability
 
 Email **security@starterdough.dev** with what you found, how to reproduce it, and what an attacker
-could do with it. If you can, include the affected file and line, the version you tested
-(`package.json` → `version`, or the commit), and whether the default configuration is affected or
-only a particular one.
+could do with it. If you can, include the affected file and line, the kit release you tested
+(`package.json` → `kitVersion`, or the commit), and whether the default configuration is affected
+or only a particular one.
 
 Please do not open a public issue for a vulnerability, and please do not test against anyone
 else's deployment of this kit.

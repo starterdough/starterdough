@@ -322,4 +322,64 @@ describe('Starterdough doctor', () => {
 		expect(report.checks.find((check) => check.name === 'Bun runtime')?.ok).toBe(false);
 		expect(report.checks.find((check) => check.name === 'Dependencies')?.ok).toBe(false);
 	});
+
+	// Neither name is the kit's, so `bun run rename` leaves this fixture as it is in a renamed fork.
+	describe('a .env written before the rename', () => {
+		async function renamedTo(slug: string, name: string) {
+			await mkdir(join(root, 'apps/native/src-tauri'), { recursive: true });
+			await writeFile(join(root, 'package.json'), JSON.stringify({ name: slug }));
+			await writeFile(
+				join(root, 'apps/native/src-tauri/tauri.conf.json'),
+				JSON.stringify({ productName: name }),
+			);
+		}
+
+		it('warns about each row that still names the old product, without failing or printing it', async () => {
+			await renamedTo('acme', 'Acme');
+			await writeFile(
+				join(root, '.env'),
+				[
+					'DATABASE_URL=postgres://sourkit:sourkit@localhost:5433/sourkit',
+					`BETTER_AUTH_SECRET=${'a'.repeat(48)}`,
+					'EMAIL_FROM="Sourkit <noreply@example.com>"',
+					'COMPOSE_PROJECT_NAME=sourkit',
+				].join('\n'),
+			);
+			const report = await doctor();
+			const check = report.checks.find((candidate) => candidate.name === 'Product name');
+			expect(check).toMatchObject({ ok: false, warning: true });
+			expect(check?.detail).toContain(
+				"DATABASE_URL's role or database, COMPOSE_PROJECT_NAME, EMAIL_FROM's display name",
+			);
+			expect(check?.detail).toContain('package.json (acme)');
+			expect(check?.detail).not.toContain('sourkit');
+			expect(report.ok).toBe(true);
+			expect(formatDoctorReport(report)).toContain('! Product name:');
+		});
+
+		it('stays quiet once the rows match, and for an external database of your own naming', async () => {
+			await renamedTo('acme', 'Acme');
+			await writeFile(
+				join(root, '.env'),
+				[
+					'DATABASE_URL=postgres://acme:acme@localhost:5433/acme',
+					`BETTER_AUTH_SECRET=${'a'.repeat(48)}`,
+					'EMAIL_FROM="Acme Support <support@acme.test>"',
+					'COMPOSE_PROJECT_NAME=acme',
+				].join('\n'),
+			);
+			expect((await doctor()).checks.some((check) => check.name === 'Product name')).toBe(false);
+
+			await writeFile(
+				join(root, '.env'),
+				[
+					'DATABASE_URL=postgres://app:secret@db.internal:5432/app_dev',
+					`BETTER_AUTH_SECRET=${'a'.repeat(48)}`,
+					'EMAIL_FROM=noreply@acme.test',
+				].join('\n'),
+			);
+			const external = await doctor({ database: 'external' });
+			expect(external.checks.some((check) => check.name === 'Product name')).toBe(false);
+		});
+	});
 });

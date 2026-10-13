@@ -27,15 +27,36 @@ env:
   SITE_URL: https://ci.invalid
 
 jobs:
+  # Which optional surfaces this repository still has. A product that deletes the Tauri shell
+  # (apps/native) skips its job instead of failing it, with no edit to this file, and a skipped job
+  # still counts as passed for a required check.
+  surfaces:
+    name: Surfaces
+    runs-on: ubuntu-latest
+    outputs:
+      native: ${{ steps.find.outputs.native }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: find
+        run: |
+          present() { if [ -f "$1" ]; then echo true; else echo false; fi; }
+          echo "native=$(present apps/native/src-tauri/Cargo.toml)" >> "$GITHUB_OUTPUT"
+
   typescript:
     name: Lint, typecheck, test, build (Bun)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: package.json
       - run: bun install --frozen-lockfile
+      # bun.lock is generated. A stale one (a workspace version bumped without `bun install`) still
+      # passes --frozen-lockfile, so derive it again and fail on any difference.
+      - name: bun.lock matches the manifests
+        run: |
+          bun install --lockfile-only
+          git diff --exit-code -- bun.lock
       # Production dependencies only, high and above: dev-only advisories (build tooling) do not ship.
       - run: bun audit --prod --audit-level=high
       # Licence gate: a dependency under a copyleft or non-commercial licence cannot ship in a kit
@@ -47,6 +68,13 @@ jobs:
         run: bunx playwright install --with-deps chromium
       - run: bun run test
       - run: bun run build
+      # `build` publishes your product's docs. The kit's manual is a second content set that no
+      # default build reaches, so build it here or a broken page would surface only where it is
+      # served (apps/docs/content-set.mjs).
+      - name: Build the kit's manual (apps/docs, DOCS_CONTENT=kit)
+        run: bun run --cwd apps/docs build
+        env:
+          DOCS_CONTENT: kit
 
 
   # The Tauri shell's Rust crate, so a broken crate fails on the pull request instead of on the
@@ -55,9 +83,11 @@ jobs:
   # advisory-database clone, which is neither a pinned download nor cheap.
   rust:
     name: Compile & lint the Tauri crate (cargo)
+    needs: surfaces
+    if: needs.surfaces.outputs.native == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, resolved 2026-09-10
         with:
           # Pinned to a commit, so the action's own `github.action_ref` is that SHA and not a channel
@@ -90,7 +120,7 @@ jobs:
     name: End-to-end (Playwright, apps/web)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: package.json
@@ -103,7 +133,7 @@ jobs:
     name: Compose + Caddy config
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # `.env.example` sets COMPOSE_FILE, so `docker compose` from the root resolves infra/compose.yml
       # exactly the way the runbook runs it; `config` catches YAML, interpolation and path mistakes.
       - name: Compose config, with throwaway values for the required secrets
@@ -116,6 +146,14 @@ jobs:
             echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)"
           } >> .env
           docker compose config --quiet
+          # The off-site backup credentials and the heartbeat URL reach the backup service and nothing
+          # else: sentinel values for them, then every profile's resolved config searched for those.
+          {
+            echo "BACKUP_S3_ACCESS_KEY_ID=ci-sentinel-key-id"
+            echo "BACKUP_S3_SECRET_ACCESS_KEY=ci-sentinel-secret"
+            echo "BACKUP_HEARTBEAT_URL=https://hc.invalid/ci-sentinel"
+          } >> .env
+          python3 infra/scripts/compose-secrets.test.py
           # Every optional service too: a profile is the easiest place for a YAML mistake to hide.
           COMPOSE_PROFILES=backup,monitoring,observability docker compose config --quiet
           # Exercise the actual db:up/db:down options in an isolated fixture. This catches either
@@ -124,7 +162,9 @@ jobs:
           # The public demo (infra/demo) is a second project with a second .env, built the way its
           # runbook builds it. It reads the root .env too (env_file), which the step above created.
           cp infra/demo/.env.example .env.demo
+          # The example ships DOMAIN empty (compose refuses that and names it), so give it one.
           {
+            echo "DOMAIN=demo.ci.invalid"
             echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)"
             echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)"
           } >> .env.demo
@@ -239,11 +279,11 @@ jobs:
             for env in "-e DOMAIN=example.com -e API_URL=https://api.example.com -e ACME_EMAIL=ops@example.com" "-e DOMAIN=localhost -e API_URL= -e ACME_EMAIL="; do
               # shellcheck disable=SC2086  # $env is a deliberate list of flags
               docker run --rm -v "$PWD/infra/caddy/$mode.Caddyfile:/etc/caddy/Caddyfile:ro" $env \
-                caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+                caddy:2.11.7-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
             done
             # `caddy fmt` is a gate, not a suggestion: an unformatted Caddyfile also logs a warning
             # on every start.
-            docker run --rm -v "$PWD/infra/caddy:/work:ro" -w /work caddy:2-alpine \
+            docker run --rm -v "$PWD/infra/caddy:/work:ro" -w /work caddy:2.11.7-alpine \
               caddy fmt --diff "$mode.Caddyfile"
           done
           # The demo's own static server, which runs behind the production Caddy and serves the
@@ -251,8 +291,8 @@ jobs:
           # file derives it from DOMAIN), and it has no {$DOMAIN} of its own.
           docker run --rm -v "$PWD/infra/demo/caddy/demo-static.Caddyfile:/etc/caddy/Caddyfile:ro" \
             -e API_URL=https://app.demo.example.com \
-            caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-          docker run --rm -v "$PWD/infra/demo/caddy:/work:ro" -w /work caddy:2-alpine \
+            caddy:2.11.7-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          docker run --rm -v "$PWD/infra/demo/caddy:/work:ro" -w /work caddy:2.11.7-alpine \
             caddy fmt --diff demo-static.Caddyfile
           # The demo's other half: the site blocks that go into the PRODUCTION Caddy's conf.d. They
           # are only valid as an import (they use its snippets), so they are checked the way they
@@ -261,24 +301,26 @@ jobs:
             -v "$PWD/infra/demo/caddy/demo.caddy:/etc/caddy/conf.d/demo.caddy:ro" \
             -e DOMAIN=example.com -e API_URL=https://api.example.com -e ACME_EMAIL=ops@example.com \
             -e DEMO_DOMAIN=demo.example.com \
-            caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+            caddy:2.11.7-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
           # And that it fails closed. DEMO_DOMAIN has no default, so an unset one must stop the whole
           # config from loading: that is what stops a half-configured demo being reloaded into the
           # Caddy that serves production.
           if docker run --rm -v "$PWD/infra/caddy/subdomains.Caddyfile:/etc/caddy/Caddyfile:ro" \
             -v "$PWD/infra/demo/caddy/demo.caddy:/etc/caddy/conf.d/demo.caddy:ro" \
             -e DOMAIN=example.com -e API_URL=https://api.example.com -e ACME_EMAIL=ops@example.com \
-            caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>/dev/null; then
+            caddy:2.11.7-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>/dev/null; then
             echo "::error title=demo.caddy accepts an empty DEMO_DOMAIN::infra/demo/caddy/demo.caddy must fail validation when DEMO_DOMAIN is unset. Copied into a production conf.d without the row set, it would otherwise load as a keyless site block."
             exit 1
           fi
-          docker run --rm -v "$PWD/infra/demo/caddy:/work:ro" -w /work caddy:2-alpine \
+          docker run --rm -v "$PWD/infra/demo/caddy:/work:ro" -w /work caddy:2.11.7-alpine \
             caddy fmt --diff demo.caddy
           bash infra/caddy/static-routing.test.sh
 
   # Production's images (api, web, caddy, backup) plus demo-static, built but never pushed: a
   # Dockerfile that stops building must fail on the pull request, not on the push to `main` that
-  # deploys. Keep the matrix in step with .github/workflows/deploy.yml.
+  # deploys. Keep the matrix in step with .github/workflows/deploy.yml. A pull request builds only
+  # the images whose inputs (`paths`, plus this workflow) it changes, and none whose Dockerfile a
+  # product deleted.
   docker:
     name: Build image (${{ matrix.name }})
     if: github.event_name == 'pull_request'
@@ -290,12 +332,15 @@ jobs:
           - name: api
             context: .
             dockerfile: apps/api/Dockerfile
+            paths: package.json bun.lock bunfig.toml .dockerignore packages apps/api
           - name: web
             context: .
             dockerfile: apps/web/Dockerfile
+            paths: package.json bun.lock bunfig.toml .dockerignore packages apps/web
           - name: caddy
             context: .
             dockerfile: infra/docker/Dockerfile.static
+            paths: package.json bun.lock bunfig.toml .dockerignore packages scripts/load-site-env.mjs apps/site apps/docs infra/docker
             # Placeholders: nothing is pushed here, and the real values are repository variables that
             # deploy.yml requires (they are baked in at build time). The two canonical URLs must not
             # be example.com (the Astro builds refuse it), so they use the reserved `.invalid` TLD.
@@ -307,6 +352,7 @@ jobs:
           - name: demo-static
             context: .
             dockerfile: infra/docker/Dockerfile.static
+            paths: package.json bun.lock bunfig.toml .dockerignore packages scripts/load-site-env.mjs apps/site apps/docs infra/docker
             build_args: |
               SITE_URL=https://demo.ci.invalid
               DOCS_URL=https://demo.ci.invalid/docs
@@ -315,10 +361,33 @@ jobs:
           - name: backup
             context: .
             dockerfile: infra/backup/Dockerfile
+            paths: infra/backup .dockerignore
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # A pull request checks out its merge commit, whose first parent is the base branch.
+          fetch-depth: 2
+      - id: changed
+        name: Build only an image whose inputs changed
+        env:
+          DOCKERFILE: ${{ matrix.dockerfile }}
+          IMAGE: ${{ matrix.name }}
+          PATHS: ${{ matrix.paths }}
+        run: |
+          if [ ! -f "$DOCKERFILE" ]; then
+            echo "::notice title=Not built::$DOCKERFILE is not in this repository."
+            echo build=false >> "$GITHUB_OUTPUT"
+          # shellcheck disable=SC2086  # PATHS is a deliberate list of pathspecs
+          elif git diff --quiet HEAD^1 HEAD -- $PATHS .github/workflows/ci.yml; then
+            echo "::notice title=Not built::Nothing the $IMAGE image is built from changed in this pull request."
+            echo build=false >> "$GITHUB_OUTPUT"
+          else
+            echo build=true >> "$GITHUB_OUTPUT"
+          fi
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        if: steps.changed.outputs.build == 'true'
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        if: steps.changed.outputs.build == 'true'
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
@@ -333,7 +402,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: pgvector/pgvector:pg17
+        image: pgvector/pgvector:0.8.7-pg17
         env:
           POSTGRES_USER: starterdough
           POSTGRES_PASSWORD: starterdough
@@ -346,7 +415,7 @@ jobs:
           --health-timeout 3s
           --health-retries 10
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: package.json
@@ -371,6 +440,12 @@ jobs:
           cd packages/db && bun test
         env:
           DATABASE_URL: postgres://starterdough:starterdough@127.0.0.1:5432/starterdough
+      # Sign-up and password reset through the real API: the email follows the request's language.
+      - name: Email in the user's language against PostgreSQL
+        run: bun test apps/api/src/email-locale.db.test.ts
+        env:
+          DATABASE_URL: postgres://starterdough:starterdough@127.0.0.1:5432/starterdough
+          RUN_EMAIL_DB_TESTS: '1'
       # A dump with no table data fails the tool's own verification, and the service database starts
       # empty: give it one table with a row, which is also what the drill compares against.
       - run: |

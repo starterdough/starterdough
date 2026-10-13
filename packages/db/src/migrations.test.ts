@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 
 // Pure helpers only, no database.
 process.env.SKIP_ENV_VALIDATION ??= '1';
-const { diffMigrations, shippedMigrations } = await import('./migrations');
+const { diffMigrations, kitMigrations, productMigrations } = await import('./migrations');
 const { resolveFlags } = await import('./flags');
 
 describe('migration status', () => {
@@ -33,22 +33,17 @@ describe('migration status', () => {
 		expect(diffMigrations(entries, []).latestApplied).toBeNull();
 	});
 
-	it('reads the journal that ships with the package', () => {
-		// Not a count: the free edition starts its history over, so what this guards is that the
-		// journal resolves at all and that its entries are the tags `migrate.ts` expects.
-		expect(shippedMigrations.length).toBeGreaterThan(0);
-		expect(shippedMigrations.at(-1)?.tag).toMatch(/^\d{4}_/);
-	});
-
-	// Drizzle's migrator compares each file against the single newest applied `when`, so a journal
-	// entry whose timestamp precedes an earlier-applied one is skipped for good, which is what merging two
-	// branches that both generated a migration produces. `migrate.ts` catches it at deploy time; this
-	// catches it at commit time. Fix by regenerating the newer migration so it sorts last.
-	it('ships a journal whose timestamps increase with the index', () => {
-		const outOfOrder = shippedMigrations.filter(
-			(entry, i) => i > 0 && entry.when <= (shippedMigrations[i - 1]?.when ?? 0),
-		);
-		expect(outOfOrder.map((entry) => entry.tag)).toEqual([]);
+	it('reads the journals that ship with the package', () => {
+		// Not a count: the free edition starts the kit's history over, and a product's history starts
+		// empty, so what this guards is that both journals resolve and that the kit's entries are the
+		// tags `migrate.ts` expects. migration-files.test.ts checks the files themselves.
+		expect(kitMigrations.entries.length).toBeGreaterThan(0);
+		expect(kitMigrations.entries.at(-1)?.tag).toMatch(/^\d{4}_/);
+		expect(Array.isArray(productMigrations.entries)).toBe(true);
+		expect([kitMigrations.table, productMigrations.table]).toEqual([
+			'__drizzle_migrations',
+			'__product_migrations',
+		]);
 	});
 });
 

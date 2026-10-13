@@ -27,9 +27,16 @@
 		} = $props();
 </script>
 
+<!--
+	It opens a third of the way down, so its height stops a margin short of the window's bottom edge,
+	and as a flex column its list, which scrolls, gives up whatever height a short window lacks.
+-->
 <Dialog.Root bind:open {...restProps}>
 	<Dialog.Content
-		class={cn("rounded-xl! top-1/3 translate-y-0 overflow-hidden p-0", className)}
+		class={cn(
+			"rounded-xl! top-1/3 flex max-h-[calc(66.667%-1rem)] translate-y-0 flex-col overflow-hidden p-0",
+			className
+		)}
 		{showCloseButton}
 		{portalProps}
 	>

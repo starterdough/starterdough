@@ -62,6 +62,25 @@ email, the script creates the account and reads its password from `ADMIN_PASSWOR
 prompt. The password is never read from a command-line argument, because arguments stay in shell
 history and are visible in `ps`.
 
+## What a deploy publishes
+
+A deploy publishes your product, so check what it still says about the kit before the first one:
+
+- **The marketing site.** Its copy and its OG images are the kit's until you rewrite them. The
+  changelog and the blog start with one draft sample each (`draft: true`), which
+  `bun run dev:site` shows and no build publishes; write your own entries in
+  `apps/site/src/content/changelog` and `blog`. The kit's own release notes are `CHANGELOG.md` and
+  never reach your site.
+- **The legal pages** are templates. A production build for a real origin refuses them while a
+  `**[placeholder]**` or the "review with counsel" note is left, and names each file;
+  `ALLOW_LEGAL_PLACEHOLDERS=1` publishes them anyway, for a staging deployment.
+- **The docs.** A docs build serves your product's documentation by default,
+  `apps/docs/src/content/product`: a two-page start and the interactive API reference. This manual
+  is `apps/docs/src/content/docs`; `bun run dev:manual` serves it locally, and no build includes it
+  unless it sets `DOCS_CONTENT=kit`.
+
+`bun run rename` prints the full list as the end of its checklist.
+
 ## Where things live
 
 ```
@@ -69,7 +88,7 @@ apps/
   web/          SvelteKit application: auth, account, admin (thin client)
   api/          Hono on Bun: Better Auth, oRPC router (RPC + REST/OpenAPI)
   site/         Astro: marketing, blog, SEO
-  docs/         Astro Starlight: this documentation
+  docs/         Astro Starlight: your product's docs, and this manual (`bun run dev:manual`)
   native/       Tauri 2: desktop + mobile shells around apps/web's static build (no IPC)
 packages/
   api-contract/ oRPC + Zod contract: the API's single source of truth

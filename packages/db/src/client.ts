@@ -1,7 +1,8 @@
 import { env } from '@repo/env';
 import { SQL } from 'bun';
 import { drizzle } from 'drizzle-orm/bun-sql';
-import * as schema from './schema';
+import * as kitSchema from './schema';
+import * as productSchema from './schema/product';
 
 /**
  * Bun's built-in Postgres client; no `pg`/`postgres` npm driver needed.
@@ -31,6 +32,9 @@ const g = globalThis as typeof globalThis & { [POOL]?: SQL };
 // when the connect attempt gives up, so this is how long readiness can lag a recovering server.
 g[POOL] ??= new SQL(env.DATABASE_URL, { max: poolMax, connectionTimeout: 10 });
 export const pg: SQL = g[POOL];
+
+// The kit's tables and yours (`schema/product.ts`), so relational queries reach both.
+const schema = { ...kitSchema, ...productSchema };
 
 export const db = drizzle({ client: pg, schema, casing: 'snake_case' });
 

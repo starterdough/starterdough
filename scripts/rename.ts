@@ -8,9 +8,10 @@
  *
  * Rewrites four tokens across the tracked text files: the product name, the lowercase slug (npm
  * package name, Cargo crate, Compose project, Postgres role, container names, the
- * `x-<slug>-client-ip` header, the backup artefact prefix), the Tauri bundle identifier, and the
- * workspace scope. The current values are read from the repo, so a second run with different
- * arguments works.
+ * `x-<slug>-client-ip` header, the backup artefact prefix) and its uppercase form in environment
+ * variable names (`<SLUG>_STATE_DIR`), the Tauri bundle identifier, and the workspace scope. The
+ * current values are read from the repo, so a second run with different arguments works. In each
+ * `package.json` it rewrites, the dependency maps are put back in the order `bun add` keeps them.
  *
  * What a text substitution cannot safely do (Docker volumes, an existing dev database, the
  * untracked `.env`, lockfiles, the seller's GitHub coordinates) is printed as a checklist at the end.
@@ -32,8 +33,15 @@ const KIT_REPO = 'starterdough/starterdough';
  */
 const SELLER_SITE = 'starterdough.dev';
 
+/**
+ * The kit by its own name, where a page says what your repository is built on ("<Product>, built
+ * on the Starterdough kit", QUICKSTART.md's agent prompt). The product name rule would make it
+ * "built on the <Product> kit".
+ */
+const KIT_NAME = 'Starterdough kit';
+
 /** Strings the rewrite steps over instead of substituting. None is a prefix of another. */
-const VERBATIM = [KIT_REPO, SELLER_SITE];
+const VERBATIM = [KIT_REPO, SELLER_SITE, KIT_NAME];
 
 /** Files that describe the kit rather than your product; renaming them makes them wrong. */
 const KEEP_VERBATIM = new Set([
@@ -47,8 +55,9 @@ const KEEP_VERBATIM = new Set([
 /**
  * The seller's tools that generate and publish the free edition, their tests, and the files they
  * carry into it. They name the seller's repositories and site on purpose, and their tests, which
- * `bun run test` runs in your fork too, check those literal names: renamed, the tools would point
- * at repositories you do not own and the tests would fail. The free edition ships none of them.
+ * `bun run test:seller` runs (`bun run test` does not), check those literal names: renamed, the
+ * tools would point at repositories you do not own and the tests would fail. The free edition
+ * ships none of them.
  */
 const SELLER_TOOLING: RegExp[] = [];
 
@@ -200,6 +209,17 @@ if (current.scope !== scope) {
 		to: `${scope}/`,
 	});
 }
+// Environment variable names: `STARTERDOUGH_STATE_DIR` → `ACME_STATE_DIR` (a dash cannot be in a
+// shell variable name, so `my-app` becomes `MY_APP`). Only `<PREFIX>_` is a variable name, and it
+// runs before the name rule, so a product named in capitals (`ACME`) is renamed in prose by the name
+// rule and in variable names by this one.
+if (current.slug !== slug) {
+	rules.push({
+		label: `env prefix  ${envPrefix(current.slug)}_ → ${envPrefix(slug)}_`,
+		from: new RegExp(`(?<![A-Z0-9_])${escapeRegExp(envPrefix(current.slug))}(?=_)`, 'g'),
+		to: envPrefix(slug),
+	});
+}
 if (current.name !== name) {
 	rules.push({
 		label: `name        ${current.name} → ${name}`,
@@ -221,6 +241,46 @@ if (!rules.length) {
 
 function escapeRegExp(value: string): string {
 	return value.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function envPrefix(value: string): string {
+	return value.toUpperCase().replaceAll('-', '_');
+}
+
+/** The maps `bun add` re-sorts whenever it touches one. */
+const DEPENDENCY_MAPS = [
+	'dependencies',
+	'devDependencies',
+	'peerDependencies',
+	'optionalDependencies',
+];
+
+/**
+ * A new scope sorts somewhere else (`@repo/db` came after `@orpc/server`, `@acme/db` comes
+ * before it), and the first `bun add` in your fork re-sorts the whole map. A later release renamed
+ * on `kit-renamed` would then disagree with your `main` about the order of every line it touches.
+ * So the rename leaves each map sorted the way Bun keeps it: by name, in code-unit order. Only a
+ * map of one-line `"name": "range"` entries is touched; anything else is left as it is.
+ */
+function sortDependencyMaps(text: string): string {
+	let output = text;
+	for (const key of DEPENDENCY_MAPS) {
+		output = output.replace(
+			new RegExp(`(\\n(\\t+)"${key}": \\{\\n)([\\s\\S]*?)(\\n\\2\\})`),
+			(whole, open: string, _indent: string, body: string, close: string) => {
+				const lines = body.split('\n');
+				const entry = /^\s*"([^"]+)": "[^"]*",?$/;
+				if (!lines.every((line) => entry.test(line))) return whole;
+				const name = (line: string) => entry.exec(line)?.[1] ?? '';
+				const sorted = lines
+					.map((line) => line.replace(/,$/, ''))
+					.sort((a, b) => (name(a) < name(b) ? -1 : name(a) > name(b) ? 1 : 0))
+					.map((line, index, all) => (index < all.length - 1 ? `${line},` : line));
+				return `${open}${sorted.join('\n')}${close}`;
+			},
+		);
+	}
+	return output;
 }
 
 /**
@@ -286,8 +346,11 @@ for (const path of await trackedFiles()) {
 		continue;
 	}
 	scanned++;
-	const { output, replacements } = rewrite(text);
+	const rewritten = rewrite(text);
+	const { replacements } = rewritten;
 	if (!replacements) continue;
+	const output =
+		basename(path) === 'package.json' ? sortDependencyMaps(rewritten.output) : rewritten.output;
 	const before = text.split(/\r?\n/);
 	const after = output.split(/\r?\n/);
 	const lines: Array<[string, string]> = [];
@@ -331,7 +394,8 @@ if (skippedWithMatches.length) {
 }
 
 const verbatimSites = await (async () => {
-	const args = VERBATIM.flatMap((value) => ['-e', value]);
+	// The coordinates you may want to repoint; the kit's name is not one of them.
+	const args = [KIT_REPO, SELLER_SITE].flatMap((value) => ['-e', value]);
 	const grep = Bun.spawn(['git', 'grep', '-n', '--fixed-strings', ...args], {
 		cwd: repoRoot,
 		stdout: 'pipe',
@@ -346,6 +410,7 @@ const verbatimSites = await (async () => {
 })();
 
 const oldSlug = current.slug;
+const aiServiceRow = '';
 console.log(`
 ================================================================================
 Residue checklist — none of this is a text substitution, so the script left it
@@ -368,9 +433,12 @@ Residue checklist — none of this is a text substitution, so the script left it
    volume that already exists was initialised with "${oldSlug}" and POSTGRES_USER is only read on
    first boot. Recreate the volume as above, or keep the old credentials in your .env.
 
-3. .env is untracked, so it was not touched. Update by hand: DATABASE_URL, EMAIL_FROM,
-   BETTER_AUTH_URL, PUBLIC_APP_URL, PUBLIC_API_URL, SITE_URL, DOCS_URL, DOMAIN, IMAGE_REGISTRY,
-   OTEL_SERVICE_NAME. Compare against .env.example, which was rewritten.
+3. The untracked .env files were not touched, and \`bun run setup\` never replaces a value you set.
+   In .env: DATABASE_URL (role and database "${oldSlug}"; keep them only for a volume you copied
+   across, item 2), EMAIL_FROM's display name, and COMPOSE_PROJECT_NAME (keep "${oldSlug}" while a
+   stack with data runs under it, item 1).${aiServiceRow} OTEL_SERVICE_NAME is not an .env row:
+   infra/compose.yml, rewritten, names each service ${slug}-api and so on. \`bun run doctor\` warns
+   about every row that still names the old product.
 
 4. Lockfiles were not edited. Run \`bun install\` to refresh bun.lock for the new package names and
    commit it, or CI's \`--frozen-lockfile\` will fail. Cargo.lock is refreshed by the next
@@ -384,16 +452,36 @@ ${verbatimSites.map((line) => `     ${line}`).join('\n') || '     (none found)'}
    so \`bun run --cwd infra/backup list\` will not see them. Rename the files, or restore what
    you need before renaming.
 
-7. Domains, DNS and hosting: the Cloudflare worker names in apps/*/wrangler.jsonc, Caddy's DOMAIN,
-   the GitHub repository itself, and the IMAGE_REGISTRY / SITE_URL / DOCS_URL / PUBLIC_APP_URL /
-   PUBLIC_API_URL repository variables the deploy workflow reads.
+7. Your domain, once you have one (QUICKSTART.md, Step 3 and Step 4):
+   - .env: DOMAIN (or WEB_URL and API_URL for one origin), SITE_URL and DOCS_URL when they are not
+     what DOMAIN derives, TRUSTED_ORIGINS (add the marketing site and the docs), COOKIE_DOMAIN (a
+     bare .yourdomain covering app. and api.), EMAIL_FROM on a domain you verified, CONTACT_EMAIL.
+   - apps/site/.env and apps/docs/.env: SITE_URL and the PUBLIC_* origins.
+   - apps/web/wrangler.jsonc: PUBLIC_API_URL, and the worker names in apps/*/wrangler.jsonc, if you
+     deploy to Cloudflare.
+   - GitHub: the repository variables the Deploy workflow reads (SITE_URL, DOCS_URL, WEB_URL,
+     API_URL, DEPLOY_HOST); IMAGE_REGISTRY follows the repository by itself.
+   - DNS: DOMAIN, app., api. and docs. pointing at the server.
 
 8. Desktop: replace the icons in apps/native/src-tauri/icons/, and note that changing the bundle
    identifier changes the OS application-data directory — an already-installed build will not see
    its old local state, and app stores treat it as a different application.
 
-9. Product copy is still ours: the landing and legal pages under apps/site/src/content, the docs
-   under apps/docs/src/content, the OG images, and the blog posts. Read them before you publish.
+9. What a deploy publishes is the kit's until you replace it:
+   - apps/site: the copy on every page and the OG images. The changelog and the blog hold one
+     draft sample each, which a build leaves out: write your own entries. The legal pages are
+     templates, and a production build refuses them until every **[placeholder]** is filled and
+     the template note is gone.
+   - apps/docs: your documentation is src/content/product, a two-page start. The kit's manual,
+     src/content/docs, is never built unless DOCS_CONTENT=kit; read it with \`bun run dev:manual\`.
+   - README.md (the kit's), the description in package.json and in
+     apps/web/static/manifest.webmanifest, SECURITY.md (the kit's policy and the seller's address:
+     keep it to report kit issues, add your own), .github/ISSUE_TEMPLATE/config.yml (links into
+     the kit's repository).
+
+10. Versions. \`version\` in the root package.json is your product's (the kit ships 0.1.0), and
+    the API, the OpenAPI document, the site and the desktop builds report it. \`kitVersion\` is the
+    kit release you are on. Never edit it: only kit releases change it.
 
 Then: bun install && bun run lint:fix && bun run verify
 `);

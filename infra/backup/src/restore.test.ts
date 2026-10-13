@@ -6,7 +6,10 @@ import { configFromEnv } from './config';
 import { createLogger } from './log';
 import { parseStamp } from './names';
 import {
+	CLEAR_DATABASE_SQL,
+	describeLiveRestore,
 	drillDatabaseName,
+	liveRestoreCommands,
 	pgRestoreArgs,
 	promoteStagedUploads,
 	quoteIdentifier,
@@ -25,11 +28,7 @@ afterAll(() => rm(tmp, { recursive: true, force: true }));
 describe('pg_restore arguments', () => {
 	it('restores a drill into an empty database without dropping anything', () => {
 		expect(
-			pgRestoreArgs(
-				'postgres://d:d@postgres:5432/starterdough_drill_20260909t023000z',
-				DUMP,
-				'drill',
-			),
+			pgRestoreArgs('postgres://d:d@postgres:5432/starterdough_drill_20260909t023000z', DUMP),
 		).toEqual([
 			'pg_restore',
 			'--no-owner',
@@ -43,31 +42,67 @@ describe('pg_restore arguments', () => {
 		]);
 	});
 
-	it('replaces objects in place, in one transaction, for a live restore', () => {
-		expect(pgRestoreArgs('postgres://d:d@postgres:5432/starterdough', DUMP, 'live')).toEqual([
+	it('clears and replaces the database in one transaction that only the set can commit', () => {
+		const { pgRestore, psql } = liveRestoreCommands(
+			'postgres://d@postgres:5432/starterdough',
+			DUMP,
+		);
+		expect(pgRestore).toEqual([
 			'pg_restore',
 			'--no-owner',
 			'--no-privileges',
 			'--exit-on-error',
 			'--clean',
 			'--if-exists',
+			// Writes the COMMIT, as its last statement: a pg_restore that fails never commits.
 			'--single-transaction',
-			'--dbname',
-			'postgres://d:d@postgres:5432/starterdough',
+			'--file',
+			'-',
 			DUMP,
 		]);
+		expect(psql).toEqual([
+			'psql',
+			'--no-psqlrc',
+			'--quiet',
+			'--set',
+			'ON_ERROR_STOP=1',
+			'--output',
+			'/dev/null',
+			'--dbname',
+			'postgres://d@postgres:5432/starterdough',
+			// Opened before the clearing, so the clearing is undone with everything else.
+			'--command',
+			'BEGIN',
+			'--command',
+			'SET client_min_messages = error',
+			'--command',
+			CLEAR_DATABASE_SQL,
+			'--file',
+			'-',
+		]);
+		expect(describeLiveRestore({ pgRestore, psql })).not.toContain('DO $restore$');
 	});
 
-	it('drops --single-transaction on request, for a schema that exhausts max_locks_per_transaction', () => {
-		expect(
-			pgRestoreArgs('postgres://d:d@postgres:5432/starterdough', DUMP, 'live', {
-				noSingleTransaction: true,
-			}),
-		).not.toContain('--single-transaction');
+	it('drops the transaction on request, for a schema too large for one', () => {
+		const { pgRestore, psql } = liveRestoreCommands('postgres://d@postgres:5432/d', DUMP, {
+			noSingleTransaction: true,
+		});
+		expect(pgRestore).not.toContain('--single-transaction');
+		expect(psql).not.toContain('BEGIN');
+		expect(psql).toContain(CLEAR_DATABASE_SQL);
 		// The drill never wraps the restore: one failure would roll back the evidence of what worked.
-		expect(pgRestoreArgs('postgres://d:d@postgres:5432/d', DUMP, 'drill')).not.toContain(
+		expect(pgRestoreArgs('postgres://d:d@postgres:5432/d', DUMP)).not.toContain(
 			'--single-transaction',
 		);
+	});
+
+	it('clears schemas whole, but only the own objects of public and of an extension schema', () => {
+		// What keeps the clearing off the system catalogs and off an extension's objects.
+		expect(CLEAR_DATABASE_SQL).toContain(
+			"n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'",
+		);
+		expect(CLEAR_DATABASE_SQL).toContain("WHERE deptype = 'e'");
+		expect(CLEAR_DATABASE_SQL.match(/NOT EXISTS \(SELECT FROM member/g)).toHaveLength(3);
 	});
 
 	it('bounds the restore session’s lock waits through PGOPTIONS, not the URL', () => {

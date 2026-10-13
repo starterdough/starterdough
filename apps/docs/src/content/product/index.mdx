@@ -1,0 +1,35 @@
+---
+title: Starterdough
+description: Guides for Starterdough and the reference for its HTTP API.
+template: splash
+hero:
+  tagline: Everything you need to use Starterdough and build on its API.
+  actions:
+    - text: Get started
+      link: guides/getting-started/
+      icon: right-arrow
+    - text: API reference
+      link: reference/api-reference/
+      icon: open-book
+      variant: minimal
+---
+
+import { LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+{/* Your product's documentation. The kit wrote this folder once and never changes it in an
+    upgrade, so rewrite it freely. The kit's own developer manual is in ../docs and is not
+    published: `bun run dev:manual` serves it locally. Links here are relative (no leading slash)
+    so they also resolve under /docs in the single-origin Caddy mode. */}
+
+<CardGrid>
+	<LinkCard
+		title="Get started"
+		description="Create an account and find your way around Starterdough."
+		href="guides/getting-started/"
+	/>
+	<LinkCard
+		title="API reference"
+		description="Every endpoint as plain REST under /api/v1, rendered from the live OpenAPI document."
+		href="reference/api-reference/"
+	/>
+</CardGrid>

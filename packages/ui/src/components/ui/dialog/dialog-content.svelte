@@ -21,6 +21,11 @@
 		children: Snippet;
 		showCloseButton?: boolean;
 	} = $props();
+
+	// Diverges from the registry, which sets no height bound: a fixed, centred dialog taller than
+	// the window put its title and its buttons off-screen, out of reach. `max-h` keeps it a margin
+	// inside the dynamic viewport, as `max-w` does across, and the content scrolls within it; the
+	// close button scrolls with the content it belongs to, and focus stays trapped as before.
 </script>
 
 <DialogPortal {...portalProps}>
@@ -29,7 +34,7 @@
 		bind:ref
 		data-slot="dialog-content"
 		class={cn(
-			"grid max-w-[calc(100%-2rem)] gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 sm:max-w-sm data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 fixed top-1/2 left-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2 outline-none",
+			"grid max-w-[calc(100%-2rem)] gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 sm:max-w-sm data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 fixed top-1/2 left-1/2 z-50 max-h-[calc(100dvh-2rem)] w-full -translate-x-1/2 -translate-y-1/2 overflow-y-auto overscroll-contain outline-none",
 			className
 		)}
 		{...restProps}

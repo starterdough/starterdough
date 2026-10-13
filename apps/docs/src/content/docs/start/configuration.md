@@ -75,8 +75,9 @@ it is empty.
 | `PORT` | `3000` | Port the API listens on. |
 | `API_URL` | `http://localhost:3000` | Public origin of the API: what browsers and shells call, and the base for OAuth callbacks and webhooks. |
 | `WEB_URL` | `http://localhost:5173` | Public origin of the web app. Used for CORS, auth redirects, trusted origins and the passkey `rpID`. |
-| `TRUSTED_ORIGINS` | `tauri://localhost,http://tauri.localhost` | Extra origins allowed to call the API (comma-separated): Tauri shells, LAN devices, tailnet hosts, the public site if its contact form should reach the API. |
+| `TRUSTED_ORIGINS` | `tauri://localhost,http://tauri.localhost` | Extra origins allowed to call the API (comma-separated): Tauri shells, LAN devices, tailnet hosts, the public site if its contact form should reach the API. `null` is refused at start-up: sandboxed iframes, `data:` URLs and `file:` pages send it, so trusting it would trust any website. |
 | `COOKIE_DOMAIN` | empty | Parent domain the session cookie is scoped to (e.g. `.example.com`) when web and API live on sibling subdomains. A **bare hostname**, never a URL. The value goes verbatim into `Set-Cookie`'s `Domain`, and both `WEB_URL` and `API_URL` must sit under it; anything else is refused at start-up. Single-origin deployments leave it empty. |
+| `PUBLIC_DEMO_CTA_URL` | empty (no link) | Where the demo banner's link goes, usually your pricing page on the marketing site's origin, so an absolute URL. Empty, the banner says it is a demo and links nowhere. The web container reads it from this file; the public demo next to production (`infra/demo/compose.yml`) defaults it to the demo's own marketing site. |
 | `PUBLIC_WEB_URL` | empty | Deployed origin of the web app as the *browser* sees it. Only the Tauri shells need it: their own origin is `tauri://localhost` or `http://tauri.localhost`, which no browser outside the shell can open, so emailed links go here instead. `build:desktop` refuses to start without it; in a dev shell without it the actions that need a return address are disabled. The shells offer no OAuth sign-in (see `apps/native/README.md`). Set it where the shell is built (a repository variable for the Desktop workflow, `apps/web/.env` for a hand build). A browser deployment leaves it empty, and the compose stack does not pass it to the `web` container. |
 | `PUBLIC_DEMO_MODE` | empty (off) | Public demo deployment. `true` shows a banner in the app and adds `noindex` to every page. The web app reads the same variable (`apps/web/.env`, or the web container's environment). |
 
@@ -87,10 +88,11 @@ it is empty.
 | `POSTGRES_PORT` | `5433` | Loopback host port of the Postgres container. `bun run db:up` uses it in development (5433 keeps clear of a local Postgres on 5432). The compose stack uses it in production (default 5432 there, see Self-hosting). |
 | `DATABASE_URL` | `postgres://starterdough:starterdough@localhost:5433/starterdough` | The only Postgres client is the API (Bun's native `Bun.SQL` through Drizzle). `packages/db/drizzle.config.ts` falls back to the same URL, so `db:generate` and `db:studio` reach the `db:up` container on 5433. Add `?sslmode=require` (or your provider's equivalent) for a managed database reached over the public internet. |
 
-`bun run db:migrate` checks afterwards that nothing is still pending and **exits 1** when something
-is. Drizzle's migrator compares each file against the newest applied timestamp and skips a migration
-that sorts before it, which is what merging a branch can produce. Regenerate those migrations so they
-sort last, or apply them by hand.
+`bun run db:migrate` applies the kit's migrations, then yours, checks afterwards that nothing is
+still pending and **exits 1** when something is. Drizzle's migrator compares each file against the
+newest applied timestamp of the same history and skips a migration that sorts before it, which is
+what merging a branch can produce. The message names the history, and `UPGRADING.md`
+("Migrations") says what to do for each.
 
 ### Auth (Better Auth)
 
@@ -122,6 +124,7 @@ to be mirrored into the frontend's environment.
 | `LOG_LEVEL` | empty → `info` in production, `debug` otherwise | Lowest level the API logs: `debug`, `info`, `warn` or `error`. A failed database query is logged with its root cause only. `query`, `params` and `sql` are redacted, because Drizzle attaches the statement and every bound parameter (session tokens included) to the error it throws. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | empty (off) | OTLP/HTTP collector for traces from the API: `http://lgtm:4318` with the `observability` compose profile, or Grafana Cloud / Axiom / Honeycomb. Nothing is loaded while empty. |
 | `OTEL_SERVICE_NAME` | set per service by compose | Service name on the spans. There is no row for it in `.env.example`: one `env_file` feeds `api` and `migrate`, so a value there would label both the same. `infra/compose.yml` sets `starterdough-api` per service. It only matters when you run a process outside compose. |
+| `SENTRY_DSN` / `SENTRY_ENVIRONMENT` | empty (off) / empty → `NODE_ENV` | Sentry error tracking for the API: unexpected request and procedure errors, and fatal process errors. The web container's server side reads the same row (it sits in the Self-hosting part of `.env.example`), so one Sentry project receives every server error. Errors only: traces stay with `OTEL_*`, and `SENTRY_TRACES_SAMPLE_RATE` changes nothing here. A failed query's statement and bound values are withheld, and what Postgres said is sent. Nothing is loaded while `SENTRY_DSN` is empty. `SENTRY_ENVIRONMENT` is the environment events are filed under. |
 | `DATABASE_POOL_MAX` | `10` | Postgres connections held by one API process. Postgres allows 100 by default. Keep the total below that: `DATABASE_POOL_MAX` per API process, 2 for `migrate` while it runs, 1 for `backup`, plus any `psql` of your own. |
 
 See [Operations](/guides/operations/).
@@ -145,7 +148,8 @@ the stack reads the same `.env`.
 | `GRAFANA_PORT` | `3030` | Loopback port of Grafana (profile `observability`). |
 | `IMAGE_REGISTRY` / `IMAGE_TAG` | empty / `latest` | Where `docker compose pull` gets images: **your** fork's GHCR namespace, `ghcr.io/<owner>/<repo>` lowercased. The Deploy workflow pushes there, `infra/scripts/provision.sh` derives it from `REPO_URL`, and `deploy.sh` pins whatever the workflow passed. It ships **empty** on purpose: compose then falls back to the local namespace `starterdough/<name>:local`, so `docker compose pull` fails with "pull access denied" instead of fetching a stranger's build, while `docker compose up -d --build` works unchanged. `IMAGE_TAG` is set per deploy, so a rollback is an older `sha-…` tag. `up -d --build` ignores both. |
 | `SITE_URL` / `DOCS_URL` | empty → derived from `DOMAIN` | Canonical URLs baked into the static sites (Caddy image). Single-origin: `DOCS_URL=https://<host>/docs`. Empty resolves to `https://localhost`, which is fine for a local `up`, but the Astro builds refuse an unset or `example.com` value. A published deploy needs the real domains here, or in `DOMAIN`. |
-| `PUBLIC_SENTRY_DSN`, `SENTRY_DSN`, `PUBLIC_POSTHOG_KEY`, `PUBLIC_POSTHOG_HOST` | empty | Passed to the web container (same names as `apps/web/.env`). |
+| `ALLOW_LEGAL_PLACEHOLDERS` | empty | The Caddy image's site build refuses legal pages that still hold the templates' **[placeholders]** or their "review with counsel" note when `SITE_URL` is a real origin, and names each file. `1` publishes them anyway, for a staging box; leave it empty for production. The Deploy workflow takes the repository variable of the same name instead. |
+| `PUBLIC_SENTRY_DSN`, `SENTRY_DSN`, `PUBLIC_POSTHOG_KEY`, `PUBLIC_POSTHOG_HOST` | empty | Passed to the web container (same names as `apps/web/.env`). `SENTRY_DSN` (server errors) and `SENTRY_ENVIRONMENT` also reach every service built from `apps/api` through `env_file`, so the API reports to the same project; see Operations above. `PUBLIC_SENTRY_DSN` is the browser's. |
 | `COMPOSE_PROFILES` | empty | Optional services: `backup` (nightly `pg_dump`), `monitoring` (Uptime Kuma), `observability` (Grafana + Tempo + Loki + Prometheus). Set them here, not with `--profile` on the command line: `infra/scripts/deploy.sh` runs `up --remove-orphans`, which removes the containers of every profile that is not active in that invocation. |
 | `COMPOSE_PROJECT_NAME` | `starterdough` | Prefix of every container, network and **volume** the stack creates (`starterdough_pgdata`, `starterdough_backups`, `starterdough_caddy_data`). Renaming it after the first `up` does not rename the volumes: Compose creates a fresh empty set under the new prefix, and the database looks as though it vanished. Copy each volume across first. `bun run rename` prints the exact commands in its residue checklist. |
 
@@ -163,7 +167,11 @@ the stack reads the same `.env`.
 | `BACKUP_LOCK_TIMEOUT` | `60s` | `lock_timeout` for a restore session, so a live restore fails instead of hanging on a writer's lock. |
 | `BACKUP_S3_PREFIX` | `backups/` | Key prefix inside the bucket. |
 | `BACKUP_HEARTBEAT_URL` | empty | `GET` after every successful backup. A Healthchecks.io check, Uptime Kuma push monitor or Better Stack heartbeat alerts you when backups stop. A failed scheduled run pings `${BACKUP_HEARTBEAT_URL}/fail`. |
+| `RELEASE_BACKUP` | empty → `on` | The release backup `infra/scripts/deploy.sh` takes before it stops anything: a dump of the database only, under `release/` in the `backups` volume, the newest four kept, never copied to the bucket or reported to the heartbeat. It needs the `backup` service but not its profile. `off` skips it, for a box with provider snapshots or a database too large to dump on every deploy; any other value stops the deploy. |
 | `BACKUP_S3_BUCKET`, `BACKUP_S3_ENDPOINT`, `BACKUP_S3_REGION`, `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY` | empty | Off-box copy. Unset: backups stay on the machine (the tool warns). `BACKUP_S3_REGION` must be a real region (`us-east-1`, `eu-central-1`, …). `auto` is an R2/MinIO convention and is only accepted together with a `BACKUP_S3_ENDPOINT`. |
+
+The off-site credentials and the heartbeat URL reach the `backup` service only: `infra/compose.yml`
+blanks them for every service built from the API image.
 
 The dump is **not encrypted**. What to harden around that, every guard a restore applies and every
 flag that relaxes one are in [Operations → Backups](/guides/operations/#backups).
@@ -174,10 +182,11 @@ flag that relaxes one are in [Operations → Backups](/guides/operations/#backup
 | --- | --- | --- |
 | `PUBLIC_API_URL` | `http://localhost:3000` | Where the browser and the Tauri shells reach the API. Must be absolute. Baked into static builds. |
 | `API_URL` | empty → `PUBLIC_API_URL` | Internal API origin used by server-side `load` functions during SSR (e.g. `http://api:3000` inside Docker Compose). |
-| `PUBLIC_SENTRY_DSN` / `SENTRY_DSN` | empty | Error tracking in the browser / during SSR. Empty = the Sentry SDK is not loaded. Optional: `PUBLIC_SENTRY_ENVIRONMENT`, `SENTRY_ENVIRONMENT`, `PUBLIC_SENTRY_TRACES_SAMPLE_RATE`, `SENTRY_TRACES_SAMPLE_RATE`. |
+| `PUBLIC_SENTRY_DSN` / `SENTRY_DSN` | empty | Error tracking in the browser / during SSR. Empty = the Sentry SDK is not loaded. Optional: `PUBLIC_SENTRY_ENVIRONMENT`, `SENTRY_ENVIRONMENT`, `PUBLIC_SENTRY_TRACES_SAMPLE_RATE`, `SENTRY_TRACES_SAMPLE_RATE`. The API's own errors go to the root `.env`'s `SENTRY_DSN` (see Operations above); in the compose stack that one row feeds both. |
 | `PUBLIC_POSTHOG_KEY` | empty | Product analytics. Empty = no consent banner, nothing loaded. Visitors must accept the banner before anything is sent. Optional `PUBLIC_POSTHOG_HOST` (default `https://us.i.posthog.com`). |
 | `PUBLIC_WEB_URL` | empty | Read only by a Tauri shell build. See the root `.env` row above. |
 | `PUBLIC_DEMO_MODE` | empty | The web app's half of demo mode. See the root `.env` row above. |
+| `PUBLIC_DEMO_CTA_URL` | empty | Where the demo banner links. See the root `.env` row above. |
 
 The app's Content-Security-Policy is **derived from these values at build time** by `csp()` in
 `apps/web/vite.config.ts`. That file also holds the SvelteKit configuration; there is no
@@ -198,7 +207,15 @@ The deployment target is not an `.env` value. It is the `ADAPTER` variable (`nod
 | `PUBLIC_REPO_URL` | site | Optional. Your public repository: the footer link, "View on GitHub", the changelog's commit history, the contact page's "found a bug". Unset (the default) renders none of them. |
 | `PUBLIC_CONTACT_EMAIL` | site | Optional. Address shown to visitors whose browser cannot run the contact form (no JavaScript). Not where the form delivers: that is the API's own `CONTACT_EMAIL`, which never reaches the browser. |
 | `DOCS_REPO_URL` | docs | Optional. Repository the docs are edited in: adds the header's GitHub link and "Edit this page". Unset (the default) renders neither. |
+| `ALLOW_LEGAL_PLACEHOLDERS` | site | Optional. A production build whose `SITE_URL` is a real origin (not localhost, loopback or a reserved `.invalid`, `.test`, `.localhost` or `.example` name) fails while a page in `src/content/legal` still holds a `**[placeholder]**` or the "Template: review with counsel" note, and names each file. `1` publishes them anyway, for a staging deployment. |
 | `PUBLIC_APP_URL` | site | Target of "Sign in" and "Open the app". |
+
+`DOCS_CONTENT` chooses what the docs build serves: `product` (the default, also when unset or
+blank) is your product's documentation in `apps/docs/src/content/product`, and `kit` is the kit's
+developer manual in `apps/docs/src/content/docs`. Any other value fails the build. It belongs in the
+build environment only (`bun run dev:manual`, a CI step, the `DOCS_CONTENT` build arg of
+`infra/docker/Dockerfile.static`), never in `apps/docs/.env`: every row of that file reaches every
+build, so `kit` there would make each local build and each `deploy:cloudflare` publish the manual.
 
 All of them are read at build time. Rebuild after changing them. Each Astro config loads the `.env`
 in its own app directory (`process.loadEnvFile`), and a value already in the environment wins over

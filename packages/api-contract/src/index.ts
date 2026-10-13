@@ -7,6 +7,7 @@ import {
 	protectedProcedure,
 	publicProcedure,
 } from './procedures';
+import { productContract } from './product';
 
 /**
  * API contract: the single source of truth consumed by every frontend
@@ -15,9 +16,8 @@ import {
  *
  * Rules of the road:
  *  - Define shape + routing here, implement in `apps/api/src/rpc/router.ts`.
- *  - A feature can keep its procedures in a file of its own next to this one: build them with the
- *    builders and text rules in `./procedures`, export them as one object and spread it into
- *    `contract` below.
+ *  - A product's procedures go in `./product.ts` (or a file it spreads in), never here: this file
+ *    changes with every kit release, and that one never does.
  *  - Every procedure gets an explicit `route` so it is also a plain REST endpoint.
  *  - Auth-protected procedures extend `protectedProcedure` so `UNAUTHORIZED`/`FORBIDDEN`
  *    are typed on the client.
@@ -80,9 +80,21 @@ const ProbeSchema = z.object({
 	error: z.string().nullable(),
 });
 
+/** One migration history as the database has it: what this build ships against what ran. */
+const MigrationHistoryStatusSchema = z.object({
+	shipped: z.number().int(),
+	applied: z.number().int(),
+	pending: z.array(z.string()),
+	unknown: z.number().int(),
+	latestApplied: z.string().nullable(),
+});
+
 /** Everything `/admin/system` shows. Secrets never appear here, only what is configured. */
 export const SystemStatusSchema = z.object({
+	/** The product's `version` from the root `package.json`, the one `/health` reports too. */
 	version: z.string(),
+	/** The kit release (`kitVersion`). Only here: the public `/health` does not name it. */
+	kitVersion: z.string(),
 	environment: z.string(),
 	runtime: z.string(),
 	startedAt: z.iso.datetime(),
@@ -91,14 +103,9 @@ export const SystemStatusSchema = z.object({
 		users: z.number().int(),
 	}),
 	database: ProbeSchema.extend({
+		/** The kit's history (`packages/db/drizzle`) and the product's (`packages/db/drizzle-product`). */
 		migrations: z
-			.object({
-				shipped: z.number().int(),
-				applied: z.number().int(),
-				pending: z.array(z.string()),
-				unknown: z.number().int(),
-				latestApplied: z.string().nullable(),
-			})
+			.object({ kit: MigrationHistoryStatusSchema, product: MigrationHistoryStatusSchema })
 			.nullable(),
 	}),
 	email: z.object({ provider: z.string(), from: z.string() }),
@@ -216,6 +223,9 @@ export const contract = {
 			.route({ method: 'GET', path: '/me', tags: ['account'], summary: 'Current user' })
 			.output(UserSchema),
 	},
+
+	// Last, so that a product procedure cannot replace a kit one: a clash fails `bun run check`.
+	...productContract,
 };
 
 export type Contract = typeof contract;

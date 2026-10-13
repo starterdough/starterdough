@@ -1,6 +1,6 @@
 ---
 title: Operations
-description: VPS + Tailscale, Caddy modes, backups, OpenTelemetry, health, CI image push and deploy, secrets, audits and load tests.
+description: VPS + Tailscale, Caddy modes, backups, OpenTelemetry, health, CI image push and deploy, operating without a shell, outside monitoring, secrets, audits and load tests.
 ---
 
 The kit ships as a compose stack you can run on one VPS (or a home server) and reach from anywhere
@@ -36,7 +36,8 @@ to every user of the box. The script uses the kit's own auth config (no `bunx`, 
 network), so it also works inside the `api` container. On a box you set up by hand, prefix the
 command with `DATABASE_URL=postgres://starterdough:<POSTGRES_PASSWORD>@127.0.0.1:5433/starterdough`.
 
-Sign in as that user and open `/admin`.
+Sign in as that user and open `/admin`. Once CI deploys are set up, the Admin bootstrap workflow
+does the same without a shell ([Operate without a shell](#operate-without-a-shell)).
 
 Always run `docker compose` from the repository root. `.env` sets `COMPOSE_FILE=infra/compose.yml`,
 so no `-f` is needed and interpolation (`DOMAIN`, `CADDY_MODE`, `POSTGRES_PASSWORD`) comes from the
@@ -132,6 +133,18 @@ the dump's checksum **and** the row counts recorded in the manifest.
 
 A dump without the `.env` (or its [SOPS](/guides/operations/#secrets) copy) is not a restore.
 
+Every deploy also takes a **release set** before its migrations run (below): a dump of the database
+only, kept on the box under `backups/release`, never copied to the bucket or reported to the
+heartbeat, the newest four kept. `--release` reads those instead of the nightly sets:
+
+```sh
+docker compose run --rm backup bun src/cli.ts list --release
+docker compose run --rm backup bun src/cli.ts restore latest --release --drill
+```
+
+Scheduled and release backups wait for each other (30 and 10 minutes) instead of failing; a manual
+backup and every restore still refuse while another one runs.
+
 Without `BACKUP_S3_BUCKET`, backups stay on the same disk and the tool warns. Point
 `BACKUP_HEARTBEAT_URL` at Healthchecks.io or an Uptime Kuma push monitor so a missed night alerts
 you.
@@ -151,8 +164,10 @@ override:
 - no other session may be connected. Stop the API (`docker compose stop api`) or pass
   `--terminate-connections`.
 
-The restore itself runs `--single-transaction --exit-on-error` under `BACKUP_LOCK_TIMEOUT`, so it is
-all-or-nothing and fails instead of hanging on a writer's lock. A very large schema can exhaust
+The restore itself clears the database and runs the set in one transaction (`--single-transaction
+--exit-on-error`) under `BACKUP_LOCK_TIMEOUT`, so it is all-or-nothing, fails instead of hanging on
+a writer's lock, and leaves the database holding exactly what the set holds, even when migrations
+have run since the set was taken. A very large schema can exhaust
 `max_locks_per_transaction` (`out of shared memory`): raise that setting, or pass
 `--no-single-transaction`, knowing that a failure then leaves the database half-restored. Only one
 backup or restore of a database runs at a time (a Postgres advisory lock), so a manual backup cannot
@@ -187,7 +202,7 @@ Variables and every restore flag: `infra/backup/README.md`.
 | Uptime | `COMPOSE_PROFILES=monitoring` in `.env` (Uptime Kuma, a stock container; add monitors for `http://api:3000/readyz`, `http://web:3000/healthz` and the backup heartbeat), or Better Stack from the outside |
 | System page | `/admin/system`: version, migrations, providers |
 
-## Deploy from CI
+## Deploy and operate from CI
 
 `.github/workflows/deploy.yml` is off until the repository variable `DEPLOY_ENABLED` is `true`, so
 in a new repository a push runs CI and nothing else. Once it is on, it follows CI: when CI passes
@@ -197,13 +212,43 @@ whose CI fails, or that `main` has already moved past, is never built or deploye
 builds images tagged with the version and deploys nothing. The `caddy` image bakes the canonical
 URLs of the two static sites at build time, so it **requires** four repository variables
 (`SITE_URL`, `DOCS_URL`, `WEB_URL`, `API_URL`) and fails with a message naming them rather than
-shipping `example.com`. Set the repository variable `DEPLOY_HOST` and the secret `DEPLOY_SSH_KEY`,
-and the workflow pushes the commit into the server's checkout, logs the server into GHCR and runs
-`infra/scripts/deploy.sh` on it (`docker compose pull`, `up -d --wait`, `/readyz`), passing
-`IMAGE_REGISTRY` so a fork's `.env` never has to name the registry by hand. The server never
-fetches from GitHub, so a private repository needs no deploy key or token on the box. For a server
-that is only on your tailnet, set `DEPLOY_VIA_TAILSCALE=true` and add a Tailscale OAuth client.
-The one-time setup, in order, is in `infra/README.md` ("Deploy, update, roll back").
+shipping `example.com`. An image whose Dockerfile your repository no longer has is skipped.
+
+To deploy, set three more repository variables, `DEPLOY_HOST`, `DEPLOY_PATH` (the checkout on the
+server, which has no default) and `DEPLOY_KNOWN_HOSTS` (the server's SSH host key; `provision.sh`
+prints both), and the secret `DEPLOY_SSH_KEY`. The workflow then pushes the commit into the
+server's checkout, logs the server into GHCR and runs `infra/scripts/deploy.sh` on it
+(`docker compose pull`, `up -d --wait`, `/readyz`), passing `IMAGE_REGISTRY` so a fork's `.env`
+never has to name the registry by hand. The server never fetches from GitHub, so a private
+repository needs no deploy key or token on the box. For a server that is only on your tailnet, set
+`DEPLOY_VIA_TAILSCALE=true` and add a Tailscale OAuth client. The one-time setup, in order, is in
+`infra/README.md` ("Deploy, update, roll back").
+
+Around the rollout itself:
+
+- **Guards.** Every SSH connection checks the server's host key against `DEPLOY_KNOWN_HOSTS`
+  (`StrictHostKeyChecking yes`): a hosted runner starts each job with an empty `known_hosts`, so
+  trusting the first key would trust any key. Before the server's `.env` is replaced or anything is
+  checked out, the checkout must share history with the release and run this product's Compose
+  project, the `name:` in `infra/compose.yml`, or the repository variable `COMPOSE_PROJECT_NAME`
+  when the server's `.env` renames it. The server's clock must be within 30 s of the runner's.
+- **A release backup.** After the pull and the pre-deploy hooks, before it stops anything,
+  `deploy.sh` takes `backup --release`, the restore point for this release's migrations, which are
+  forward-only. It waits up to 10 minutes for a nightly backup that is running, a first deploy
+  skips it, and a failure leaves production on its current release. `RELEASE_BACKUP=off` in `.env`
+  turns it off, for a box with provider snapshots or a database too large to dump on every deploy.
+- **Hooks.** `infra/scripts/hooks/pre-deploy.d/*.sh` run before the release backup and
+  `post-deploy.d/*.sh` once the new release is ready: your own files, which no kit release touches
+  (`infra/scripts/hooks/README.md`).
+- **Afterwards.** `deploy.sh` keeps the three newest local builds of each image, so a rollback to a
+  recent one needs no pull, and the workflow fetches `API_URL/readyz` and `WEB_URL` from the runner
+  (`SMOKE_TEST=off` skips that, for a site the runner cannot reach). The job is cancelled after 180
+  minutes, a ceiling only a hang reaches; an interrupted rollout is what Recover deployment is for.
+- **The registry.** `.github/workflows/registry-cleanup.yml` runs weekly while deploys are on. It
+  keeps version tags, `latest`, `main` and the 20 newest other builds of each image, so a rollback
+  further back than that deploys a version tag. Run it by hand with `dry-run` first.
+- **Desktop installers.** `.github/workflows/desktop.yml` builds them on a `v*` tag only once the
+  repository variable `DESKTOP_ENABLED` is `true`; until then a tag runs one short job that says so.
 
 Pulling the images by hand needs a login of your own. `IMAGE_REGISTRY` must point at your fork's
 namespace, and private packages need `docker login ghcr.io` with a token that has `read:packages`
@@ -215,7 +260,63 @@ deploys only a commit that passed CI on a push to `main`. `deploy.sh` pins the d
 registry in `.env`, so the rollback survives a later `docker compose up -d`. A `sha-…` tag or a
 released version (`1.2.0` → its git tag's commit) is deployed with the matching commit checked
 out. Anything the workflow cannot resolve to a commit fails instead of deploying old images against
-current `main`. Migrations are forward-only: roll back code, not schema.
+current `main`. Migrations are forward-only: roll back code, not schema, or restore the release set
+the deploy took ([Server access and break glass](/guides/server-access/#when-a-deploy-fails)).
+
+## Operate without a shell
+
+Five workflows do on the server what would otherwise take an SSH session. Run each from Actions →
+the workflow → Run workflow:
+
+| Workflow | What it does | Lock |
+| --- | --- | --- |
+| Server status | containers, disk, memory, the deployment journal, the server's host key fingerprint and the last lines of the API containers' logs, for production or the demo | none: it only reads |
+| Server logs | one service's logs, the last 100 to 10,000 lines, optionally since a time | none: it only reads |
+| Server backup | takes a backup, lists the sets or drills the newest into a scratch database, for the nightly or the release sets, on production | the host lock, waiting up to 10 minutes for a deploy |
+| Admin bootstrap | creates a platform administrator with the password in the `production` environment secret `ADMIN_BOOTSTRAP_PASSWORD`, or promotes an existing account | the host lock; refused while a deployment journal is pending |
+| Recover deployment | `status`, `recover`, or `abandon` for a migration that fails every time | refused while another operation runs |
+
+They use Deploy's variables and secret and run in the `production` environment, so its required
+reviewers, if you add any, approve them too. All but Recover deployment run only while
+`DEPLOY_ENABLED` is `true`: switching deploys off in an incident must not lock you out of the
+recovery. Before anything else, each checks that the checkout it reaches runs this product's
+Compose project, so a `DEPLOY_PATH` or `DEMO_PATH` that names another product's checkout is refused.
+A live restore is not among them on purpose: it replaces production's data, so it stays a
+deliberate act on the box.
+
+Admin bootstrap sends the password to the script on its standard input: it never appears on a
+command line or in the container's environment. Delete the secret once you have signed in.
+Promoting needs no secret, so anyone who can run workflows can promote an existing account; when
+the repository has collaborators, add required reviewers to the `production` environment.
+
+A run's log is readable by everyone who can read the repository, and log lines carry client
+addresses, paths and ids. In a public repository Server logs refuses to run and Server status
+leaves the log lines out; in a private one, every collaborator can read them.
+
+What still needs a shell, and the way in you prepare for it, is in
+[Server access and break glass](/guides/server-access/).
+
+## Watch it from outside
+
+The health checks above watch the stack from inside the box, which goes quiet with the box. Three
+things watch it from elsewhere:
+
+- **Errors.** Set `SENTRY_DSN` in the server's `.env`, the row the web container's server side
+  already reads, and the API's unexpected errors and fatal process errors reach the same Sentry
+  project.
+  It reports errors only, with traces left to OpenTelemetry, and withholds a failed query's
+  statement and parameters.
+- **Uptime.** An external check, from Better Stack, Healthchecks.io or UptimeRobot, on
+  `API_URL/readyz` and `WEB_URL`. It alerts when the box, its network or Caddy is down, which no
+  monitor on the box can report.
+- **Backups.** A Healthchecks.io check with a period of 1 day and a grace of 12 hours, with its ping
+  URL in `BACKUP_HEARTBEAT_URL`. A night without a backup then pages you, and a failed run pings
+  `/fail`, which pages at once.
+
+Logs stay on the box, rotated at 10 MB × 5 per container. To keep them longer, or after a box is
+gone, ship them off it: Grafana Alloy or Vector reading Docker's json-file logs into Loki, Grafana
+Cloud or Better Stack, or Docker's `loki` logging driver, which keeps `docker compose logs` working
+through dual logging.
 
 ## Secrets
 
@@ -233,8 +334,10 @@ CI runs `bun audit --prod --audit-level=high`, `bun run licenses --strict`,
 `cargo fmt --check` / `clippy` / `check` on the Tauri crate, the Playwright end-to-end suite (home,
 axe/WCAG 2.2 AA, locales) against a production preview of `apps/web`, `docker compose config`
 (every profile) + `caddy validate` on both Caddyfiles, the backup tool's integration suite against
-a real Postgres 17, and, on pull requests, a build of all four images. Every action is pinned to a
-commit SHA; the pins move with each release of the kit.
+a real Postgres 17, and, on pull requests, a build of each image whose inputs changed. Every action
+is pinned to a commit SHA and every base and service image to a patch release
+(`infra/scripts/image-pins.test.ts`); the pins move with each release of the kit. The Rust job
+skips itself once `apps/native` is gone.
 
 ```sh
 docker run --rm -i -e API_URL=http://<api-origin> grafana/k6 run - < infra/loadtest/k6/smoke.js

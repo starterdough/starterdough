@@ -1,10 +1,16 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, setDefaultTimeout } from 'bun:test';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { standInForGitHook, withoutGit } from '../../scripts/git-hook-stand-in';
 
 const repository = resolve(import.meta.dir, '../..');
+
+// The cases run workflow steps in bash against ssh, git and docker shims, some with real git, and a
+// loaded machine runs them many times slower than an idle one. Set here, the budget also covers
+// `bun test <this file>` without the root `test` script's `--timeout` (see
+// deployment-recovery.test.ts).
+setDefaultTimeout(60_000);
 
 // Several cases below drive real git; under lefthook's pre-push hook, inherited GIT_* variables
 // would point it at the repository being pushed. Every spawn here starts from `withoutGit()`.
@@ -14,19 +20,25 @@ function record(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-async function step(file: string, job: string, name: string) {
+async function steps(file: string, job: string) {
 	const workflow: unknown = Bun.YAML.parse(
 		await Bun.file(join(repository, '.github/workflows', file)).text(),
 	);
 	if (!record(workflow) || !record(workflow.jobs)) throw new Error('Missing jobs');
 	const selected = workflow.jobs[job];
 	if (!record(selected) || !Array.isArray(selected.steps)) throw new Error('Missing steps');
-	const found = selected.steps.find(
-		(value): value is Record<string, unknown> => record(value) && value.name === name,
-	);
+	return selected.steps.filter((value): value is Record<string, unknown> => record(value));
+}
+
+async function step(file: string, job: string, name: string) {
+	const found = (await steps(file, job)).find((value) => value.name === name);
 	if (!found || typeof found.run !== 'string') throw new Error(`Missing step: ${name}`);
 	return found.run;
 }
+
+/** Shell for a docker shim's `compose config`: a checkout named `demo` runs the demo's project. */
+const projectByCheckout =
+	'case "$PWD" in */demo) echo "name: starterdough-demo" ;; *) echo "name: starterdough" ;; esac';
 
 async function fixture(run: (root: string, bin: string) => Promise<void>) {
 	const root = await mkdtemp(join(tmpdir(), 'starterdough-recovery-transport-'));
@@ -41,10 +53,15 @@ async function fixture(run: (root: string, bin: string) => Promise<void>) {
 		await Promise.all([
 			writeFile(join(bin, 'flock'), '#!/bin/sh\nexit 0\n', { mode: 0o700 }),
 			writeFile(join(root, '.env'), 'UNCHANGED=1\n'),
-			...['git', 'docker'].map((command) =>
-				writeFile(join(bin, command), '#!/bin/sh\ntouch "$MUTATION_CALLED"\nexit 97\n', {
-					mode: 0o700,
-				}),
+			writeFile(join(bin, 'git'), '#!/bin/sh\ntouch "$MUTATION_CALLED"\nexit 97\n', {
+				mode: 0o700,
+			}),
+			// Reading the Compose project changes nothing; anything else asked of Docker is a mutation.
+			// A checkout named `demo` runs the demo's project, any other production's.
+			writeFile(
+				join(bin, 'docker'),
+				`#!/bin/sh\n[ "$*" = "compose config" ] && { ${projectByCheckout}; exit 0; }\ntouch "$MUTATION_CALLED"\nexit 97\n`,
+				{ mode: 0o700 },
 			),
 			writeFile(join(bin, 'ssh'), '#!/bin/bash\nfor last do :; done\nexec bash -c "$last"\n', {
 				mode: 0o700,
@@ -78,6 +95,8 @@ async function execute(
 			IMAGE_TAG: 'sha-1234567',
 			IMAGE_REGISTRY: 'registry.invalid/fixture',
 			MUTATION_CALLED: join(root, 'mutation-called'),
+			EXPECTED_PROJECT: 'starterdough',
+			EXPECTED_DEMO_PROJECT: 'starterdough-demo',
 			RECOVERY_ACTION: 'status',
 			RECOVERY_TARGET: 'production',
 			...extra,
@@ -205,6 +224,249 @@ printf "git %s\\n" "$*" >> "$CALLS"
 		});
 	});
 
+	const guard = "Refuse a checkout that is not this product's";
+
+	it('lets a checkout of this repository that runs this project through, demo included', async () => {
+		await fixture(async (root, bin) => {
+			const calls = join(root, 'calls');
+			await mkdir(join(root, 'demo'));
+			await writeFile(
+				join(bin, 'git'),
+				'#!/bin/sh\nprintf "git %s\\n" "$*" >> "$CALLS"\ncase "$*" in "merge-base HEAD "*|"-C "*" merge-base HEAD "*) exit 0 ;; esac\nexit 97\n',
+				{ mode: 0o700 },
+			);
+			const result = await execute(root, bin, await step('deploy.yml', 'deploy', guard), {
+				DEMO_PATH: join(root, 'demo'),
+				CALLS: calls,
+			});
+			expect(result.code, result.stderr).toBe(0);
+			expect((await readFile(calls, 'utf8')).trim().split('\n')).toEqual([
+				'git merge-base HEAD 1234567890abcdef1234567890abcdef12345678',
+				`git -C ${join(root, 'demo')} merge-base HEAD 1234567890abcdef1234567890abcdef12345678`,
+			]);
+			expect(await Bun.file(join(root, 'mutation-called')).exists()).toBe(false);
+		});
+	});
+
+	it('refuses a checkout of another repository, or of another Compose project, before touching it', async () => {
+		for (const [name, production, demo, project, message] of [
+			['unrelated history', 1, 0, 'starterdough', 'shares no history with this repository'],
+			[
+				'another project',
+				0,
+				0,
+				'otherproduct',
+				"runs Compose project 'otherproduct', not 'starterdough'",
+			],
+			['no project at all', 0, 0, '', "runs Compose project 'none'"],
+			['an unrelated demo checkout', 0, 1, 'starterdough', 'DEMO_PATH names another checkout'],
+		] as const) {
+			await fixture(async (root, bin) => {
+				const calls = join(root, 'calls');
+				await Promise.all([
+					writeFile(
+						join(bin, 'git'),
+						`#!/bin/sh\nif [ "$1" = merge-base ]; then exit ${production}; fi\nif [ "$1" = -C ] && [ "$3" = merge-base ]; then exit ${demo}; fi\nprintf "git %s\\n" "$*" >> "$CALLS"\n`,
+						{ mode: 0o700 },
+					),
+					writeFile(
+						join(bin, 'docker'),
+						`#!/bin/sh\nif [ "$*" = "compose config" ]; then ${project ? `echo "name: ${project}"` : 'exit 1'}; exit 0; fi\ntouch "$MUTATION_CALLED"\n`,
+						{ mode: 0o700 },
+					),
+				]);
+				const result = await execute(root, bin, await step('deploy.yml', 'deploy', guard), {
+					DEMO_PATH: join(root, 'demo'),
+					CALLS: calls,
+				});
+				expect(result.code, name).not.toBe(0);
+				expect(result.stderr, name).toContain(message);
+				expect(await Bun.file(calls).exists(), name).toBe(false);
+				expect(await Bun.file(join(root, 'mutation-called')).exists(), name).toBe(false);
+				expect(await readFile(join(root, '.env'), 'utf8'), name).toBe('UNCHANGED=1\n');
+			});
+		}
+	});
+
+	it('sits between delivery and the environment file, so a refusal ships no .env', async () => {
+		const deploy = await steps('deploy.yml', 'deploy');
+		const names = deploy.map((value) => value.name);
+		const at = (name: string) => {
+			const index = names.indexOf(name);
+			if (index === -1) throw new Error(`Missing step: ${name}`);
+			return index;
+		};
+		const deliver = at('Deliver the release commit to the server');
+		const sops = at('Ship the environment file (only when SOPS_AGE_KEY is set)');
+		expect(at(guard)).toBe(deliver + 1);
+		expect(at(guard)).toBeLessThan(sops);
+		expect(sops).toBeLessThan(at('Deploy'));
+		// The project the guard checks is settled before it, from the release itself.
+		const project = deploy.findIndex((value) => value.id === 'project');
+		expect(project).toBeGreaterThan(-1);
+		expect(project).toBeLessThan(at(guard));
+		// A failed guard stops the job: nothing up to the Deploy step may carry on regardless.
+		for (const value of deploy.slice(at(guard), at('Deploy') + 1)) {
+			expect(value['continue-on-error'], String(value.name)).toBeUndefined();
+			expect(String(value.if ?? ''), String(value.name)).not.toMatch(/always\(\)|failure\(\)/);
+		}
+	});
+
+	it('works out the project from the release, or from COMPOSE_PROJECT_NAME', async () => {
+		const run = await step(
+			'deploy.yml',
+			'deploy',
+			'The Compose project this release expects on the server',
+		);
+		for (const [variable, compose, code, expected] of [
+			['', 'name: lumen', 0, 'name=lumen'],
+			['legacy-name', 'name: lumen', 0, 'name=legacy-name'],
+			['', '', 1, ''],
+			['', 'name: "lumen"', 1, ''],
+			['Lumen', 'name: lumen', 1, ''],
+			["x' && touch y '", 'name: lumen', 1, ''],
+		] as const) {
+			await fixture(async (root, bin) => {
+				await writeFile(
+					join(bin, 'git'),
+					`#!/bin/sh\n[ "$*" = "show 1234567890abcdef1234567890abcdef12345678:infra/compose.yml" ] || exit 1\nprintf '%s\\n' '# comment' '${compose}' 'services:'\n`,
+					{ mode: 0o700 },
+				);
+				const output = join(root, 'output');
+				await writeFile(output, '');
+				const result = await execute(root, bin, run, {
+					COMPOSE_PROJECT: variable,
+					GITHUB_OUTPUT: output,
+					DEMO_PATH: '',
+				});
+				expect(result.code, `${variable} ${compose}`).toBe(code);
+				expect((await readFile(output, 'utf8')).trim(), `${variable} ${compose}`).toBe(expected);
+			});
+		}
+	});
+
+	it("works out the demo's project from the release's demo stack, when DEMO_PATH is set", async () => {
+		const run = await step(
+			'deploy.yml',
+			'deploy',
+			'The Compose project this release expects on the server',
+		);
+		for (const [demoPath, demoCompose, code, expected] of [
+			['/opt/demo', 'name: lumen-demo', 0, 'name=lumen\ndemo=lumen-demo'],
+			['', 'name: lumen-demo', 0, 'name=lumen'],
+			['/opt/demo', '', 1, 'name=lumen'],
+			['/opt/demo', "name: x'; touch y; '", 1, 'name=lumen'],
+		] as const) {
+			await fixture(async (root, bin) => {
+				await writeFile(
+					join(bin, 'git'),
+					`#!/bin/sh
+case "$*" in
+  "show 1234567890abcdef1234567890abcdef12345678:infra/compose.yml") echo 'name: lumen' ;;
+  "show 1234567890abcdef1234567890abcdef12345678:infra/demo/compose.yml") printf '%s\\n' "$DEMO_COMPOSE" ;;
+  *) exit 1 ;;
+esac
+`,
+					{ mode: 0o700 },
+				);
+				const output = join(root, 'output');
+				await writeFile(output, '');
+				const result = await execute(root, bin, run, {
+					DEMO_PATH: demoPath,
+					DEMO_COMPOSE: demoCompose,
+					GITHUB_OUTPUT: output,
+				});
+				expect(result.code, `${demoPath} ${demoCompose}`).toBe(code);
+				expect((await readFile(output, 'utf8')).trim(), demoCompose).toBe(expected);
+			});
+		}
+	});
+
+	it('refuses a DEMO_PATH that runs another Compose project before anything checks it out', async () => {
+		// Production's own checkout, pasted as DEMO_PATH, shares the history and runs the wrong
+		// project; another kit-based product's checkout does the same.
+		for (const name of [guard, 'Deploy']) {
+			await fixture(async (root, bin) => {
+				const calls = join(root, 'calls');
+				const demo = join(root, 'demo');
+				await mkdir(join(demo, 'infra/demo'), { recursive: true });
+				await Promise.all([
+					writeFile(
+						join(bin, 'git'),
+						`#!/bin/sh
+case "$*" in
+  "cat-file "*|"merge-base "*|"-C "*" merge-base "*) exit 0 ;;
+  "show "*) printf '%s\\n' 'deployment-recovery.sh'; exit 0 ;;
+esac
+printf "git %s\\n" "$*" >> "$CALLS"
+`,
+						{ mode: 0o700 },
+					),
+					writeFile(join(demo, 'infra/demo/update.sh'), 'touch "$MUTATION_CALLED"\n'),
+					writeFile(join(root, 'infra/scripts/deploy.sh'), 'touch "$MUTATION_CALLED"\n'),
+				]);
+				for (const demoPath of [root, demo]) {
+					const result = await execute(root, bin, await step('deploy.yml', 'deploy', name), {
+						DEMO_PATH: demoPath,
+						EXPECTED_DEMO_PROJECT: demoPath === root ? 'starterdough-demo' : 'otherproduct-demo',
+						CALLS: calls,
+					});
+					expect(result.code, `${name} ${demoPath}`).not.toBe(0);
+					expect(result.stderr, name).toContain(`${demoPath} runs Compose project`);
+					expect(await Bun.file(calls).exists(), name).toBe(false);
+					expect(await Bun.file(join(root, 'mutation-called')).exists(), name).toBe(false);
+				}
+			});
+		}
+	});
+
+	it('Deploy refuses a checkout whose .env now names another project, before anything moves', async () => {
+		await fixture(async (root, bin) => {
+			const demo = join(root, 'demo');
+			const calls = join(root, 'calls');
+			await mkdir(join(demo, 'infra/demo'), { recursive: true });
+			await Promise.all([
+				writeFile(join(bin, 'git'), '#!/bin/sh\nprintf "git %s\\n" "$*" >> "$CALLS"\nexit 0\n', {
+					mode: 0o700,
+				}),
+				writeFile(
+					join(bin, 'docker'),
+					'#!/bin/sh\n[ "$*" = "compose config" ] && { echo "name: renamed"; exit 0; }\ntouch "$MUTATION_CALLED"\n',
+					{ mode: 0o700 },
+				),
+				writeFile(join(demo, 'infra/demo/update.sh'), 'touch "$MUTATION_CALLED"\n'),
+				writeFile(join(root, 'infra/scripts/deploy.sh'), 'touch "$MUTATION_CALLED"\n'),
+			]);
+			const result = await execute(root, bin, await step('deploy.yml', 'deploy', 'Deploy'), {
+				DEMO_PATH: demo,
+				CALLS: calls,
+			});
+			expect(result.code).not.toBe(0);
+			expect(result.stderr).toContain("now runs Compose project 'renamed', not 'starterdough'");
+			expect(await Bun.file(calls).exists()).toBe(false);
+			expect(await Bun.file(join(root, 'mutation-called')).exists()).toBe(false);
+		});
+	});
+
+	for (const name of [guard, 'Deploy']) {
+		it(`${name} refuses an expected project it would quote unsafely, before connecting`, async () => {
+			for (const project of ["x'; touch y; '", 'Lumen', '']) {
+				await fixture(async (root, bin) => {
+					// Any connection at all is too late: the value would already be in the remote script.
+					await writeFile(join(bin, 'ssh'), '#!/bin/sh\ntouch "$MUTATION_CALLED"\nexit 0\n', {
+						mode: 0o700,
+					});
+					const result = await execute(root, bin, await step('deploy.yml', 'deploy', name), {
+						EXPECTED_PROJECT: project,
+					});
+					expect(result.code, project).not.toBe(0);
+					expect(result.stderr, project).toContain('invalid project');
+					expect(await Bun.file(join(root, 'mutation-called')).exists(), project).toBe(false);
+				});
+			}
+		});
+	}
+
 	for (const name of ['Refuse a new release while deployment recovery is pending', 'Deploy']) {
 		it.each(['file', 'dangling symlink'])(
 			`${name} refuses a journal %s before Git or Docker`,
@@ -253,6 +515,80 @@ describe('explicit deployment recovery transport', () => {
 			});
 		},
 	);
+
+	it('forwards abandon with its confirmation, and passes nothing else one', async () => {
+		for (const [action, confirm, expected] of [
+			['abandon', '1234567', '1234567'],
+			[
+				'abandon',
+				'1234567890abcdef1234567890abcdef12345678',
+				'1234567890abcdef1234567890abcdef12345678',
+			],
+			['status', '1234567', ''],
+			['recover', '1234567', ''],
+		] as const) {
+			await fixture(async (root, bin) => {
+				const marker = {
+					abandon: 'deployment_recovery_abandoned',
+					status: 'deployment_recovery_pending=true',
+					recover: 'deployment_recovery_complete',
+				}[action];
+				await writeFile(
+					join(root, 'infra/scripts/recover-deployment.sh'),
+					`#!/bin/bash\nset -euo pipefail\n[ "$#" = 2 ] && [ "$1" = '${action}' ] && [ "$2" = '${expected}' ]\necho '${marker}'\n`,
+				);
+				const result = await execute(
+					root,
+					bin,
+					await step('recover-deployment.yml', 'recovery', name),
+					{
+						RECOVERY_ACTION: action,
+						RECOVERY_CONFIRM: confirm,
+					},
+				);
+				expect(result.code, `${action} ${confirm}`).toBe(0);
+			});
+		}
+	});
+
+	it('refuses abandon without a revision prefix before connecting', async () => {
+		for (const confirm of ['', '123456', '123456g', "1234567'; touch x; '", 'HEAD~1']) {
+			await fixture(async (root, bin) => {
+				await writeFile(join(bin, 'ssh'), '#!/bin/sh\ntouch "$MUTATION_CALLED"\n', { mode: 0o700 });
+				const result = await execute(
+					root,
+					bin,
+					await step('recover-deployment.yml', 'recovery', name),
+					{
+						RECOVERY_ACTION: 'abandon',
+						RECOVERY_CONFIRM: confirm,
+					},
+				);
+				expect(result.code, confirm).toBe(1);
+				expect(result.stdout, confirm).toContain('::error title=No confirmation::');
+				expect(await Bun.file(join(root, 'mutation-called')).exists(), confirm).toBe(false);
+			});
+		}
+	});
+
+	it('requires the abandon marker, not just a clean exit', async () => {
+		await fixture(async (root, bin) => {
+			await writeFile(
+				join(root, 'infra/scripts/recover-deployment.sh'),
+				"#!/bin/bash\necho 'usage: recover-deployment.sh [status|recover]' >&2\necho deployment_recovery_complete\n",
+			);
+			const result = await execute(
+				root,
+				bin,
+				await step('recover-deployment.yml', 'recovery', name),
+				{
+					RECOVERY_ACTION: 'abandon',
+					RECOVERY_CONFIRM: '1234567',
+				},
+			);
+			expect(result.code).toBe(1);
+		});
+	});
 
 	it('quotes the selected demo checkout and never uses the production checkout', async () => {
 		await fixture(async (root, bin) => {
@@ -354,6 +690,8 @@ describe('release plan', () => {
 						GH_TOKEN: 'synthetic-fixture-token',
 						DEPLOY_ENABLED: 'true',
 						DEPLOY_HOST: 'host.invalid',
+						DEPLOY_PATH: '/opt/product',
+						DEPLOY_KNOWN_HOSTS: 'ssh-ed25519 AAAAfixture',
 						REQUESTED: '',
 						CI_CONCLUSION: 'success',
 						CI_EVENT: 'push',
@@ -470,6 +808,26 @@ describe('release plan', () => {
 		expect(result.stdout).toContain('::notice title=Images only::');
 	});
 
+	it('refuses a deploy without DEPLOY_PATH or DEPLOY_KNOWN_HOSTS before anything is built', async () => {
+		for (const [unset, title] of [
+			['DEPLOY_PATH', 'No checkout path'],
+			['DEPLOY_KNOWN_HOSTS', 'No host key'],
+		] as const) {
+			for (const event of ['workflow_run', 'workflow_dispatch']) {
+				const result = await plan({ [unset]: '', GITHUB_EVENT_NAME: event });
+				expect(result.code, `${unset} ${event}`).toBe(1);
+				expect(result.stdout).toContain(`::error title=${title}::`);
+				expect(result.outputs).toEqual({});
+			}
+			// Neither is needed by a run that deploys nothing.
+			for (const env of [{ DEPLOY_HOST: '' }, { GITHUB_EVENT_NAME: 'push' }]) {
+				const result = await plan({ [unset]: '', ...env });
+				expect(result.code, unset).toBe(0);
+				expect(result.outputs.deploy).toBe('false');
+			}
+		}
+	});
+
 	it('builds a v* tag without deploying it', async () => {
 		const result = await plan({ GITHUB_EVENT_NAME: 'push' });
 		expect(result.code).toBe(0);
@@ -554,6 +912,262 @@ describe('release plan', () => {
 	);
 });
 
+describe('the SSH target every server workflow uses', () => {
+	const script = join(repository, '.github/scripts/ssh-target.sh');
+	const base = {
+		DEPLOY_ENABLED: 'true',
+		DEPLOY_HOST: '203.0.113.7',
+		DEPLOY_USER: 'deploy',
+		DEPLOY_PATH: '/opt/lumen',
+		DEPLOY_SSH_KEY: 'synthetic-fixture-key',
+		DEPLOY_KNOWN_HOSTS: 'ssh-ed25519 AAAAone',
+	};
+
+	async function target(env: Record<string, string>, args: string[] = []) {
+		const home = await mkdtemp(join(tmpdir(), 'starterdough-ssh-target-'));
+		try {
+			const child = Bun.spawn(['bash', script, ...args], {
+				cwd: home,
+				env: { PATH: process.env.PATH ?? '', HOME: home, ...env },
+				stdout: 'pipe',
+				stderr: 'pipe',
+			});
+			const [code, stdout] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+			const read = async (name: string) => {
+				const file = Bun.file(join(home, '.ssh', name));
+				return (await file.exists()) ? file.text() : null;
+			};
+			return {
+				code,
+				stdout,
+				knownHosts: await read('known_hosts_deploy'),
+				config: await read('config'),
+			};
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	}
+
+	it('pins either key form under one alias, and only that file, with strict checking', async () => {
+		const result = await target({
+			...base,
+			DEPLOY_KNOWN_HOSTS:
+				'ssh-ed25519 AAAAone\n# comment\n\nlumen.example.com ssh-ed25519 AAAAtwo key two\n',
+		});
+		expect(result.code, result.stdout).toBe(0);
+		expect(result.knownHosts).toBe(
+			'deploy-target ssh-ed25519 AAAAone\ndeploy-target ssh-ed25519 AAAAtwo\n',
+		);
+		for (const line of [
+			'Host target',
+			'  HostName 203.0.113.7',
+			'  User deploy',
+			'  HostKeyAlias deploy-target',
+			'  UserKnownHostsFile ~/.ssh/known_hosts_deploy',
+			'  StrictHostKeyChecking yes',
+			'  BatchMode yes',
+		]) {
+			expect(result.config?.split('\n')).toContain(line);
+		}
+		expect(result.config).not.toContain('accept-new');
+	});
+
+	it('reads the ssh-keyscan line of a host whose name starts like a key type', async () => {
+		const result = await target({
+			...base,
+			DEPLOY_KNOWN_HOSTS: [
+				'ssh-prod.example.com ssh-ed25519 AAAAone',
+				'sk-prod ssh-ed25519 AAAAtwo',
+				'ecdsa-gw.example.com ecdsa-sha2-nistp256 AAAAthree=',
+			].join('\n'),
+		});
+		expect(result.code, result.stdout).toBe(0);
+		expect(result.knownHosts).toBe(
+			[
+				'deploy-target ssh-ed25519 AAAAone',
+				'deploy-target ssh-ed25519 AAAAtwo',
+				'deploy-target ecdsa-sha2-nistp256 AAAAthree=',
+				'',
+			].join('\n'),
+		);
+	});
+
+	it('strips the carriage returns of a value pasted from Windows', async () => {
+		const result = await target({
+			...base,
+			DEPLOY_KNOWN_HOSTS: '203.0.113.7 ssh-ed25519 AAAAone\r\n',
+		});
+		expect(result.code, result.stdout).toBe(0);
+		expect(result.knownHosts).toBe('deploy-target ssh-ed25519 AAAAone\n');
+	});
+
+	it('refuses a missing or unreadable host key, and a path it would quote unsafely', async () => {
+		for (const [env, title] of [
+			[{ DEPLOY_KNOWN_HOSTS: '' }, 'No host key'],
+			[{ DEPLOY_KNOWN_HOSTS: 'not a key' }, 'Unreadable DEPLOY_KNOWN_HOSTS'],
+			[{ DEPLOY_KNOWN_HOSTS: '# only a comment' }, 'Unreadable DEPLOY_KNOWN_HOSTS'],
+			// A paste cut short: the key type with no key would pin nothing that could ever match.
+			[{ DEPLOY_KNOWN_HOSTS: 'ssh-ed25519' }, 'Unreadable DEPLOY_KNOWN_HOSTS'],
+			[{ DEPLOY_KNOWN_HOSTS: '203.0.113.7 ssh-ed25519\n' }, 'Unreadable DEPLOY_KNOWN_HOSTS'],
+			// Not a key whose type is the host name and whose key is the key's type.
+			[{ DEPLOY_KNOWN_HOSTS: 'ssh-prod.example.com ssh-ed25519' }, 'Unreadable DEPLOY_KNOWN_HOSTS'],
+			[{ DEPLOY_PATH: '' }, 'No checkout path'],
+			[{ DEPLOY_PATH: "/opt/it's" }, 'No checkout path'],
+			[{ DEMO_PATH: '/opt/demo; rm -rf ~' }, 'Bad DEMO_PATH'],
+			[{ DEPLOY_HOST: '-oProxyCommand=x' }, 'No server'],
+		] as const) {
+			const result = await target({ ...base, ...env });
+			expect(result.code, title).not.toBe(0);
+			expect(result.stdout, title).toContain(`::error title=${title}::`);
+			expect(result.config, title).toBeNull();
+		}
+	});
+
+	it('lets only recovery through while deploys are switched off', async () => {
+		const off = { ...base, DEPLOY_ENABLED: '' };
+		const refused = await target(off);
+		expect(refused.code).not.toBe(0);
+		expect(refused.stdout).toContain('::error title=Deployment is switched off::');
+		expect((await target(off, ['--recovery'])).code).toBe(0);
+	});
+
+	it('runs first in every job that reaches the server, and nothing trusts a key on first use', async () => {
+		const files = (
+			await Array.fromAsync(new Bun.Glob('*.yml').scan(join(repository, '.github/workflows')))
+		).sort();
+		const reaching: string[] = [];
+		for (const file of files) {
+			const text = await Bun.file(join(repository, '.github/workflows', file)).text();
+			expect(text, file).not.toMatch(/StrictHostKeyChecking[ =]*(accept-new|no)\b/);
+			const workflow: unknown = Bun.YAML.parse(text);
+			if (!record(workflow) || !record(workflow.jobs)) continue;
+			for (const [name, job] of Object.entries(workflow.jobs)) {
+				if (!record(job) || !Array.isArray(job.steps)) continue;
+				const runs = job.steps.map((value) =>
+					record(value) && typeof value.run === 'string' ? value.run : '',
+				);
+				const first = runs.findIndex((run) => /ssh target|target:|check-clock\.sh/.test(run));
+				if (first === -1) continue;
+				reaching.push(`${file} ${name}`);
+				const pinned = runs.findIndex((run) => run.includes('.github/scripts/ssh-target.sh'));
+				expect(pinned, `${file} ${name}`).toBeGreaterThan(-1);
+				expect(pinned, `${file} ${name}`).toBeLessThan(first);
+			}
+		}
+		expect(reaching).toEqual(
+			expect.arrayContaining(['deploy.yml deploy', 'recover-deployment.yml recovery']),
+		);
+	});
+});
+
+describe('the server clock check', () => {
+	async function clock(answer: string, args: string[] = []) {
+		const root = await mkdtemp(join(tmpdir(), 'starterdough-clock-'));
+		try {
+			// `ssh target 'date +%s'` answers with the runner's time shifted, or with ANSWER as given.
+			await writeFile(join(root, 'ssh'), `#!/bin/sh\n${answer}\n`, { mode: 0o700 });
+			const child = Bun.spawn(
+				['bash', join(repository, '.github/scripts/check-clock.sh'), ...args],
+				{
+					env: { PATH: `${root}:${process.env.PATH ?? ''}` },
+					stdout: 'pipe',
+					stderr: 'pipe',
+				},
+			);
+			const [code, stdout] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+			return { code, stdout };
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	}
+
+	it('passes within 30 seconds and fails beyond, or only warns when asked to', async () => {
+		expect((await clock('echo $(( $(date +%s) + 5 ))')).code).toBe(0);
+		const fast = await clock('echo $(( $(date +%s) + 120 ))');
+		expect(fast.code).toBe(1);
+		expect(fast.stdout).toMatch(/::error title=Server clock::The server clock is 1[12]\d s off/);
+		const slow = await clock('echo $(( $(date +%s) - 120 ))');
+		expect(slow.code).toBe(1);
+		const warned = await clock('echo $(( $(date +%s) + 120 ))', ['warn']);
+		expect(warned.code).toBe(0);
+		expect(warned.stdout).toContain('::warning title=Server clock::');
+	});
+
+	it('fails when the server does not answer with a time', async () => {
+		for (const answer of ['echo', 'echo soon', 'exit 255']) {
+			expect((await clock(answer, ['warn'])).code, answer).not.toBe(0);
+		}
+	});
+
+	it('runs in the deploy job after the SSH target and before anything reaches the checkout', async () => {
+		const workflow = Bun.YAML.parse(
+			await Bun.file(join(repository, '.github/workflows/deploy.yml')).text(),
+		) as { jobs: { deploy: { steps: { name?: string }[] } } };
+		const names = workflow.jobs.deploy.steps.map((value) => value.name);
+		const at = (name: string) => names.indexOf(name);
+		expect(at("Server clock against the runner's")).toBe(
+			at('SSH to the server, host key pinned') + 1,
+		);
+		expect(at("Server clock against the runner's")).toBeLessThan(
+			at('Deliver the release commit to the server'),
+		);
+	});
+});
+
+describe('the smoke test after a deploy', () => {
+	const name = 'Smoke-test the public URLs';
+
+	async function smoke(env: Record<string, string>, fail = '') {
+		const root = await mkdtemp(join(tmpdir(), 'starterdough-smoke-'));
+		try {
+			const calls = join(root, 'calls');
+			await writeFile(
+				join(root, 'curl'),
+				`#!/bin/sh\nfor last do :; done\necho "$last" >> "${calls}"\n[ "$last" != '${fail}' ]\n`,
+				{ mode: 0o700 },
+			);
+			const child = Bun.spawn(['bash', '-c', await step('deploy.yml', 'deploy', name)], {
+				env: { PATH: `${root}:${process.env.PATH ?? ''}`, ...env },
+				stdout: 'pipe',
+				stderr: 'pipe',
+			});
+			const [code, stdout] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+			const file = Bun.file(calls);
+			return {
+				code,
+				stdout,
+				calls: (await file.exists()) ? (await file.text()).trim().split('\n') : [],
+			};
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	}
+
+	it('fetches /readyz and the app from outside, and fails when either does', async () => {
+		const urls = { API_URL: 'https://api.example.test/', WEB_URL: 'https://app.example.test' };
+		const ok = await smoke(urls);
+		expect(ok.code).toBe(0);
+		expect(ok.calls).toEqual(['https://api.example.test/readyz', 'https://app.example.test']);
+		expect((await smoke(urls, 'https://api.example.test/readyz')).code).not.toBe(0);
+		expect((await smoke(urls, 'https://app.example.test')).code).not.toBe(0);
+		const unset = await smoke({ API_URL: '', WEB_URL: urls.WEB_URL });
+		expect(unset.code).toBe(1);
+		expect(unset.stdout).toContain('::error title=Nothing to smoke-test::');
+		expect(unset.calls).toEqual([]);
+	});
+
+	it('runs last, can be switched off, and the job has a timeout for hangs only', async () => {
+		const workflow = Bun.YAML.parse(
+			await Bun.file(join(repository, '.github/workflows/deploy.yml')).text(),
+		) as {
+			jobs: { deploy: { 'timeout-minutes'?: number; steps: { name?: string; if?: string }[] } };
+		};
+		const { deploy } = workflow.jobs;
+		expect(deploy.steps.at(-1)).toMatchObject({ name, if: "vars.SMOKE_TEST != 'off'" });
+		expect(deploy['timeout-minutes']).toBe(180);
+	});
+});
+
 describe('the deploy workflow releases only through the plan', () => {
 	it('follows CI instead of pushes to main, and gates every job on the plan', async () => {
 		const parse = async (file: string) =>
@@ -599,6 +1213,12 @@ describe('release delivery without repository credentials on the server', () => 
 			await Promise.all([mkdir(bin), mkdir(join(root, 'state')), mkdir(join(root, 'runner-temp'))]);
 			await Promise.all([
 				writeFile(join(bin, 'flock'), '#!/bin/sh\nexit 0\n', { mode: 0o700 }),
+				// Every checkout here runs this product's Compose project, and `demo` the demo's.
+				writeFile(
+					join(bin, 'docker'),
+					`#!/bin/sh\n[ "$*" = "compose config" ] && { ${projectByCheckout}; }\nexit 0\n`,
+					{ mode: 0o700 },
+				),
 				// `ssh target <command>` runs <command> here, as sshd would on the server; Git's own
 				// `git-receive-pack '<path>'` included.
 				writeFile(join(bin, 'ssh'), '#!/bin/bash\nfor last do :; done\nexec bash -c "$last"\n', {
@@ -639,6 +1259,7 @@ describe('release delivery without repository credentials on the server', () => 
 				RUNNER_TEMP: join(root, 'runner-temp'),
 				DEPLOY_HOST: 'host.invalid',
 				DEPLOY_USER: 'deploy',
+				EXPECTED_DEMO_PROJECT: 'starterdough-demo',
 				...env,
 			},
 			stdout: 'pipe',
@@ -678,6 +1299,7 @@ describe('release delivery without repository credentials on the server', () => 
 				const env = {
 					DEPLOY_PATH: production,
 					DEMO_PATH: demo,
+					EXPECTED_PROJECT: 'starterdough',
 					GIT_REF: release,
 					IMAGE_TAG: `sha-${release.slice(0, 7)}`,
 					CALLS: calls,
@@ -699,6 +1321,18 @@ describe('release delivery without repository credentials on the server', () => 
 					expect(await git(checkout, 'rev-parse', 'HEAD')).toBe(previous);
 					expect(await git(checkout, 'status', '--porcelain')).toBe('');
 				}
+
+				// Real merge-base: both checkouts share the delivered commit's history.
+				const guarded = await result(
+					run(
+						root,
+						bin,
+						runner,
+						await step('deploy.yml', 'deploy', "Refuse a checkout that is not this product's"),
+						env,
+					),
+				);
+				expect(guarded.code, guarded.stderr).toBe(0);
 
 				const deployed = await result(
 					run(root, bin, runner, await step('deploy.yml', 'deploy', 'Deploy'), env),
@@ -727,6 +1361,51 @@ describe('release delivery without repository credentials on the server', () => 
 				);
 				expect(rollback.code).toBe(0);
 				expect(await git(production, 'rev-parse', 'refs/starterdough/release')).toBe(previous);
+			});
+		},
+		GIT_TIMEOUT,
+	);
+
+	it(
+		'refuses, after delivery, a DEPLOY_PATH or DEMO_PATH holding another repository',
+		async () => {
+			await setup(async ({ root, bin, runner }) => {
+				await commit(runner, { 'release.txt': '1\n' }, 'previous');
+				const production = await server(root, runner, 'production');
+				const release = await commit(runner, { 'release.txt': '2\n' }, 'release');
+				// Another product's checkout: a repository of its own, with its own history.
+				const stranger = join(root, 'stranger');
+				await git(root, 'init', '--quiet', '--initial-branch=main', stranger);
+				await commit(stranger, { 'other.txt': 'theirs\n' }, 'theirs');
+				const guard = await step(
+					'deploy.yml',
+					'deploy',
+					"Refuse a checkout that is not this product's",
+				);
+				for (const [deployPath, demoPath, message] of [
+					[stranger, '', 'DEPLOY_PATH names another checkout'],
+					[production, stranger, 'DEMO_PATH names another checkout'],
+				] as const) {
+					const env = {
+						DEPLOY_PATH: deployPath,
+						DEMO_PATH: demoPath,
+						EXPECTED_PROJECT: 'starterdough',
+						GIT_REF: release,
+					};
+					const delivered = await result(
+						run(
+							root,
+							bin,
+							runner,
+							await step('deploy.yml', 'deploy', 'Deliver the release commit to the server'),
+							env,
+						),
+					);
+					expect(delivered.code, message).toBe(0);
+					const refused = await result(run(root, bin, runner, guard, env));
+					expect(refused.code, message).not.toBe(0);
+					expect(refused.stderr, message).toContain(message);
+				}
 			});
 		},
 		GIT_TIMEOUT,

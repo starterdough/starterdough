@@ -32,8 +32,9 @@ bun run i18n:compile   # messages/**.json → src/lib/paraglide (the Vite plugin
 ## Languages
 
 Text lives in `messages/{en,de}/<area>.json` (`common`, `public`, `auth`, `shell`, `app`,
-`account`, `admin`). Keys form one flat namespace, `<area>_<page>_<element>`. Paraglide compiles
-them into `src/lib/paraglide/` (gitignored). Options: `project.inlang/paraglide.config.ts`.
+`account`, `admin`, and `product` for your product's own, which kit releases never change). Keys
+form one flat namespace, `<area>_<page>_<element>`. Paraglide compiles them into
+`src/lib/paraglide/` (gitignored). Options: `project.inlang/paraglide.config.ts`.
 Locales: `project.inlang/settings.json`.
 
 In components: `import { m } from '#lib/paraglide/messages.js'` and `{m.auth_login_title()}`.

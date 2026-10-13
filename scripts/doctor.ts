@@ -27,6 +27,8 @@ export interface DoctorCheck {
 	name: string;
 	ok: boolean;
 	detail: string;
+	/** Printed with `!` and never fails the run: a setting that is usually, not always, a mistake. */
+	warning?: boolean;
 }
 
 export interface DoctorReport {
@@ -234,6 +236,61 @@ function rootEnvironmentProblems(
 	return problems;
 }
 
+/**
+ * What the repository is called now: `name` in the root package.json (the slug `bun run rename`
+ * writes into the dev database, the Compose project and the containers) and `productName` in the
+ * Tauri config (the name). Either is undefined when its file is missing or unreadable.
+ */
+async function productIdentity(
+	rootDir: string,
+	dependencies: DoctorDependencies,
+): Promise<{ slug?: string; name?: string }> {
+	const field = async (path: string, key: string): Promise<string | undefined> => {
+		try {
+			if (!(await dependencies.exists(join(rootDir, path)))) return undefined;
+			const parsed = JSON.parse(await dependencies.read(join(rootDir, path))) as Record<
+				string,
+				unknown
+			>;
+			return typeof parsed[key] === 'string' ? parsed[key] : undefined;
+		} catch {
+			return undefined;
+		}
+	};
+	return {
+		slug: await field('package.json', 'name'),
+		name: await field('apps/native/src-tauri/tauri.conf.json', 'productName'),
+	};
+}
+
+/**
+ * Rows of the untracked `.env` that still name a product other than the repository's, the usual
+ * leftover of renaming after `bun run setup`. Names the rows, never their values. A warning, not a
+ * failure: keeping the old role and Compose project is right for a volume kept on purpose.
+ */
+function renameLeftovers(
+	environment: Record<string, string | undefined>,
+	identity: { slug?: string; name?: string },
+	databaseMode: DatabaseMode,
+): string[] {
+	const rows: string[] = [];
+	const { slug, name } = identity;
+	const databaseUrl = value(environment, 'DATABASE_URL');
+	if (slug && databaseMode === 'docker' && isPostgresUrl(databaseUrl)) {
+		const parsed = new URL(databaseUrl ?? '');
+		const role = decodeURIComponent(parsed.username);
+		const database = decodeURIComponent(parsed.pathname.replace(/^\//, ''));
+		if (role !== slug || database !== slug) rows.push("DATABASE_URL's role or database");
+	}
+	const project = value(environment, 'COMPOSE_PROJECT_NAME');
+	if (slug && project && project !== slug) rows.push('COMPOSE_PROJECT_NAME');
+	const sender = /^\s*"?([^"<]*?)"?\s*</.exec(value(environment, 'EMAIL_FROM') ?? '')?.[1]?.trim();
+	if (name && sender && !sender.toLowerCase().includes(name.toLowerCase())) {
+		rows.push("EMAIL_FROM's display name");
+	}
+	return rows;
+}
+
 function webEnvironmentProblems(environment: Record<string, string | undefined>): string[] {
 	const problems: string[] = [];
 	for (const name of [
@@ -373,6 +430,17 @@ export async function runDoctor(
 		),
 	);
 
+	const identity = await productIdentity(options.rootDir, dependencies);
+	const leftovers = renameLeftovers(rootEnvironment, identity, options.database);
+	if (leftovers.length > 0) {
+		checks.push({
+			name: 'Product name',
+			ok: false,
+			warning: true,
+			detail: `${leftovers.join(', ')} in .env name another product than package.json (${identity.slug}), the usual sign of a .env written before \`bun run rename\`. Copy those rows from .env.example; keep the old database role and Compose project only for a volume you kept on purpose (the checklist \`bun run rename\` prints, items 1 to 3)`,
+		});
+	}
+
 	const webPaths = [
 		'.env',
 		'.env.local',
@@ -473,15 +541,15 @@ export async function runDoctor(
 		});
 	}
 
-	return { checks, ok: checks.every((check) => check.ok) };
+	return { checks, ok: checks.every((check) => check.ok || check.warning) };
 }
 
 export function formatDoctorReport(report: DoctorReport): string {
 	const lines = ['Starterdough doctor', ''];
 	for (const check of report.checks) {
-		lines.push(`${check.ok ? '✓' : '✗'} ${check.name}: ${check.detail}`);
+		lines.push(`${check.ok ? '✓' : check.warning ? '!' : '✗'} ${check.name}: ${check.detail}`);
 	}
-	const failures = report.checks.filter((check) => !check.ok).length;
+	const failures = report.checks.filter((check) => !check.ok && !check.warning).length;
 	lines.push(
 		'',
 		failures === 0

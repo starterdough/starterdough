@@ -25,12 +25,19 @@ REVISION = re.compile(r"[0-9a-f]{40}\Z")
 CONTAINER_ID = re.compile(r"[0-9a-f]{64}\Z")
 IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 HASH = re.compile(r"[0-9a-f]{64}\Z")
-PROJECT_SERVICES = {
-    "starterdough": {
+# What a deployment may stop and restore, by kind of stack. The Compose project is whatever
+# `docker compose config` resolves when the deployment begins (COMPOSE_PROJECT_NAME may rename it),
+# and the journal records it.
+KIND_SERVICES = {
+    "stack": {
         "api",
     },
-    "starterdough-demo": {"demo-api"},
+    "demo": {"demo-api"},
 }
+PRIMARY = {"stack": "api", "demo": "demo-api"}
+# Version 1 journals, written before kinds existed, could name only the two default projects.
+LEGACY_KINDS = {"starterdough": "stack", "starterdough-demo": "demo"}
+PROJECT = re.compile(r"[a-z0-9][a-z0-9_-]*\Z")
 LOCKED = False
 
 
@@ -159,6 +166,18 @@ def require_string(value: object, field: str) -> str:
     return value
 
 
+def journal_kind(journal: dict[str, object]) -> str:
+    # Derived rather than stored for a version 1 journal, so that saving it again keeps its schema.
+    if journal["version"] == 1:
+        project = journal["project"]
+        kind = LEGACY_KINDS.get(project) if isinstance(project, str) else None
+    else:
+        kind = journal["kind"]
+    if not isinstance(kind, str) or kind not in KIND_SERVICES:
+        fail("invalid journal target")
+    return kind
+
+
 def load() -> dict[str, object]:
     if JOURNAL.is_symlink() or not JOURNAL.is_file():
         fail("journal is not a regular file")
@@ -167,17 +186,21 @@ def load() -> dict[str, object]:
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError("invalid journal") from error
     required = {"version", "phase", "project", "revision", "configHash", "checkout", "writers"}
-    if not isinstance(value, dict) or set(value) != required or value["version"] != 1:
+    if not isinstance(value, dict) or not (
+        (value.get("version") == 1 and set(value) == required)
+        or (value.get("version") == 2 and set(value) == required | {"kind"})
+    ):
         fail("invalid journal schema")
     project = value["project"]
     phase = value["phase"]
     if (
         not isinstance(project, str)
-        or project not in PROJECT_SERVICES
+        or not PROJECT.fullmatch(project)
         or not isinstance(phase, str)
         or phase not in {"pre-replacement", "forward-only"}
     ):
         fail("invalid journal target")
+    kind = journal_kind(value)
     revision = value["revision"]
     config_hash = value["configHash"]
     checkout = value["checkout"]
@@ -200,7 +223,7 @@ def load() -> dict[str, object]:
         image_id = require_string(writer["imageId"], "writer image identity")
         if (
             not CONTAINER_ID.fullmatch(container_id)
-            or service not in PROJECT_SERVICES[project]
+            or service not in KIND_SERVICES[kind]
             or not IMAGE_ID.fullmatch(image_id)
             or container_id in seen_ids
         ):
@@ -305,7 +328,7 @@ def expected_image_id(service: str) -> str:
     return image_id
 
 
-def validate_candidate_container(service: str, required: bool) -> None:
+def validate_candidate_container(project: str, service: str, required: bool) -> None:
     container_ids = run("docker", "compose", "ps", "--quiet", service).splitlines()
     if not container_ids:
         if required:
@@ -313,7 +336,6 @@ def validate_candidate_container(service: str, required: bool) -> None:
         return
     if len(set(container_ids)) != len(container_ids):
         fail("candidate service container inventory is invalid")
-    project = "starterdough-demo" if service == "demo-api" else "starterdough"
     expected = expected_image_id(service)
     for container_id in container_ids:
         inspected = inspect_container(container_id)
@@ -333,16 +355,14 @@ def validate_candidate_container(service: str, required: bool) -> None:
 
 def validate_candidate_writers(journal: dict[str, object]) -> None:
     project = journal["project"]
-    if project == "starterdough":
-        validate_candidate_container("api", required=True)
-    elif project == "starterdough-demo":
-        validate_candidate_container("demo-api", required=True)
-    else:
+    if not isinstance(project, str):
         fail("invalid journal project")
+    kind = journal_kind(journal)
+    validate_candidate_container(project, PRIMARY[kind], required=True)
 
 
 def old_api_container(journal: dict[str, object]) -> str:
-    service = "api" if journal["project"] == "starterdough" else "demo-api"
+    service = PRIMARY[journal_kind(journal)]
     writers = journal["writers"]
     if not isinstance(writers, list):
         fail("invalid journal writers")
@@ -356,20 +376,21 @@ def old_api_container(journal: dict[str, object]) -> str:
 
 def begin(arguments: list[str]) -> None:
     if len(arguments) < 2:
-        fail("begin requires project and services")
-    project, requested = arguments[0], set(arguments[1:])
-    if project not in PROJECT_SERVICES or not requested or not requested <= PROJECT_SERVICES[project]:
+        fail("begin requires kind and services")
+    kind, requested = arguments[0], set(arguments[1:])
+    if kind not in KIND_SERVICES or not requested or not requested <= KIND_SERVICES[kind]:
         fail("invalid deployment writers")
     if journal_exists():
         fail("deployment journal already exists")
     if not clean_worktree():
         fail("deployment checkout has tracked changes")
     config = json.loads(run("docker", "compose", "config", "--format", "json"))
-    primary_service = "api" if project == "starterdough" else "demo-api"
+    primary_service = PRIMARY[kind]
     services = config.get("services") if isinstance(config, dict) else None
+    project = config.get("name") if isinstance(config, dict) else None
     if (
-        not isinstance(config, dict)
-        or config.get("name") != project
+        not isinstance(project, str)
+        or not PROJECT.fullmatch(project)
         or not isinstance(services, dict)
         or primary_service not in services
     ):
@@ -398,14 +419,16 @@ def begin(arguments: list[str]) -> None:
         ):
             fail("invalid running writer identity")
         writers.append({"id": old_id, "service": service, "image": image, "imageId": image_id})
-    if writers and not any(writer["service"] == primary_service for writer in writers):
-        fail("running writers do not include the primary API")
+    api_running = any(writer["service"] == primary_service for writer in writers)
     save({
-        "version": 1,
-        # With no writer to revive, a power loss after this point must resume the prepared target.
-        # Mark that forward-only before the caller reaches Compose rather than creating an
-        # irrecoverable pre-replacement journal with no old API to probe.
-        "phase": "pre-replacement" if writers else "forward-only",
+        "version": 2,
+        "kind": kind,
+        # With no API to revive, a power loss after this point must resume the prepared target. Mark
+        # that forward-only before the caller reaches Compose rather than creating an irrecoverable
+        # pre-replacement journal with no old API to probe. That is a first boot, and also a release
+        # whose API never came up while its worker runs on: the worker is recorded all the same, so
+        # `stop` stops it, and the next deploy (the fix, after `abandon`) can replace it.
+        "phase": "pre-replacement" if api_running else "forward-only",
         "project": project,
         "revision": git_revision(),
         "configHash": compose_config_hash(),
@@ -414,9 +437,22 @@ def begin(arguments: list[str]) -> None:
     })
 
 
-def stop(journal: dict[str, object]) -> None:
+def without_api(journal: dict[str, object]) -> bool:
+    """A journal `begin` wrote forward-only because no old API ran: its writers, if any, are only
+    ever stopped, never revived."""
     writers = journal["writers"]
-    if journal["phase"] == "forward-only" and writers == []:
+    if not isinstance(writers, list):
+        fail("invalid journal writers")
+    service = PRIMARY[journal_kind(journal)]
+    return journal["phase"] == "forward-only" and not any(
+        isinstance(writer, dict) and writer.get("service") == service for writer in writers
+    )
+
+
+def stop(journal: dict[str, object]) -> None:
+    if without_api(journal):
+        for writer in validate_old_writers(journal):
+            run("docker", "stop", "--time", "120", writer["id"], output=False)
         return
     if journal["phase"] != "pre-replacement":
         fail("cannot stop writers after forward transition")
@@ -435,8 +471,9 @@ def restore_pre(journal: dict[str, object]) -> None:
 
 
 def forward(journal: dict[str, object]) -> None:
-    writers = journal["writers"]
-    if journal["phase"] == "forward-only" and writers == []:
+    if without_api(journal):
+        if any(writer["running"] for writer in validate_old_writers(journal)):
+            fail("writers are still running")
         return
     if journal["phase"] != "pre-replacement":
         fail("invalid forward transition")
@@ -451,9 +488,7 @@ def forward(journal: dict[str, object]) -> None:
 def complete(journal: dict[str, object], service: str) -> None:
     if journal["phase"] != "forward-only":
         fail("cannot complete pre-replacement deployment")
-    project = journal["project"]
-    primary_service = "api" if project == "starterdough" else "demo-api"
-    if not isinstance(project, str) or service != primary_service:
+    if service != PRIMARY[journal_kind(journal)]:
         fail("invalid readiness service")
     validate_target(journal)
     validate_candidate_writers(journal)
@@ -463,17 +498,15 @@ def complete(journal: dict[str, object], service: str) -> None:
 
 def recover(journal: dict[str, object]) -> None:
     validate_target(journal)
-    project = journal["project"]
-    if not isinstance(project, str):
-        fail("invalid journal project")
-    service = "api" if project == "starterdough" else "demo-api"
+    kind = journal_kind(journal)
+    service = PRIMARY[kind]
     if journal["phase"] == "pre-replacement":
         restore_pre(journal)
         if any(not writer["running"] for writer in validate_old_writers(journal)):
             fail("restored writer is not running")
         ready_container(old_api_container(journal))
     else:
-        timeout = "180" if project == "starterdough" else "300"
+        timeout = "180" if kind == "stack" else "300"
         run(
             "docker", "compose", "up", "-d", "--remove-orphans", "--wait", "--wait-timeout", timeout,
             "--no-build", "--pull", "never", output=False,
@@ -482,6 +515,26 @@ def recover(journal: dict[str, object]) -> None:
     ready(service)
     clear()
     print("deployment_recovery_complete")
+
+
+def abandon(journal: dict[str, object], confirmation: str) -> None:
+    # Only a forward-only journal: before that phase `recover` restarts the old writers, which is
+    # always safe. After it, a migration that fails every time, or a release that never becomes
+    # ready, would keep every deploy behind the journal, the fix included. Nothing is started or
+    # stopped here; the next deploy replaces whatever runs.
+    if journal["phase"] != "forward-only":
+        fail("abandon applies to a forward-only journal; use recover")
+    revision = journal["revision"]
+    if (
+        not isinstance(revision, str)
+        or len(confirmation) < 7
+        or not revision.startswith(confirmation)
+    ):
+        fail("confirmation does not match the journal revision")
+    if os.getcwd() != journal["checkout"]:
+        fail("abandon must run in the recorded checkout")
+    clear()
+    print("deployment_recovery_abandoned")
 
 
 def main(arguments: list[str]) -> None:
@@ -511,6 +564,8 @@ def main(arguments: list[str]) -> None:
         complete(journal, arguments[1])
     elif operation == "recover":
         recover(journal)
+    elif operation == "abandon" and len(arguments) == 2:
+        abandon(journal, arguments[1])
     else:
         fail("unknown operation")
 

@@ -1,5 +1,6 @@
 import { getCollection } from 'astro:content';
 import { OGImageRoute } from 'astro-og-canvas';
+import { published } from '../../lib/content';
 import { SITE_NAME, staticPages } from '../../lib/site';
 
 /**
@@ -14,7 +15,7 @@ interface OGPage {
 	description: string;
 }
 
-const [posts, legal] = await Promise.all([getCollection('blog'), getCollection('legal')]);
+const [posts, legal] = await Promise.all([published('blog'), getCollection('legal')]);
 
 const pages: Record<string, OGPage> = {
 	...Object.fromEntries(

@@ -141,7 +141,13 @@ export async function runBackup(
 	const bucket = deps.bucket ?? (config.s3 ? new BackupBucket(config.s3) : null);
 	// Before anything is written: a manual backup taken while a restore is half-way through captures
 	// a database in a state nothing can be restored from, and it looks like a good set afterwards.
-	const lock = await acquireLock(config.databaseUrl, config.database, 'backup', log);
+	const lock = await acquireLock(
+		config.databaseUrl,
+		config.database,
+		'backup',
+		log,
+		config.lockWaitMs ?? 0,
+	);
 	try {
 		const attempt = await produceSet(config, stamp, bucket, log).then(
 			(value) => ({ ok: true as const, value }),
@@ -239,7 +245,9 @@ async function produceSet(
 			uploadedKeys.push(await uploadVerified(bucket, join(config.backupDir, name), name, log));
 		}
 	} else {
-		log.warn('no bucket configured; the backup stays on this machine only', {
+		// Worded for both reasons there is no bucket: none configured, or a release set, which never
+		// leaves the box even when one is.
+		log.warn('not copied to a bucket; this set stays on this machine only', {
 			dir: config.backupDir,
 		});
 	}
@@ -309,6 +317,24 @@ export async function uploadVerified(
 	}
 	// The loop returns on success and throws on the last attempt; TypeScript cannot see that.
 	throw new BackupError(`upload of ${name} neither succeeded nor failed`);
+}
+
+/**
+ * True when the database has no table at all: a first deploy, before `migrate` has run. A release
+ * backup has nothing to protect then, and the dump would fail verification for holding no table
+ * data. Read from `pg_class` rather than `information_schema.tables`, which lists only the tables
+ * this role may access, so a role without privileges fails at `pg_dump` instead of skipping.
+ */
+export async function databaseIsEmpty(config: BackupConfig): Promise<boolean> {
+	const sql = new Bun.SQL(config.databaseUrl, { max: 1 });
+	try {
+		const rows = await sql.unsafe<{ n: number }[]>(
+			"select count(*)::int as n from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('r', 'p') and n.nspname <> 'information_schema' and n.nspname !~ '^pg_'",
+		);
+		return (rows[0]?.n ?? 0) === 0;
+	} finally {
+		await sql.close().catch(() => {});
+	}
 }
 
 /** Tables whose rows the manifest records, so a drill can check the data came back and not only the table. */
@@ -521,7 +547,7 @@ export async function archiveUploads(
 		return { skipped: reason, degraded: null };
 	}
 	if (uploads.kind === 'none') {
-		const reason = 'STORAGE_DIR is not set';
+		const reason = uploads.reason ?? 'STORAGE_DIR is not set';
 		log.info('uploads archive skipped', { reason });
 		return { skipped: reason, degraded: null };
 	}

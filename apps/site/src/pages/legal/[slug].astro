@@ -1,10 +1,18 @@
 ---
 import { type CollectionEntry, getCollection, render } from 'astro:content';
 import Base from '../../layouts/Base.astro';
+import { assertLegalFinished, guardsLegal } from '../../lib/legal';
 import { formatDate } from '../../lib/site';
 
 export async function getStaticPaths() {
 	const docs = await getCollection('legal');
+	// A production build for a real origin refuses template text (src/lib/legal.ts).
+	if (
+		import.meta.env.PROD &&
+		guardsLegal(new URL(import.meta.env.SITE), process.env.ALLOW_LEGAL_PLACEHOLDERS)
+	) {
+		assertLegalFinished(docs);
+	}
 	return docs.map((doc) => ({ params: { slug: doc.id }, props: { doc } }));
 }
 

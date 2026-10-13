@@ -1,6 +1,7 @@
 # Self-hosted, server-rendered build (ADAPTER=node). Build from the repository root:
 #   docker build -f apps/web/Dockerfile -t starterdough-web .
-FROM oven/bun:1.4 AS base
+# The Bun in package.json's `packageManager`: infra/scripts/image-pins.test.ts fails when they differ.
+FROM oven/bun:1.4.2 AS base
 WORKDIR /repo
 
 FROM base AS build
@@ -36,6 +37,8 @@ ENV NODE_ENV=production PORT=3000 HOST=0.0.0.0
 COPY package.json bun.lock bunfig.toml ./
 COPY apps/web/package.json apps/web/
 COPY packages/ packages/
+# Peers stay installed (no --omit=peer): @sentry/sveltekit imports @sveltejs/kit at run time, and
+# without it Sentry injects an inline script into every page that the page's CSP blocks.
 RUN bun install --frozen-lockfile --production
 COPY --from=build /repo/apps/web/build apps/web/build
 USER bun

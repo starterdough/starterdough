@@ -1,5 +1,10 @@
 import { type ApiClient, createApiClient, type FetchLike } from '@repo/api-client';
-import { PUBLIC_API_URL, PUBLIC_DEMO_MODE, PUBLIC_WEB_URL } from '$app/env/public';
+import {
+	PUBLIC_API_URL,
+	PUBLIC_DEMO_CTA_URL,
+	PUBLIC_DEMO_MODE,
+	PUBLIC_WEB_URL,
+} from '$app/env/public';
 import { isTauri } from './pwa.svelte';
 import { tokenStore, usesBearerAuth } from './token-store';
 
@@ -79,6 +84,12 @@ export const IMPERSONATION_AVAILABLE = !inShell;
  * and the controls whose procedures the API refuses in demo mode are disabled.
  */
 export const DEMO_MODE = PUBLIC_DEMO_MODE === 'true';
+
+/**
+ * Where the demo banner's link goes (`PUBLIC_DEMO_CTA_URL`): the product's pricing page, usually on
+ * the marketing site's origin, so an absolute URL. Empty: the banner has no link.
+ */
+export const DEMO_CTA_URL = PUBLIC_DEMO_CTA_URL?.trim() || null;
 
 /**
  * Absolute URL of one of this app's own pages, for anything that leaves the device: a provider's

@@ -21,11 +21,12 @@ export type HandAddedConstraint = {
  * checks that they are still there.
  *
  * The CLI does not emit them, so every `bun run auth:schema` regenerates `auth.ts` without them,
- * and the `bun run db:generate` after it writes a migration that drops them from the database.
- * Lint, typecheck and every other test pass either way, so three things run this check:
+ * and the SQL `bun run db:kit-drift` prints after it, which goes into a migration, drops them from
+ * the database. Lint and typecheck pass either way, and `kit-drift.test.ts` shows only that SQL,
+ * not its cause, so three things run this check:
  *
  * - `bun run auth:schema`, right after the CLI writes the file: it runs this module, which exits
- *   non-zero, so a chained `auth:schema && db:generate` stops before the migration is written.
+ *   non-zero, so a chained `auth:schema && db:kit-drift` stops before the SQL is printed.
  * - `auth-constraints.test.ts`, so CI and the pre-push `verify` fail on a schema that lost one.
  * - `bun packages/db/src/schema/auth-constraints.ts`, to check again after putting them back.
  *
@@ -139,8 +140,8 @@ export function missingConstraintsReport(missing: readonly MissingConstraint[]):
 	return [
 		`✗ ${file} is missing ${missing.length} of its hand-added constraints.`,
 		'',
-		'The Better Auth CLI does not emit them, so every `bun run auth:schema` drops them, and',
-		'`bun run db:generate` would now write a migration that drops them from the database:',
+		'The Better Auth CLI does not emit them, so every `bun run auth:schema` drops them, and the',
+		'SQL `bun run db:kit-drift` would now print for your migration drops them from the database:',
 		'',
 		...listed,
 		'',
@@ -152,9 +153,10 @@ export function missingConstraintsReport(missing: readonly MissingConstraint[]):
 		'     keep what it changed for your new auth config.',
 		'  2. bun packages/db/src/schema/auth-constraints.ts',
 		'     Checks again without regenerating. Running auth:schema again would undo step 1.',
-		'  3. bun run db:generate',
-		'     Read the migration before db:migrate: a DROP INDEX or DROP CONSTRAINT on',
-		`     ${tables} means a constraint is still missing.`,
+		'  3. bun run db:kit-drift',
+		"     Prints the SQL your auth config needs on the kit's tables. A DROP INDEX or DROP CONSTRAINT",
+		`     on ${tables} means a constraint is still missing. Put the rest in the`,
+		'     file `bun run db:generate --custom --name=<name>` creates, then `bun run db:migrate`.',
 	].join('\n');
 }
 

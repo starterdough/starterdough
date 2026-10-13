@@ -6,7 +6,7 @@ services:
   postgres:
     # Postgres 17, from the same image the paid edition needs. Same major as the plain
     # postgres:17 image, so an existing pgdata volume is reused as is.
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:0.8.7-pg17
     environment:
       POSTGRES_USER: starterdough
       POSTGRES_PASSWORD: starterdough

@@ -9,7 +9,8 @@ import {
 } from '@orpc/zod/zod4';
 import { env } from '@repo/env';
 import type { Hono } from 'hono';
-import { addLogContext, log } from '../log';
+import { reportError } from '../error-reporting';
+import { addLogContext, log, logContext } from '../log';
 import { refuseCrossSiteCookieWrites } from '../middleware/csrf';
 import { createContext } from './context';
 import { router } from './router';
@@ -46,6 +47,17 @@ function logError(error: unknown) {
 }
 
 /**
+ * The same failures go to error tracking (`error-reporting.ts`, off without `SENTRY_DSN`), with the
+ * request's fields and the procedure. Reported from the procedure call, not from `logError`: a body
+ * that does not decode fails before any procedure runs and is answered 400, yet reaches `logError`
+ * as a raw error, so reporting there would let any caller spend the Sentry quota.
+ */
+function reportFailure(error: unknown) {
+	if (error instanceof ORPCError && error.status < 500) return;
+	reportError(error, { ...logContext() });
+}
+
+/**
  * Compact transport for our own TypeScript clients (rich types: Date, Map, Set, …).
  *
  * Every call must carry `x-csrf-token: orpc`, which `@repo/api-client` adds to each request
@@ -57,7 +69,7 @@ function logError(error: unknown) {
  */
 const rpcHandler = new RPCHandler(router, {
 	interceptors: [onError(logError)],
-	clientInterceptors: [tagProcedure],
+	clientInterceptors: [tagProcedure, onError(reportFailure)],
 	plugins: [new SimpleCsrfProtectionHandlerPlugin()],
 });
 
@@ -68,7 +80,7 @@ const rpcHandler = new RPCHandler(router, {
  */
 const openapiHandler = new OpenAPIHandler(router, {
 	interceptors: [onError(logError)],
-	clientInterceptors: [tagProcedure],
+	clientInterceptors: [tagProcedure, onError(reportFailure)],
 	plugins: [new ZodSmartCoercionPlugin()],
 });
 
@@ -76,8 +88,8 @@ const generator = new OpenAPIGenerator({
 	schemaConverters: [new ZodToJsonSchemaConverter()],
 });
 
-export function generateSpec() {
-	return generator.generate(router, {
+export async function generateSpec() {
+	const spec = await generator.generate(router, {
 		info: {
 			title: 'Starterdough API',
 			// The release version, like `/health` and `/admin/system`; never a second literal here.
@@ -86,6 +98,7 @@ export function generateSpec() {
 		},
 		servers: [{ url: `${env.API_URL ?? 'http://localhost:3000'}/api/v1` }],
 	});
+	return spec;
 }
 
 /**

@@ -61,12 +61,14 @@
 	"admin_system_health_down": "Down",
 	"admin_system_health_ok": "OK",
 	"admin_system_health_unreachable": "Unreachable",
+	"admin_system_kit_version": "Kit version",
 	"admin_system_latency": "{ms} ms",
 	"admin_system_loading": "Loading status…",
-	"admin_system_migrations": "Migrations",
 	"admin_system_migrations_applied": "{applied} of {shipped} applied",
+	"admin_system_migrations_kit": "Kit migrations",
 	"admin_system_migrations_latest": "latest {name}",
 	"admin_system_migrations_pending": "Pending",
+	"admin_system_migrations_product": "Product migrations",
 	"admin_system_migrations_unknown": "Unknown",
 	"admin_system_migrations_unknown_detail": [
 		{

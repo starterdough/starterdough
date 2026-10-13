@@ -30,11 +30,12 @@ bun run openapi                        # writes ./openapi.json
 
 ## Add a procedure
 
-1. Declare it in `packages/api-contract`.
-2. Implement it in `src/rpc/router.ts`.
+1. Declare it in `packages/api-contract/src/product.ts`, or in a file of yours it spreads in.
+2. Implement it in `src/rpc/product.ts`, or in a file of yours next to it that `productRouter` adds.
 
-Every client is type-checked against the contract. The REST and OpenAPI surface updates
-automatically.
+Kit releases never change those two files; the kit's own procedures are in the contract's
+`index.ts` and in `src/rpc/router.ts`. Every client is type-checked against the contract. The REST
+and OpenAPI surface updates automatically.
 
 ## Operations
 
@@ -92,13 +93,14 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 bun run dev     # spans appear
 ### Shutdown and pool size
 
 An unhandled rejection or uncaught exception is logged (`unhandled rejection` / `uncaught
-exception`) and exits 1. The supervisor restarts the process.
+exception`) and exits 1. The supervisor restarts the process. With `SENTRY_DSN` set, it is also
+reported, and the exit waits up to 2 s for the report to go out.
 
 `SIGTERM` and `SIGINT` run this sequence:
 
 1. Stop the listener.
 2. Give in-flight requests 10 s, then force-close what is left.
-3. Flush spans, 3 s at most.
+3. Flush spans and error reports, 3 s at most.
 4. Close the database pool (1 s) and exit 0.
 
 The budgets add up to less than compose's `stop_grace_period` (15 s), so the pool closes before
@@ -115,5 +117,7 @@ reloads, so changing `DATABASE_URL` or `DATABASE_POOL_MAX` needs a restart.
 | `LOG_LEVEL` | `info` in production, `debug` otherwise | Lowest level written (`debug`/`info`/`warn`/`error`) |
 | `TRUST_PROXY` | `false` | Read the client IP from `X-Forwarded-For`. Set it only where Caddy or a load balancer fronts the API |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | *(unset: tracing off)* | OTLP/HTTP collector base URL |
+| `SENTRY_DSN` | *(unset: error tracking off)* | Sentry project for unexpected errors (`src/error-reporting.ts`). Errors only: spans stay with OTLP, whatever `SENTRY_TRACES_SAMPLE_RATE` says |
+| `SENTRY_ENVIRONMENT` | `NODE_ENV` | Sentry's `environment` on every report |
 | `DATABASE_POOL_MAX` | `10` | Postgres connections per process |
 | `OTEL_SERVICE_NAME` | `starterdough-api` | `service.name` on spans |

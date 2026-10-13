@@ -1,7 +1,7 @@
 import { passkey } from '@better-auth/passkey';
 import { db } from '@repo/db';
 import * as schema from '@repo/db/schema';
-import { email, templates } from '@repo/email';
+import { email, localeOf, templates } from '@repo/email';
 import { env, isProduction, trustedOrigins } from '@repo/env';
 import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
@@ -77,7 +77,9 @@ export const authFeatures: {
  *   - Tauri desktop/mobile, CLI → bearer token (the `bearer` plugin returns it in `set-auth-token`)
  *
  * Every email goes through `@repo/email` (console in development, Resend when configured).
- * The `url` Better Auth hands us already carries the token and the client's `callbackURL`.
+ * The `url` Better Auth hands us already carries the token and the client's `callbackURL`. Each
+ * goes out in the language of the request that asked for it (`localeOf`): the web app sends its
+ * own as `Accept-Language` on every auth call.
  */
 export const auth = betterAuth({
 	appName: APP_NAME,
@@ -93,8 +95,11 @@ export const auth = betterAuth({
 		enabled: true,
 		requireEmailVerification,
 		revokeSessionsOnPasswordReset: true,
-		async sendResetPassword({ user, url }) {
-			await email.send({ to: user.email, ...templates.resetPassword({ name: user.name, url }) });
+		async sendResetPassword({ user, url }, request) {
+			await email.send({
+				to: user.email,
+				...templates.resetPassword({ name: user.name, url }, localeOf(request)),
+			});
 		},
 	},
 
@@ -103,8 +108,11 @@ export const auth = betterAuth({
 		sendOnSignUp: true,
 		// The link signs the user in, so it stays on Better Auth's 1 h expiry; the UI offers "resend".
 		autoSignInAfterVerification: true,
-		async sendVerificationEmail({ user, url }) {
-			await email.send({ to: user.email, ...templates.verifyEmail({ name: user.name, url }) });
+		async sendVerificationEmail({ user, url }, request) {
+			await email.send({
+				to: user.email,
+				...templates.verifyEmail({ name: user.name, url }, localeOf(request)),
+			});
 		},
 	},
 
@@ -112,18 +120,24 @@ export const auth = betterAuth({
 		changeEmail: {
 			enabled: true,
 			// Approval goes to the *current* address; Better Auth then verifies the new one.
-			async sendChangeEmailConfirmation({ user, newEmail, url }) {
+			async sendChangeEmailConfirmation({ user, newEmail, url }, request) {
 				await email.send({
 					to: user.email,
-					...templates.changeEmailConfirmation({ name: user.name, newEmail, url }),
+					...templates.changeEmailConfirmation(
+						{ name: user.name, newEmail, url },
+						localeOf(request),
+					),
 				});
 			},
 		},
 		deleteUser: {
 			enabled: true,
 			// With a verification sender configured, deletion only happens after the emailed link is used.
-			async sendDeleteAccountVerification({ user, url }) {
-				await email.send({ to: user.email, ...templates.deleteAccount({ name: user.name, url }) });
+			async sendDeleteAccountVerification({ user, url }, request) {
+				await email.send({
+					to: user.email,
+					...templates.deleteAccount({ name: user.name, url }, localeOf(request)),
+				});
 			},
 		},
 	},

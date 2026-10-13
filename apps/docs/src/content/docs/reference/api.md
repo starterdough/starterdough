@@ -65,9 +65,12 @@ requests from other sites; this also covers pages on a sibling subdomain. A requ
 (a bearer token, a service) is never affected, and neither is a server-side caller that forwards a
 cookie without an `Origin`.
 
+
 `bun run api:openapi` writes `apps/api/openapi.json` for generating clients in other languages. Its
-`info.version`, `GET /api/v1/health`, `/admin/system` and the telemetry resource all read the
-version from the **root** `package.json`. Workspace packages are unversioned.
+`info.version`, `GET /api/v1/health`, `/admin/system` and the telemetry resource all report your
+product's `version` from the **root** `package.json`. Workspace packages are unversioned.
+`/admin/system` also reports `kitVersion`, the kit release this build is on, which the public
+endpoints leave out.
 
 ## Procedures
 

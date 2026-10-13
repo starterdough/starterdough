@@ -42,37 +42,59 @@ export function advisoryKey(database: string): number {
 	return hash | 0;
 }
 
+/** How often a caller that waits for the lock tries again. */
+export const LOCK_RETRY_MS = 5_000;
+
 /**
  * Takes the lock for `database` on the cluster `url` points at, or throws. `what` names the caller
  * in the error so the operator learns which of the two to wait for.
+ *
+ * With `waitMs` above 0 a lock someone else holds is tried again every {@link LOCK_RETRY_MS} on the
+ * same session until the wait runs out: a release backup and the nightly run can meet, and the one
+ * that arrives second should queue instead of failing a deploy or paging. Restores pass no wait, so
+ * they still refuse at once.
  */
 export async function acquireLock(
 	url: string,
 	database: string,
 	what: string,
 	log: Logger,
+	waitMs = 0,
+	sleep: (ms: number) => Promise<unknown> = Bun.sleep,
 ): Promise<HeldLock> {
 	const key = advisoryKey(database);
 	// One connection, no idle timeout: a session-level advisory lock is only held while the session
 	// that took it is alive, and a pool that recycles the connection would drop it silently.
 	const sql = new Bun.SQL(url, { max: 1, idleTimeout: 0, maxLifetime: 0 });
-	let rows: { locked: boolean; pid: number }[];
-	try {
-		rows = await sql.unsafe<{ locked: boolean; pid: number }[]>(
-			'select pg_try_advisory_lock($1::int, $2::int) as locked, pg_backend_pid()::int as pid',
-			[LOCK_CLASS, key],
-		);
-	} catch (error) {
-		await sql.close().catch(() => {});
-		throw new LockError(`could not take the backup lock on ${database}`, { cause: error });
+	const attempt = async () => {
+		try {
+			const rows = await sql.unsafe<{ locked: boolean; pid: number }[]>(
+				'select pg_try_advisory_lock($1::int, $2::int) as locked, pg_backend_pid()::int as pid',
+				[LOCK_CLASS, key],
+			);
+			return rows[0];
+		} catch (error) {
+			await sql.close().catch(() => {});
+			throw new LockError(`could not take the backup lock on ${database}`, { cause: error });
+		}
+	};
+	const deadline = Date.now() + waitMs;
+	let row = await attempt();
+	if (row?.locked !== true && waitMs > 0) {
+		log.info('waiting for the backup lock', { database, what, waitMs });
+		while (row?.locked !== true && Date.now() < deadline) {
+			await sleep(Math.min(LOCK_RETRY_MS, Math.max(0, deadline - Date.now())));
+			row = await attempt();
+		}
 	}
-	if (rows[0]?.locked !== true) {
+	if (row?.locked !== true) {
 		await sql.close().catch(() => {});
+		const waited = waitMs > 0 ? ` after waiting ${Math.ceil(waitMs / 1000)}s` : '';
 		throw new LockError(
-			`another backup or restore is already working on ${database} (advisory lock ${LOCK_CLASS}/${key}). Wait for it to finish, or find it with: select * from pg_locks where locktype = 'advisory' and classid = ${LOCK_CLASS}`,
+			`another backup or restore is already working on ${database}${waited} (advisory lock ${LOCK_CLASS}/${key}). Wait for it to finish, or find it with: select * from pg_locks where locktype = 'advisory' and classid = ${LOCK_CLASS}`,
 		);
 	}
-	const pid = rows[0]?.pid ?? 0;
+	const pid = row.pid;
 	log.info('lock acquired', { database, what, key, pid });
 	return {
 		pid,

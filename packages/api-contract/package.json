@@ -5,7 +5,8 @@
 	"type": "module",
 	"description": "The API contract (oRPC + Zod). Single source of truth for every client and for the OpenAPI document.",
 	"exports": {
-		".": "./src/index.ts"
+		".": "./src/index.ts",
+		"./product": "./src/product.ts"
 	},
 	"scripts": {
 		"check": "tsc --noEmit"

@@ -36,6 +36,11 @@ export const variables = defineEnvVars({
 		schema: optional,
 		description: '`true` on a public demo deployment.',
 	},
+	PUBLIC_DEMO_CTA_URL: {
+		public: true,
+		schema: optional,
+		description: 'Where the demo banner links, e.g. your pricing page. Empty: no link.',
+	},
 	PUBLIC_SENTRY_DSN: { public: true, schema: optional, description: 'Browser error tracking.' },
 	PUBLIC_SENTRY_ENVIRONMENT: { public: true, schema: optional },
 	PUBLIC_SENTRY_TRACES_SAMPLE_RATE: { public: true, schema: optional },
